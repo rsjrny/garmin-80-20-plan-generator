@@ -12,11 +12,14 @@ Usage examples:
 
 import sys
 import argparse
+import logging
 import subprocess
 import multiprocessing
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from garmin_data_hub.paths import default_db_path, ensure_app_dirs
 
@@ -266,6 +269,7 @@ def run_sync(
 
         conn.close()
     except Exception as e:
+        logger.exception("Post-sync update failed")
         print(f"[ERROR] Post-sync update failed: {e}")
         return 2
 
@@ -276,6 +280,12 @@ def run_sync(
 def main():
     if getattr(sys, "frozen", False) and "pyi_splash" in sys.modules:
         return
+
+    if not logging.getLogger().handlers:
+        logging.basicConfig(
+            level=os.environ.get("GARMIN_DATA_HUB_LOG_LEVEL", "INFO").upper(),
+            format="[%(levelname)s] %(name)s: %(message)s",
+        )
 
     parser = argparse.ArgumentParser(
         prog="garmin-sync",

@@ -5,8 +5,6 @@ from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
 import importlib
 import pandas as pd
-import json
-import re
 
 import streamlit as st
 
@@ -15,6 +13,18 @@ from garmin_data_hub.db.sqlite import connect_sqlite
 from garmin_data_hub.db.migrate import apply_schema
 from garmin_data_hub.ui_streamlit.sidebar import render_sidebar
 from garmin_data_hub.db import queries as db_queries
+from garmin_data_hub.services.athlete_metrics_service import (
+    calculate_metrics_from_db_sources,
+    clear_override_metrics,
+    ensure_athlete_metrics_table,
+    get_athlete_metrics,
+    set_calculated_metrics,
+    set_override_metrics,
+)
+from garmin_data_hub.services.plan_persistence import (
+    load_generated_plan,
+    save_generated_plan,
+)
 
 # Your existing export function (already in your app)
 import garmin_data_hub.exports.master_export as master_export
@@ -53,231 +63,6 @@ def init_db(db_path: Path) -> None:
         conn, schema_sql_path()
     )  # schema.sql must be at src/garmin_data_hub/db/schema.sql
     conn.close()
-
-
-# ---------------------------
-# Athlete metrics table (calc + override)
-# ---------------------------
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def ensure_athlete_metrics_table(db_path: Path) -> None:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
-    try:
-        db_queries.ensure_athlete_profile_table(conn)
-    finally:
-        conn.close()
-
-
-def get_athlete_metrics(db_path: Path) -> dict:
-    ensure_athlete_metrics_table(db_path)
-    conn = sqlite3.connect(str(db_path))
-    try:
-        return db_queries.get_athlete_metrics(conn)
-    finally:
-        conn.close()
-
-
-def set_calculated_metrics(db_path: Path, hrmax: int | None, lthr: int | None) -> None:
-    ensure_athlete_metrics_table(db_path)
-    conn = sqlite3.connect(str(db_path))
-    try:
-        db_queries.set_calculated_metrics(conn, hrmax, lthr)
-    finally:
-        conn.close()
-
-
-def set_override_metrics(db_path: Path, hrmax: int | None, lthr: int | None) -> None:
-    ensure_athlete_metrics_table(db_path)
-    conn = sqlite3.connect(str(db_path))
-    try:
-        db_queries.set_override_metrics(conn, hrmax, lthr)
-    finally:
-        conn.close()
-
-
-def clear_override_metrics(db_path: Path) -> None:
-    ensure_athlete_metrics_table(db_path)
-    conn = sqlite3.connect(str(db_path))
-    try:
-        db_queries.clear_override_metrics(conn)
-    finally:
-        conn.close()
-
-
-# ---------------------------
-# Calculate HR metrics from ingested sources (best-effort)
-# ---------------------------
-def calculate_metrics_from_db_sources(
-    db_path: Path, years_back: int = 5
-) -> tuple[int | None, int | None, str | None]:
-    """
-    Uses DB activity_summary table for fast calculation if available.
-    Fallbacks to file-based analysis if DB is empty or incomplete.
-    """
-    cutoff_date = date.today() - timedelta(days=years_back * 365)
-    cutoff_iso = cutoff_date.isoformat()
-
-    # Try fast DB path first
-    if db_path.exists():
-        conn = sqlite3.connect(str(db_path))
-        try:
-            hrmax_robust, lthr_suggested = db_queries.get_hrmax_robust_and_lthr(
-                conn, cutoff_iso
-            )
-            if hrmax_robust is not None:
-                conn.close()
-                return hrmax_robust, lthr_suggested, None
-
-        except sqlite3.OperationalError:
-            pass  # Table might not exist
-        finally:
-            conn.close()
-
-    return None, None, "No activities found in DB (run Import first)."
-
-
-# ---------------------------
-# Plan Persistence
-# ---------------------------
-def save_generated_plan(db_path: Path, inputs, analysis, day_plans, weekly_rows):
-    """Saves the generated plan data to the database as a JSON blob AND inserts into planned_workout table."""
-
-    # 1. Save JSON blob for UI state
-    day_plans_data = [
-        {
-            "iso_date": dp.iso_date,
-            "day": dp.day,
-            "week": dp.week,
-            "phase": dp.phase,
-            "flags": dp.flags,
-            "workout": dp.workout,
-            "notes": dp.notes,
-        }
-        for dp in day_plans
-    ]
-
-    analysis_data = {
-        "hrmax_observed": analysis.hrmax_observed,
-        "hrmax_robust": analysis.hrmax_robust,
-        "lthr_suggested": analysis.lthr_suggested,
-        "avg_weekly_hours": analysis.avg_weekly_hours,
-        "avg_weekly_miles": analysis.avg_weekly_miles,
-        "z2_fraction": analysis.z2_fraction,
-        "notes": analysis.notes,
-    }
-
-    inputs_data = {
-        "athlete": {
-            "athlete_name": inputs.athlete.athlete_name,
-            "age": inputs.athlete.age,
-            "hrmax": inputs.athlete.hrmax,
-            "lthr": inputs.athlete.lthr,
-            "sodium": inputs.athlete.sodium_mg_per_hr_hot,
-        },
-        "event": {
-            "event_name": inputs.event.event_name,
-            "event_date": inputs.event.event_date,
-            "distance": inputs.event.distance,
-        },
-    }
-
-    plan_blob = json.dumps(
-        {
-            "day_plans": day_plans_data,
-            "weekly_rows": weekly_rows,
-            "analysis": analysis_data,
-            "inputs": inputs_data,
-            "generated_at": _utc_now_iso(),
-        }
-    )
-
-    conn = sqlite3.connect(str(db_path))
-    db_queries.set_setting(conn, "last_generated_plan", plan_blob)
-
-    # 2. Insert into planned_workout table
-    # First, clear the entire range of the new plan to avoid duplicates
-    plan_dates = [dp.iso_date for dp in day_plans]
-    if plan_dates:
-        min_date = min(plan_dates)
-        max_date = max(plan_dates)
-        db_queries.delete_planned_workouts_in_range(conn, min_date, max_date)
-
-    # Insert new workouts
-    for dp in day_plans:
-        # Insert ALL workouts, even past ones
-        if dp.workout:
-            planned_dist = None
-            planned_dur = None
-
-            text_to_parse = (dp.workout + " " + (dp.notes or "")).lower()
-
-            try:
-                # Look for duration first
-                hour_match = re.search(r"(\d+(?:\.\d+)?)\s*hour", text_to_parse)
-                min_range_match = re.search(r"(\d+)-(\d+)\s*min", text_to_parse)
-                min_match = re.search(r"(\d+)\s*min", text_to_parse)
-
-                if hour_match:
-                    planned_dur = float(hour_match.group(1)) * 3600  # seconds
-                elif min_range_match:
-                    avg_mins = (
-                        int(min_range_match.group(1)) + int(min_range_match.group(2))
-                    ) / 2
-                    planned_dur = avg_mins * 60
-                elif min_match:
-                    planned_dur = int(min_match.group(1)) * 60  # seconds
-
-                # Then look for distance
-                mile_match = re.search(r"(\d+(?:\.\d+)?)\s*mi", text_to_parse)
-                km_match = re.search(r"(\d+(?:\.\d+)?)\s*km", text_to_parse)
-
-                if mile_match:
-                    planned_dist = float(mile_match.group(1)) * 1609.34  # meters
-                elif km_match:
-                    planned_dist = float(km_match.group(1)) * 1000  # meters
-
-            except Exception as e:
-                st.warning(f"Could not parse workout string: {dp.workout} - {e}")
-
-            db_queries.insert_planned_workout(
-                conn,
-                dp.iso_date,
-                dp.workout,
-                dp.notes,
-                planned_dist,
-                planned_dur,
-                None,
-            )
-
-    conn.commit()
-    conn.close()
-
-
-def load_generated_plan(db_path: Path):
-    """Loads the last generated plan from the database."""
-    conn = sqlite3.connect(str(db_path))
-    blob = db_queries.get_setting(conn, "last_generated_plan", "")
-    conn.close()
-
-    if not blob:
-        return None, None, None, None
-
-    try:
-        data = json.loads(blob)
-
-        # Reconstruct objects (simplified for display purposes)
-        # We don't need full class reconstruction just for display
-        return (
-            data.get("inputs"),
-            data.get("analysis"),
-            data.get("day_plans"),
-            data.get("weekly_rows"),
-        )
-    except Exception:
-        return None, None, None, None
 
 
 # ---------------------------

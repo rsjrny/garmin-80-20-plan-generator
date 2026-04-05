@@ -1,4 +1,4 @@
-﻿[project]
+[project]
 name = "garmin-data-hub"
 version = "0.2.6"
 description = "Garmin FIT/CSV ingestion + analytics + exports (SQLite + Streamlit)"
@@ -11,6 +11,11 @@ dependencies = [
   "fitparse>=1.2.0",
   "gpxpy>=1.6.2",
   "garmin-givemydata>=0.1.8",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
 ]
 
 [project.scripts]
@@ -28,5 +33,8 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 garmin_data_hub = ["db/schema.sql"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 

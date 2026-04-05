@@ -1,6 +1,9 @@
 from __future__ import annotations
+import logging
 import sqlite3
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def connect_sqlite(db_path: Path, timeout: float = 5.0) -> sqlite3.Connection:
@@ -13,7 +16,11 @@ def connect_sqlite(db_path: Path, timeout: float = 5.0) -> sqlite3.Connection:
     # Keep temporary tables in memory for faster processing of import operations
     try:
         conn.execute("PRAGMA temp_store=MEMORY;")
-    except Exception:
-        # Some SQLite builds may not support this pragma; ignore failures
-        pass
+    except sqlite3.DatabaseError:
+        # Some SQLite builds may not support this pragma; keep going with defaults.
+        logger.debug(
+            "SQLite pragma temp_store=MEMORY is not available for %s",
+            db_path,
+            exc_info=True,
+        )
     return conn

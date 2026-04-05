@@ -1,6 +1,9 @@
 from __future__ import annotations
+import logging
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+logger = logging.getLogger(__name__)
 
 
 def _calculate_lthr_from_efforts(
@@ -63,8 +66,8 @@ def _calculate_lthr_from_efforts(
         else:
             return int(round(hrmax * 0.86))
 
-    except Exception as e:
-        print(f"Warning: Could not calculate LTHR from efforts: {e}")
+    except (sqlite3.Error, TypeError, ValueError):
+        logger.warning("Could not calculate LTHR from recent threshold efforts", exc_info=True)
         return None
 
 
@@ -75,7 +78,7 @@ def update_athlete_profile(conn: sqlite3.Connection):
     """
 
     # Use central DB helpers to compute a robust HRmax and suggested LTHR
-    cutoff_iso = (datetime.utcnow() - timedelta(days=90)).isoformat()
+    cutoff_iso = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
     try:
         from garmin_data_hub.db import queries as db_queries
 
@@ -86,10 +89,14 @@ def update_athlete_profile(conn: sqlite3.Connection):
         if hrmax_calc:
             db_queries.ensure_athlete_profile_table(conn)
             db_queries.set_calculated_metrics(conn, hrmax_calc, lthr_calc)
-            print(
+            message = (
                 f"Athlete profile updated. HRMax: {hrmax_calc} bpm, LTHR: {lthr_calc} bpm"
             )
+            logger.info(message)
+            print(message)
         else:
+            logger.info("No recent HR data available to update athlete profile")
             print("No recent HR data to update athlete profile.")
-    except Exception as e:
-        print(f"ERROR updating athlete_profile via db.queries: {e}")
+    except (ImportError, sqlite3.Error, TypeError, ValueError):
+        logger.exception("Failed to update athlete profile from synced activities")
+        print("ERROR updating athlete_profile via db.queries. See logs for details.")

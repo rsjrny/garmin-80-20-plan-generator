@@ -1,8 +1,11 @@
 import json
+import logging
 import sqlite3
 from datetime import datetime, timezone
 from typing import Any, Iterable
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 GET_SETTING_SQL = "SELECT value FROM app_settings WHERE key = ?"
 UPSERT_SETTING_SQL = "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)"
@@ -15,7 +18,8 @@ def get_setting(conn, key: str, default: Any):
     try:
         row = conn.execute(GET_SETTING_SQL, (key,)).fetchone()
         return json.loads(row[0]) if row and row[0] is not None else default
-    except Exception:
+    except (sqlite3.Error, TypeError, ValueError, json.JSONDecodeError):
+        logger.warning("Failed to load app setting '%s'; using default", key, exc_info=True)
         return default
 
 
@@ -24,8 +28,8 @@ def set_setting(conn, key: str, value: Any) -> None:
     try:
         conn.execute(UPSERT_SETTING_SQL, (key, json.dumps(value)))
         conn.commit()
-    except Exception:
-        # swallow DB errors to preserve existing behaviour
+    except (sqlite3.Error, TypeError, ValueError):
+        logger.warning("Failed to persist app setting '%s'", key, exc_info=True)
         return
 
 
@@ -861,6 +865,10 @@ def refresh_persisted_activity_metrics(
                     (SELECT a.max_hr FROM activity a WHERE a.activity_id = activity_metrics.activity_id),
                     hr_max_est_bpm
                 ),
+                trimp = COALESCE(
+                    trimp,
+                    (SELECT a.training_stress_score FROM activity a WHERE a.activity_id = activity_metrics.activity_id)
+                ),
                 tss = COALESCE(
                     (SELECT a.training_stress_score FROM activity a WHERE a.activity_id = activity_metrics.activity_id),
                     tss
@@ -953,12 +961,16 @@ def refresh_persisted_activity_metrics(
         set_setting(conn, ACTIVITY_METRICS_LAST_REFRESH_SUMMARY_KEY, summary)
         conn.commit()
         return summary
-    except Exception:
+    except (sqlite3.Error, TypeError, ValueError):
         summary["errors"] += 1
+        logger.exception("Failed to refresh persisted activity metrics")
         try:
             set_setting(conn, ACTIVITY_METRICS_LAST_REFRESH_SUMMARY_KEY, summary)
-        except Exception:
-            pass
+        except (sqlite3.Error, TypeError, ValueError):
+            logger.warning(
+                "Failed to persist activity metrics refresh error summary",
+                exc_info=True,
+            )
         return summary
 
 
@@ -984,7 +996,8 @@ def get_activity_metrics_diagnostics(conn) -> dict[str, Any]:
                 conn, ACTIVITY_METRICS_LAST_REFRESH_SUMMARY_KEY, {}
             ),
         }
-    except Exception:
+    except sqlite3.Error:
+        logger.exception("Failed to collect activity metrics diagnostics")
         return {
             "total_activities": 0,
             "total_metrics_rows": 0,
