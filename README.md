@@ -4,6 +4,8 @@ A local Garmin analytics app built on Streamlit + SQLite.
 
 The app syncs Garmin data using `garmin-givemydata`, applies app-specific schema extensions, and provides pages for activity analysis, charts, and training plan generation.
 
+> Garmin Connect download support in this project is powered by the open-source [`garmin-givemydata`](https://github.com/pe-st/garmin-givemydata) project, which is used to authenticate and download activity FIT files/data for local analysis. Garmin is not affiliated with or endorsing this application.
+
 ## Current Architecture
 
 - Data sync source: `garmin-givemydata`

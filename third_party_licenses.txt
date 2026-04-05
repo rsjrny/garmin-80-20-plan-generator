@@ -12,6 +12,7 @@ SUMMARY OF KEY DEPENDENCIES
 - fitparse — MIT License
 - gpxpy — Apache License 2.0
 - garminexport — Apache License 2.0
+- garmin-givemydata — open-source Garmin Connect download utility used by this app to fetch FIT/activity data (see its repository and bundled license for details)
 - requests — Apache License 2.0
 - pyinstaller runtime — GPL with exception (bootloader exception permits non-GPL use; see PyInstaller license)
 
