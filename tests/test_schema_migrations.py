@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import sqlite3
 
-from garmin_data_hub.db.migrate import CURRENT_SCHEMA_VERSION, apply_schema, get_current_schema_version
+from garmin_data_hub.db.migrate import (
+    CURRENT_SCHEMA_VERSION,
+    apply_schema,
+    get_current_schema_version,
+)
 from garmin_data_hub.paths import schema_sql_path
 
 
@@ -93,14 +97,18 @@ def test_apply_schema_upgrades_legacy_tables(tmp_path):
         apply_schema(conn, schema_sql_path())
 
         athlete_cols = {
-            row[1] for row in conn.execute("PRAGMA table_info(athlete_profile)").fetchall()
+            row[1]
+            for row in conn.execute("PRAGMA table_info(athlete_profile)").fetchall()
         }
         assert {"ftp_calc", "ftp_override", "resting_hr"}.issubset(athlete_cols)
 
         metric_cols = {
-            row[1] for row in conn.execute("PRAGMA table_info(activity_metrics)").fetchall()
+            row[1]
+            for row in conn.execute("PRAGMA table_info(activity_metrics)").fetchall()
         }
-        assert {"power_zone_7_s", "performance_condition_end", "avg_power_w"}.issubset(metric_cols)
+        assert {"power_zone_7_s", "performance_condition_end", "avg_power_w"}.issubset(
+            metric_cols
+        )
 
         settings_cols = {
             row[1] for row in conn.execute("PRAGMA table_info(app_settings)").fetchall()
@@ -113,7 +121,9 @@ def test_apply_schema_upgrades_legacy_tables(tmp_path):
         assert "ON DELETE CASCADE" not in ddl.upper()
 
         apply_schema(conn, schema_sql_path())
-        migration_rows = conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
+        migration_rows = conn.execute(
+            "SELECT COUNT(*) FROM schema_migrations"
+        ).fetchone()[0]
         assert migration_rows == CURRENT_SCHEMA_VERSION
     finally:
         conn.close()

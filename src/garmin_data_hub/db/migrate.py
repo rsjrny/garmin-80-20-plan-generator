@@ -22,7 +22,9 @@ def _ensure_schema_migrations_table(conn: sqlite3.Connection) -> None:
 
 def _get_current_schema_version(conn: sqlite3.Connection) -> int:
     _ensure_schema_migrations_table(conn)
-    row = conn.execute("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").fetchone()
+    row = conn.execute(
+        "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
+    ).fetchone()
     return int(row[0] or 0) if row else 0
 
 
@@ -65,7 +67,9 @@ def _add_column_if_missing(
     conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_sql}")
 
 
-def _migration_1_apply_baseline_schema(conn: sqlite3.Connection, schema_path: Path) -> None:
+def _migration_1_apply_baseline_schema(
+    conn: sqlite3.Connection, schema_path: Path
+) -> None:
     conn.executescript(schema_path.read_text(encoding="utf-8"))
 
 
@@ -233,10 +237,26 @@ def apply_schema(conn: sqlite3.Connection, schema_path: Path) -> None:
     _fix_trackpoint_cascade(conn)
 
     migrations = [
-        (1, "baseline app schema", lambda: _migration_1_apply_baseline_schema(conn, schema_path)),
-        (2, "upgrade athlete_profile columns", lambda: _migration_2_upgrade_athlete_profile(conn)),
-        (3, "upgrade app-owned table columns", lambda: _migration_3_upgrade_app_tables(conn)),
-        (4, "fix activity_trackpoint cascade behavior", lambda: _fix_trackpoint_cascade(conn)),
+        (
+            1,
+            "baseline app schema",
+            lambda: _migration_1_apply_baseline_schema(conn, schema_path),
+        ),
+        (
+            2,
+            "upgrade athlete_profile columns",
+            lambda: _migration_2_upgrade_athlete_profile(conn),
+        ),
+        (
+            3,
+            "upgrade app-owned table columns",
+            lambda: _migration_3_upgrade_app_tables(conn),
+        ),
+        (
+            4,
+            "fix activity_trackpoint cascade behavior",
+            lambda: _fix_trackpoint_cascade(conn),
+        ),
     ]
 
     current_version = _get_current_schema_version(conn)

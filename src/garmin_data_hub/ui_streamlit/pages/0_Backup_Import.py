@@ -104,9 +104,7 @@ status_cols[0].metric(
     "Last Sync Status", str(last_sync.get("status", "not run")).title()
 )
 status_cols[1].metric("Last Exit Code", str(last_sync.get("exit_code", "—")))
-status_cols[2].metric(
-    "Last Sync Time", str(last_sync.get("completed_at_utc", "—"))
-)
+status_cols[2].metric("Last Sync Time", str(last_sync.get("completed_at_utc", "—")))
 
 repair_disabled = st.session_state.get("proc") is not None
 if st.button(
@@ -256,7 +254,9 @@ if proc is not None:
     if elapsed is not None:
         label += f" • {elapsed:0.0f}s"
     prog_placeholder.progress(pct, text=label)
-    st.info("Sync is running. Live output is shown below and saved to the local sync log.")
+    st.info(
+        "Sync is running. Live output is shown below and saved to the local sync log."
+    )
     st.code(st.session_state.get("log", ""))
     if st.button("Refresh status", key="refresh_sync_status"):
         st.rerun()
@@ -273,7 +273,9 @@ if proc is not None:
 
         if return_code == 0:
             st.cache_data.clear()
-            st.success("Sync completed successfully. Cached activity views were refreshed.")
+            st.success(
+                "Sync completed successfully. Cached activity views were refreshed."
+            )
         else:
             st.error(f"Sync failed with exit code {return_code}. Review the log below.")
 

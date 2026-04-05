@@ -175,8 +175,12 @@ def load_plan_settings(db_path: Path) -> dict[str, Any]:
             "plan_long_run_day": db_queries.get_setting(
                 conn, "plan_long_run_day", "Saturday"
             ),
-            "plan_event_date": db_queries.get_setting(conn, "plan_event_date", today_iso),
-            "plan_start_date": db_queries.get_setting(conn, "plan_start_date", today_iso),
+            "plan_event_date": db_queries.get_setting(
+                conn, "plan_event_date", today_iso
+            ),
+            "plan_start_date": db_queries.get_setting(
+                conn, "plan_start_date", today_iso
+            ),
             "plan_out_dir": db_queries.get_setting(
                 conn, "plan_out_dir", str(Path.home() / "Documents")
             ),

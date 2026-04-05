@@ -67,7 +67,9 @@ def _calculate_lthr_from_efforts(
             return int(round(hrmax * 0.86))
 
     except (sqlite3.Error, TypeError, ValueError):
-        logger.warning("Could not calculate LTHR from recent threshold efforts", exc_info=True)
+        logger.warning(
+            "Could not calculate LTHR from recent threshold efforts", exc_info=True
+        )
         return None
 
 
@@ -89,9 +91,7 @@ def update_athlete_profile(conn: sqlite3.Connection):
         if hrmax_calc:
             db_queries.ensure_athlete_profile_table(conn)
             db_queries.set_calculated_metrics(conn, hrmax_calc, lthr_calc)
-            message = (
-                f"Athlete profile updated. HRMax: {hrmax_calc} bpm, LTHR: {lthr_calc} bpm"
-            )
+            message = f"Athlete profile updated. HRMax: {hrmax_calc} bpm, LTHR: {lthr_calc} bpm"
             logger.info(message)
             print(message)
         else:

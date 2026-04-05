@@ -19,7 +19,9 @@ def get_setting(conn, key: str, default: Any):
         row = conn.execute(GET_SETTING_SQL, (key,)).fetchone()
         return json.loads(row[0]) if row and row[0] is not None else default
     except (sqlite3.Error, TypeError, ValueError, json.JSONDecodeError):
-        logger.warning("Failed to load app setting '%s'; using default", key, exc_info=True)
+        logger.warning(
+            "Failed to load app setting '%s'; using default", key, exc_info=True
+        )
         return default
 
 
@@ -595,9 +597,7 @@ def get_activities_dataframe(
                 COALESCE(tzm.zone_4_s, am.zone_4_s, 0) AS zone_4_s,
                 COALESCE(tzm.zone_5_s, am.zone_5_s, 0) AS zone_5_s
             """
-            temp_join_sql = (
-                "LEFT JOIN temp_activity_zone_metrics tzm ON tzm.activity_id = a.activity_id"
-            )
+            temp_join_sql = "LEFT JOIN temp_activity_zone_metrics tzm ON tzm.activity_id = a.activity_id"
         else:
             zone_select_sql = """
                 COALESCE(am.zone_1_s, 0) AS zone_1_s,
@@ -878,7 +878,9 @@ def refresh_persisted_activity_metrics(
             tuple(candidate_ids),
         )
 
-        effective_lthr = int(lthr) if lthr and int(lthr) > 0 else get_effective_lthr(conn)
+        effective_lthr = (
+            int(lthr) if lthr and int(lthr) > 0 else get_effective_lthr(conn)
+        )
         if effective_lthr:
             z1_upper = float(effective_lthr) * 0.50
             z2_upper = float(effective_lthr) * 0.70
@@ -984,14 +986,16 @@ def get_activity_metrics_diagnostics(conn) -> dict[str, Any]:
         missing_rows = list_activities_needing_metrics(conn)
 
         return {
-            "total_activities": int(total_activities_row[0] or 0)
-            if total_activities_row
-            else 0,
-            "total_metrics_rows": int(total_metrics_row[0] or 0)
-            if total_metrics_row
-            else 0,
+            "total_activities": (
+                int(total_activities_row[0] or 0) if total_activities_row else 0
+            ),
+            "total_metrics_rows": (
+                int(total_metrics_row[0] or 0) if total_metrics_row else 0
+            ),
             "missing_metrics_count": int(len(missing_rows)),
-            "last_refresh_utc": get_setting(conn, ACTIVITY_METRICS_LAST_REFRESH_KEY, None),
+            "last_refresh_utc": get_setting(
+                conn, ACTIVITY_METRICS_LAST_REFRESH_KEY, None
+            ),
             "last_refresh_summary": get_setting(
                 conn, ACTIVITY_METRICS_LAST_REFRESH_SUMMARY_KEY, {}
             ),

@@ -646,7 +646,7 @@ with reset_cols[0]:
             st.error(f"Reset failed: {e}")
 
 available_charts = list(CHART_FUNCS.keys())
-default_charts = get_setting(
+default_charts = queries.get_setting(
     conn,
     "default_charts",
     [
@@ -690,7 +690,7 @@ selected_charts_ordered = [c for c in default_charts if c in selected_charts] + 
 selected_charts = selected_charts_ordered
 
 # Save the current selection for next time
-set_setting(conn, "default_charts", selected_charts)
+queries.set_setting(conn, "default_charts", selected_charts)
 
 # --- Charts Rendering (Grid Layout) ---
 

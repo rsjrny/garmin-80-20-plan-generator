@@ -305,7 +305,9 @@ def get_activity_stats(db_path: str, db_mtime: float) -> dict:
 
 
 @st.cache_data(show_spinner=False)
-def get_recent_activities_data(db_path: str, db_mtime: float, limit: int = 500) -> list[dict]:
+def get_recent_activities_data(
+    db_path: str, db_mtime: float, limit: int = 500
+) -> list[dict]:
     conn = connect_sqlite(Path(db_path))
     try:
         return _normalize_rows(list_recent_activities(conn, limit=limit))
