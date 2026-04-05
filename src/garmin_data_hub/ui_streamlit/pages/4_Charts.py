@@ -1,20 +1,15 @@
 from __future__ import annotations
+import os
 import streamlit as st
 import pandas as pd
 import altair as alt
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
-import json
 
 from garmin_data_hub.paths import default_db_path, ensure_app_dirs
 from garmin_data_hub.db.sqlite import connect_sqlite
 from garmin_data_hub.db.migrate import apply_schema
-from garmin_data_hub.analytics.training_load import get_daily_tss, calculate_ctl_atl_tsb
-from garmin_data_hub.ui_streamlit.sidebar import (
-    render_sidebar,
-    get_setting,
-    set_setting,
-)
+from garmin_data_hub.ui_streamlit.sidebar import render_sidebar
 from garmin_data_hub.db import queries
 
 st.set_page_config(page_title="Charts", layout="wide")
@@ -29,28 +24,44 @@ if "charts_speed_mode" not in st.session_state:
 
 
 # --- Cached Query Functions ---
-@st.cache_data(ttl=3600)
-def get_sports_list(start_ts_iso: str) -> list[str]:
-    """Fetch distinct sports for the given time range (cached for 1 hour)."""
-    conn = connect_sqlite(default_db_path())
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_sports_list(db_path: str, db_mtime: float, start_ts_iso: str) -> list[str]:
+    """Fetch distinct sports for the given time range, invalidating when the DB changes."""
+    conn = connect_sqlite(Path(db_path))
     try:
         return queries.get_sports_list(conn, start_ts_iso)
     finally:
         conn.close()
 
 
-@st.cache_data(ttl=3600)
-def get_activities_dataframe(start_ts_iso: str, sports_list: tuple) -> pd.DataFrame:
-    """Fetch activities for the given filters (cached for 1 hour)."""
-    conn = connect_sqlite(default_db_path())
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_activities_dataframe(
+    db_path: str,
+    db_mtime: float,
+    start_ts_iso: str,
+    sports_list: tuple,
+) -> pd.DataFrame:
+    """Fetch activities for the given filters, invalidating when the DB changes."""
+    conn = connect_sqlite(Path(db_path))
     try:
         return queries.get_activities_dataframe(conn, start_ts_iso, sports_list)
     finally:
         conn.close()
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_plan_date_range(db_path: str, db_mtime: float) -> tuple[str | None, str | None]:
+    """Fetch the cached current planned-workout date range."""
+    conn = connect_sqlite(Path(db_path))
+    try:
+        return queries.get_planned_workout_date_range(conn)
+    finally:
+        conn.close()
+
+
 ensure_app_dirs()
 db_path = default_db_path()
+db_mtime = os.path.getmtime(db_path) if db_path.exists() else 0.0
 
 # Connect to DB (create fresh connection for this session)
 conn = connect_sqlite(db_path)
@@ -97,8 +108,8 @@ elif time_range == "Last 90 Days":
 elif time_range == "Last Year":
     start_date = now - timedelta(days=365)
 elif time_range == "Current Plan":
-    # Fetch plan start/end date via centralized helper
-    min_date, max_date = queries.get_planned_workout_date_range(conn)
+    # Fetch plan start/end date via cached helper
+    min_date, max_date = get_plan_date_range(str(db_path), db_mtime)
     if min_date:
         try:
             start_date = datetime.fromisoformat(min_date).replace(tzinfo=timezone.utc)
@@ -120,7 +131,7 @@ start_ts_iso = start_date.isoformat()
 
 with col2:
     # Fetch available sports for filtering, RESTRICTED by time range (cached)
-    all_sports = get_sports_list(start_ts_iso)
+    all_sports = get_sports_list(str(db_path), db_mtime, start_ts_iso)
 
     # If no sports found (e.g. empty range), handle gracefully
     if not all_sports:
@@ -135,7 +146,10 @@ with col2:
 # We need activity summary data joined with activity info
 # Fetch using cached function (with sports as tuple for cache key)
 df = get_activities_dataframe(
-    start_ts_iso, tuple(selected_sports) if selected_sports else ()
+    str(db_path),
+    db_mtime,
+    start_ts_iso,
+    tuple(selected_sports) if selected_sports else (),
 )
 
 if df.empty:
