@@ -269,6 +269,13 @@ def save_activity_preferences(conn, prefs):
         st.error(f"Failed to save preferences: {e}")
 
 
+def _normalize_rows(rows) -> list[dict]:
+    normalized = []
+    for row in rows:
+        normalized.append(dict(row) if not isinstance(row, dict) else row)
+    return normalized
+
+
 # Initialize session state for selections
 if "activities_selected_activity" not in st.session_state:
     st.session_state.activities_selected_activity = None
@@ -290,9 +297,40 @@ import time
 
 @st.cache_data(show_spinner=False)
 def get_activity_stats(db_path: str, db_mtime: float) -> dict:
-    conn = connect_sqlite(db_path)
+    conn = connect_sqlite(Path(db_path))
     try:
         return queries.get_activity_stats(conn)
+    finally:
+        conn.close()
+
+
+@st.cache_data(show_spinner=False)
+def get_recent_activities_data(db_path: str, db_mtime: float, limit: int = 500) -> list[dict]:
+    conn = connect_sqlite(Path(db_path))
+    try:
+        return _normalize_rows(list_recent_activities(conn, limit=limit))
+    finally:
+        conn.close()
+
+
+@st.cache_data(show_spinner=False)
+def get_cached_athlete_profile(db_path: str, db_mtime: float) -> dict | None:
+    conn = connect_sqlite(Path(db_path))
+    try:
+        return queries.get_athlete_profile(conn)
+    finally:
+        conn.close()
+
+
+@st.cache_data(show_spinner=False)
+def get_activity_detail_frames(
+    db_path: str, db_mtime: float, activity_id: int
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    conn = connect_sqlite(Path(db_path))
+    try:
+        records_df = get_activity_records(conn, activity_id)
+        trackpoints_df = get_activity_trackpoints(conn, activity_id)
+        return records_df.copy(), trackpoints_df.copy()
     finally:
         conn.close()
 
@@ -304,7 +342,7 @@ def get_activity_track_counts(
     """Return split count, trackpoint count, and GPS availability per activity."""
     if not activity_ids:
         return {}
-    conn = connect_sqlite(db_path)
+    conn = connect_sqlite(Path(db_path))
     try:
         placeholders = ",".join("?" for _ in activity_ids)
         # Split counts from activity_splits
@@ -375,7 +413,7 @@ st.subheader("Database Overview")
 col1, col2, col3, col4 = st.columns(4)
 
 db_mtime = os.path.getmtime(db_path) if os.path.exists(db_path) else time.time()
-stats = get_activity_stats(db_path, db_mtime)
+stats = get_activity_stats(str(db_path), db_mtime)
 total_activities = stats["total_activities"]
 total_distance_m = stats["total_distance_m"]
 total_duration_s = stats["total_duration_s"]
@@ -411,7 +449,7 @@ st.divider()
 
 # --- Recent Activities List ---
 st.subheader("Recent Activities")
-rows = list_recent_activities(conn, limit=500)
+rows = get_recent_activities_data(str(db_path), db_mtime, limit=500)
 
 df = pd.DataFrame(rows)
 if df.empty:
@@ -438,10 +476,10 @@ else:
 
     base_activities = [r for r in rows if r["distance_km"] is not None]
     activity_ids = tuple(r["activity_id"] for r in base_activities)
-    track_counts = get_activity_track_counts(db_path, db_mtime, activity_ids)
+    track_counts = get_activity_track_counts(str(db_path), db_mtime, activity_ids)
 
     # Load athlete profile for HR zone calculations
-    athlete_profile = queries.get_athlete_profile(conn)
+    athlete_profile = get_cached_athlete_profile(str(db_path), db_mtime)
     hrmax = athlete_profile.get("hrmax_calc") if athlete_profile else None
     lthr = athlete_profile.get("lthr_calc") if athlete_profile else None
 
@@ -516,8 +554,9 @@ else:
             )
 
         # Fetch records
-        records_df = get_activity_records(conn, activity_id)
-        trackpoints_df = get_activity_trackpoints(conn, activity_id)
+        records_df, trackpoints_df = get_activity_detail_frames(
+            str(db_path), db_mtime, activity_id
+        )
         selected_row = next((r for r in rows if r["activity_id"] == activity_id), None)
 
         # --- Map ---
