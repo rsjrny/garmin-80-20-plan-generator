@@ -67,10 +67,25 @@ def _add_column_if_missing(
     conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_sql}")
 
 
+def _load_schema_sql(schema_path: Path | None) -> str:
+    if schema_path is not None:
+        candidate = Path(schema_path)
+        if candidate.exists():
+            return candidate.read_text(encoding="utf-8")
+        logger.warning(
+            "Schema path %s was not found; falling back to packaged schema resource",
+            candidate,
+        )
+
+    from garmin_data_hub.paths import read_schema_sql
+
+    return read_schema_sql()
+
+
 def _migration_1_apply_baseline_schema(
-    conn: sqlite3.Connection, schema_path: Path
+    conn: sqlite3.Connection, schema_sql: str
 ) -> None:
-    conn.executescript(schema_path.read_text(encoding="utf-8"))
+    conn.executescript(schema_sql)
 
 
 def _migration_2_upgrade_athlete_profile(conn: sqlite3.Connection) -> None:
@@ -228,9 +243,10 @@ def _fix_trackpoint_cascade(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def apply_schema(conn: sqlite3.Connection, schema_path: Path) -> None:
+def apply_schema(conn: sqlite3.Connection, schema_path: Path | None = None) -> None:
     """Apply app schema and run one-time versioned migrations for older databases."""
     _ensure_schema_migrations_table(conn)
+    schema_sql = _load_schema_sql(schema_path)
 
     # Preflight older trackpoint tables before replaying schema.sql, otherwise
     # legacy `ON DELETE CASCADE` DDL can make the later index creation fail.
@@ -240,7 +256,7 @@ def apply_schema(conn: sqlite3.Connection, schema_path: Path) -> None:
         (
             1,
             "baseline app schema",
-            lambda: _migration_1_apply_baseline_schema(conn, schema_path),
+            lambda: _migration_1_apply_baseline_schema(conn, schema_sql),
         ),
         (
             2,
@@ -269,5 +285,5 @@ def apply_schema(conn: sqlite3.Connection, schema_path: Path) -> None:
         logger.info("Applied schema migration v%s: %s", version, name)
 
     # Keep baseline DDL idempotent so new installs and reruns remain safe.
-    conn.executescript(schema_path.read_text(encoding="utf-8"))
+    conn.executescript(schema_sql)
     conn.commit()

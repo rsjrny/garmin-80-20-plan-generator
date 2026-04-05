@@ -45,7 +45,8 @@ function Update-PyProjectVersion {
         return
     }
 
-    Set-Content -Path $FilePath -Value $updated -Encoding UTF8
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($FilePath, $updated, $utf8NoBom)
     Write-Host "Updated pyproject version to $NewVersion" -ForegroundColor Green
 }
 
@@ -85,6 +86,7 @@ $pyinstallerArgsStreamlit = @(
     "--workpath", (Join-Path $StreamlitBuildDir "build"),
     "--specpath", $StreamlitBuildDir,
     "--add-data", ((Join-Path $ProjectRoot 'src\garmin_data_hub\ui_streamlit') + ";garmin_data_hub/ui_streamlit"),
+    "--add-data", ((Join-Path $ProjectRoot 'src\garmin_data_hub\db\schema.sql') + ";garmin_data_hub/db"),
     "--collect-all", "streamlit",
     "--collect-all", "garmin_data_hub",
     "--hidden-import", "pandas",
@@ -125,6 +127,7 @@ $pyinstallerArgsCli = @(
     "--contents-directory", ".",
     "--workpath", (Join-Path $CliBuildDir "build"),
     "--specpath", $CliBuildDir,
+    "--add-data", ((Join-Path $ProjectRoot 'src\garmin_data_hub\db\schema.sql') + ";garmin_data_hub/db"),
     $CliBackupFile
 )
 

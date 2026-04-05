@@ -127,3 +127,25 @@ def test_apply_schema_upgrades_legacy_tables(tmp_path):
         assert migration_rows == CURRENT_SCHEMA_VERSION
     finally:
         conn.close()
+
+
+def test_apply_schema_falls_back_when_given_path_is_missing(tmp_path):
+    db_path = tmp_path / "missing_schema_path.db"
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "CREATE TABLE activity (activity_id INTEGER PRIMARY KEY, start_time_gmt TEXT)"
+        )
+
+        apply_schema(conn, tmp_path / "does_not_exist.sql")
+
+        assert get_current_schema_version(conn) == CURRENT_SCHEMA_VERSION
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        assert "activity_metrics" in tables
+    finally:
+        conn.close()

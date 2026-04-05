@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import sys
+from importlib import resources
 from pathlib import Path
 
 APP_NAME = "GarminDataHub"
@@ -46,5 +48,54 @@ def ensure_app_dirs() -> None:
     default_db_path().parent.mkdir(parents=True, exist_ok=True)
 
 
+def _schema_sql_candidates() -> list[Path]:
+    candidates = [Path(__file__).resolve().parent / "db" / "schema.sql"]
+
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        candidates.extend(
+            [
+                exe_dir / "garmin_data_hub" / "db" / "schema.sql",
+                exe_dir / "_internal" / "garmin_data_hub" / "db" / "schema.sql",
+            ]
+        )
+
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(Path(meipass) / "garmin_data_hub" / "db" / "schema.sql")
+
+    deduped: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        deduped.append(candidate)
+        seen.add(candidate)
+    return deduped
+
+
 def schema_sql_path() -> Path:
-    return Path(__file__).resolve().parent / "db" / "schema.sql"
+    for candidate in _schema_sql_candidates():
+        if candidate.exists():
+            return candidate
+    return _schema_sql_candidates()[0]
+
+
+def read_schema_sql() -> str:
+    try:
+        return (
+            resources.files("garmin_data_hub.db")
+            .joinpath("schema.sql")
+            .read_text(encoding="utf-8")
+        )
+    except (AttributeError, FileNotFoundError, ModuleNotFoundError, OSError):
+        pass
+
+    for candidate in _schema_sql_candidates():
+        if candidate.exists():
+            return candidate.read_text(encoding="utf-8")
+
+    searched = "\n".join(f" - {path}" for path in _schema_sql_candidates())
+    raise FileNotFoundError(
+        "Could not locate garmin_data_hub db schema.sql. Searched:\n" + searched
+    )

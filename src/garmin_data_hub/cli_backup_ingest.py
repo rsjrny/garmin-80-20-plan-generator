@@ -80,6 +80,23 @@ def _find_changed_fit_archives(
     return changed
 
 
+def _select_trackpoint_archive_paths(
+    changed_fit_archives: list[Path],
+    rebuild_trackpoints: bool,
+) -> list[Path] | None:
+    """Choose which FIT archives to scan for trackpoint ingestion.
+
+    When no new ZIPs were downloaded, return ``None`` so the ingestion step scans
+    the existing FIT cache and backfills any activities that are still missing
+    trackpoints from an earlier failed run.
+    """
+    if rebuild_trackpoints:
+        return None
+    if changed_fit_archives:
+        return changed_fit_archives
+    return None
+
+
 def _find_givemydata_cmd() -> list[str] | None:
     """Locate the garmin-givemydata executable."""
     import shutil
@@ -208,18 +225,27 @@ def run_sync(
             print("[SKIP] Trackpoint ingestion disabled (--skip-trackpoints)")
         else:
             changed_fit_archives = _find_changed_fit_archives(fit_dir, fit_snapshot)
+            archive_paths = _select_trackpoint_archive_paths(
+                changed_fit_archives,
+                rebuild_trackpoints,
+            )
             if changed_fit_archives:
                 print(
                     f"[trackpoints] checking {len(changed_fit_archives)} new/updated FIT archive(s)"
                 )
-            elif not rebuild_trackpoints:
-                print("[SKIP] No new FIT archives downloaded")
+            elif rebuild_trackpoints:
+                print("[trackpoints] rebuilding from all downloaded FIT archives")
+            else:
+                print(
+                    "[trackpoints] no new FIT archives downloaded; "
+                    "scanning existing FIT files for activities missing trackpoints"
+                )
             trackpoint_summary = ingest_trackpoints_from_fit_archives(
                 conn,
                 fit_dir,
                 replace_existing=rebuild_trackpoints,
                 max_activities=trackpoints_max,
-                archive_paths=None if rebuild_trackpoints else changed_fit_archives,
+                archive_paths=archive_paths,
             )
             print(
                 "[OK] Trackpoints: "
