@@ -3,12 +3,12 @@ from __future__ import annotations
 import json
 import logging
 import re
-import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from garmin_data_hub.db import queries as db_queries
+from garmin_data_hub.db.sqlite import connect_sqlite
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +73,7 @@ def save_generated_plan(
         }
     )
 
-    conn = sqlite3.connect(str(db_path))
+    conn = connect_sqlite(db_path)
     try:
         db_queries.set_setting(conn, "last_generated_plan", plan_blob)
 
@@ -134,7 +134,7 @@ def save_generated_plan(
 
 def load_generated_plan(db_path: Path):
     """Load the most recently generated plan from the database."""
-    conn = sqlite3.connect(str(db_path))
+    conn = connect_sqlite(db_path)
     try:
         blob = db_queries.get_setting(conn, "last_generated_plan", "")
     finally:
@@ -154,3 +154,44 @@ def load_generated_plan(db_path: Path):
     except (TypeError, json.JSONDecodeError):
         logger.exception("Failed to decode persisted generated plan from %s", db_path)
         return None, None, None, None
+
+
+def load_plan_settings(db_path: Path) -> dict[str, Any]:
+    """Load persisted Build Plan UI settings in one round-trip."""
+    conn = connect_sqlite(db_path)
+    try:
+        athlete_name = db_queries.get_setting(conn, "plan_athlete_name", "Runner")
+        distance = db_queries.get_setting(conn, "plan_distance", "50K")
+        today_iso = datetime.now(timezone.utc).date().isoformat()
+        return {
+            "plan_athlete_name": athlete_name,
+            "plan_age": db_queries.get_setting(conn, "plan_age", 50),
+            "plan_run_days": db_queries.get_setting(conn, "plan_run_days", 5),
+            "plan_sodium": db_queries.get_setting(conn, "plan_sodium", 900),
+            "plan_distance": distance,
+            "plan_event_name": db_queries.get_setting(
+                conn, "plan_event_name", f"{distance} Training Plan"
+            ),
+            "plan_long_run_day": db_queries.get_setting(
+                conn, "plan_long_run_day", "Saturday"
+            ),
+            "plan_event_date": db_queries.get_setting(conn, "plan_event_date", today_iso),
+            "plan_start_date": db_queries.get_setting(conn, "plan_start_date", today_iso),
+            "plan_out_dir": db_queries.get_setting(
+                conn, "plan_out_dir", str(Path.home() / "Documents")
+            ),
+            "plan_out_name": db_queries.get_setting(
+                conn, "plan_out_name", f"{athlete_name}_master_workbook.xlsx"
+            ),
+        }
+    finally:
+        conn.close()
+
+
+def save_plan_setting(db_path: Path, key: str, value: Any) -> None:
+    """Persist a single Build Plan UI setting."""
+    conn = connect_sqlite(db_path)
+    try:
+        db_queries.set_setting(conn, key, value)
+    finally:
+        conn.close()

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import sqlite3
+import os
 from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
 import importlib
@@ -12,7 +12,6 @@ from garmin_data_hub.paths import ensure_app_dirs, default_db_path, schema_sql_p
 from garmin_data_hub.db.sqlite import connect_sqlite
 from garmin_data_hub.db.migrate import apply_schema
 from garmin_data_hub.ui_streamlit.sidebar import render_sidebar
-from garmin_data_hub.db import queries as db_queries
 from garmin_data_hub.services.athlete_metrics_service import (
     calculate_metrics_from_db_sources,
     clear_override_metrics,
@@ -23,7 +22,9 @@ from garmin_data_hub.services.athlete_metrics_service import (
 )
 from garmin_data_hub.services.plan_persistence import (
     load_generated_plan,
+    load_plan_settings,
     save_generated_plan,
+    save_plan_setting,
 )
 
 # Your existing export function (already in your app)
@@ -65,6 +66,16 @@ def init_db(db_path: Path) -> None:
     conn.close()
 
 
+@st.cache_data(show_spinner=False)
+def get_cached_plan_settings(db_path_str: str, db_mtime: float) -> dict:
+    return load_plan_settings(Path(db_path_str))
+
+
+@st.cache_data(show_spinner=False)
+def get_cached_generated_plan(db_path_str: str, db_mtime: float):
+    return load_generated_plan(Path(db_path_str))
+
+
 # ---------------------------
 # UI
 # ---------------------------
@@ -80,12 +91,13 @@ st.session_state.last_build_plan_visit = current_visit
 
 ensure_app_dirs()
 db_path = default_db_path()
+db_mtime = os.path.getmtime(db_path) if db_path.exists() else 0.0
 
 # Always ensure schema exists so pages don't die on missing tables
 init_db(db_path)
 
 # Render Sidebar
-conn = sqlite3.connect(str(db_path))
+conn = connect_sqlite(db_path)
 unit_system = render_sidebar(conn)
 conn.close()
 
@@ -207,40 +219,27 @@ try:
     st.divider()
     st.subheader("Plan Inputs")
     submitted = st.button("Generate Plan / Save Workbook", type="primary")
-    # Load persisted settings
-    conn = sqlite3.connect(str(db_path))
-    s_name = db_queries.get_setting(conn, "plan_athlete_name", "Runner")
-    s_age = db_queries.get_setting(conn, "plan_age", 50)
-    s_run_days = db_queries.get_setting(conn, "plan_run_days", 5)
-    s_sodium = db_queries.get_setting(conn, "plan_sodium", 900)
-    s_distance = db_queries.get_setting(conn, "plan_distance", "50K")
-    s_event_name = db_queries.get_setting(
-        conn, "plan_event_name", f"{s_distance} Training Plan"
-    )
-    s_long_run_day = db_queries.get_setting(conn, "plan_long_run_day", "Saturday")
+    settings = get_cached_plan_settings(str(db_path), db_mtime)
+    s_name = settings["plan_athlete_name"]
+    s_age = settings["plan_age"]
+    s_run_days = settings["plan_run_days"]
+    s_sodium = settings["plan_sodium"]
+    s_distance = settings["plan_distance"]
+    s_event_name = settings["plan_event_name"]
+    s_long_run_day = settings["plan_long_run_day"]
 
     today = date.today()
 
     def parse_date(s, default):
         try:
-            return date.fromisoformat(s)
-        except:
+            return date.fromisoformat(str(s))
+        except (TypeError, ValueError):
             return default
 
-    s_event_date = parse_date(
-        db_queries.get_setting(conn, "plan_event_date", today.isoformat()), today
-    )
-    s_start_date = parse_date(
-        db_queries.get_setting(conn, "plan_start_date", today.isoformat()), today
-    )
-
-    s_out_dir = db_queries.get_setting(
-        conn, "plan_out_dir", str(Path.home() / "Documents")
-    )
-    s_out_name = db_queries.get_setting(
-        conn, "plan_out_name", f"{s_name}_master_workbook.xlsx"
-    )
-    conn.close()
+    s_event_date = parse_date(settings["plan_event_date"], today)
+    s_start_date = parse_date(settings["plan_start_date"], today)
+    s_out_dir = settings["plan_out_dir"]
+    s_out_name = settings["plan_out_name"]
 
     # No form, so we can save on change
     c1, c2, c3 = st.columns(3)
@@ -248,9 +247,7 @@ try:
     with c1:
         athlete_name = st.text_input("Runner name", value=s_name)
         if athlete_name != s_name:
-            conn = sqlite3.connect(str(db_path))
-            db_queries.set_setting(conn, "plan_athlete_name", athlete_name)
-            conn.close()
+            save_plan_setting(db_path, "plan_athlete_name", athlete_name)
 
         age_col, long_run_col, run_days_col = st.columns([1, 2, 1])
         with age_col:
@@ -259,9 +256,7 @@ try:
                 "Age", min_value=10, max_value=100, value=s_age, step=1
             )
             if age != s_age:
-                conn = sqlite3.connect(str(db_path))
-                db_queries.set_setting(conn, "plan_age", age)
-                conn.close()
+                save_plan_setting(db_path, "plan_age", age)
         with long_run_col:
             st.write("")  # Empty space to align all fields
             day_opts = [
@@ -279,18 +274,14 @@ try:
                 day_idx = 5
             long_run_day = st.selectbox("Long run day", day_opts, index=day_idx)
             if long_run_day != s_long_run_day:
-                conn = sqlite3.connect(str(db_path))
-                db_queries.set_setting(conn, "plan_long_run_day", long_run_day)
-                conn.close()
+                save_plan_setting(db_path, "plan_long_run_day", long_run_day)
         with run_days_col:
             st.write("")  # Empty space to align all fields
             run_days = st.number_input(
                 "Days/week", min_value=3, max_value=7, value=s_run_days, step=1
             )
             if run_days != s_run_days:
-                conn = sqlite3.connect(str(db_path))
-                db_queries.set_setting(conn, "plan_run_days", run_days)
-                conn.close()
+                save_plan_setting(db_path, "plan_run_days", run_days)
 
     with c2:
         sodium = st.number_input(
@@ -301,25 +292,19 @@ try:
             step=50,
         )
         if sodium != s_sodium:
-            conn = sqlite3.connect(str(db_path))
-            db_queries.set_setting(conn, "plan_sodium", sodium)
-            conn.close()
+            save_plan_setting(db_path, "plan_sodium", sodium)
 
         date_col1, date_col2 = st.columns(2)
         with date_col1:
             st.write("")  # Empty space to align all fields
             start_date = st.date_input("Plan start date", value=s_start_date)
             if start_date != s_start_date:
-                conn = sqlite3.connect(str(db_path))
-                db_queries.set_setting(conn, "plan_start_date", start_date.isoformat())
-                conn.close()
+                save_plan_setting(db_path, "plan_start_date", start_date.isoformat())
         with date_col2:
             st.write("")  # Empty space to align all fields
             event_date = st.date_input("Race date", value=s_event_date)
             if event_date != s_event_date:
-                conn = sqlite3.connect(str(db_path))
-                db_queries.set_setting(conn, "plan_event_date", event_date.isoformat())
-                conn.close()
+                save_plan_setting(db_path, "plan_event_date", event_date.isoformat())
 
     with c3:
         dist_opts = ["5K", "10K", "HM", "MAR", "50K", "50M", "100K", "100M"]
@@ -329,28 +314,20 @@ try:
             dist_idx = 4
         distance = st.selectbox("Race type / distance", dist_opts, index=dist_idx)
         if distance != s_distance:
-            conn = sqlite3.connect(str(db_path))
-            db_queries.set_setting(conn, "plan_distance", distance)
-            conn.close()
+            save_plan_setting(db_path, "plan_distance", distance)
 
         st.write("")  # Empty space to align all fields
         event_name = st.text_input("Event name", value=s_event_name)
         if event_name != s_event_name:
-            conn = sqlite3.connect(str(db_path))
-            db_queries.set_setting(conn, "plan_event_name", event_name)
-            conn.close()
+            save_plan_setting(db_path, "plan_event_name", event_name)
 
     out_dir = st.text_input("Output folder", value=s_out_dir)
     if out_dir != s_out_dir:
-        conn = sqlite3.connect(str(db_path))
-        db_queries.set_setting(conn, "plan_out_dir", out_dir)
-        conn.close()
+        save_plan_setting(db_path, "plan_out_dir", out_dir)
 
     out_name = st.text_input("Filename", value=s_out_name)
     if out_name != s_out_name:
-        conn = sqlite3.connect(str(db_path))
-        db_queries.set_setting(conn, "plan_out_name", out_name)
-        conn.close()
+        save_plan_setting(db_path, "plan_out_name", out_name)
 
     # ===== NEW: Plan Analysis Summary =====
     st.divider()
@@ -575,7 +552,9 @@ try:
 
     else:
         # Try to load last generated plan
-        l_inputs, l_analysis, l_day_plans, l_weekly_rows = load_generated_plan(db_path)
+        l_inputs, l_analysis, l_day_plans, l_weekly_rows = get_cached_generated_plan(
+            str(db_path), db_mtime
+        )
         if l_inputs and l_analysis and l_day_plans:
             # Convert dicts back to objects/lists where needed for display logic
             # (Actually, our display logic below works mostly with dicts or simple access)
