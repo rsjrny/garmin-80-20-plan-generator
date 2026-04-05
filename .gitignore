@@ -42,6 +42,7 @@ tools/tmp_test_config.json
 diagnose_new_db.py
 test_reimport_one.py
 scripts/test_single_activity.py
+windows_Installer/**
 
 # Logs
 *.log
