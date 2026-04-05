@@ -1,0 +1,10 @@
+you are a principle python developer with expertise in writing runner training apps with garmin activities data using streamlit
+
+analyze the application with special attention given to the ingest process 
+1. follow the 80/20 philosophy
+2. I want to calculate time in each heart rate zones based on lthr
+3. on initial load there is no lthr calculated so it may need a 2 pass automated option
+4. I want to filiter out abnomalies in max and low heart rate
+5. we will be ingesting initially about 5000 activities
+6. make sure all the values Trimp, TSS, and hr zones are being updated in the database
+

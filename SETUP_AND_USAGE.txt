@@ -1,0 +1,121 @@
+Garmin Data Hub - Setup and Usage Guide
+=======================================
+
+Welcome. This package includes a GUI app and a CLI sync tool for Garmin data.
+
+What Is Included
+----------------
+- GarminDataHub.exe (GUI application)
+- cli_backup_ingest.exe (command-line sync tool)
+
+Quick Start
+-----------
+Option 1: GUI (recommended)
+1. Run GarminDataHub.exe.
+2. When the browser opens, go to Garmin Sync in the sidebar.
+3. Click Run sync and complete Garmin login in the external browser window.
+4. Review data in Activities, Charts, Build Plan, and Compliance pages.
+
+Option 2: CLI (automation/scheduled tasks)
+Basic usage:
+
+cli_backup_ingest.exe --visible --chrome
+
+Example:
+
+cli_backup_ingest.exe --visible --chrome --days 30
+
+This will:
+1. Sync Garmin activity and health data with garmin-givemydata.
+2. Apply app schema extensions.
+3. Ingest trackpoints from new/changed FIT archives.
+
+GUI Pages (Current)
+-------------------
+- Garmin Sync
+- Activities
+- Build Plan
+- Charts
+- Compliance
+- 80/20 Help
+
+Notes:
+- MCP Query exists but may be hidden depending on filename/config.
+
+CLI Reference
+-------------
+Common flags:
+- --visible
+  Shows browser login flow (recommended).
+- --chrome
+  Uses Chrome engine for login stability.
+- --days <N>
+  Limits sync range by number of days.
+- --skip-trackpoints
+  Skips FIT trackpoint extraction.
+- --rebuild-trackpoints
+  Rebuilds all trackpoints (delete/reinsert per activity).
+- --trackpoints-max <N>
+  Caps number of activities for trackpoint ingestion.
+- --db <path>
+  Custom DB path.
+
+Developer module form:
+
+python -m garmin_data_hub.cli_backup_ingest --visible --chrome --days 30
+
+Data Storage
+------------
+Default database:
+%LOCALAPPDATA%\GarminDataHub\garmin.db
+
+Optional override:
+Set GARMIN_DATA_HUB_DB to a custom database path.
+
+Operational Notes
+-----------------
+- First-time sync can take longer because historical data is downloaded.
+- Subsequent syncs are faster and process deltas.
+- MFA is handled in the browser login flow.
+- During GUI sync, live detailed logs are shown in the terminal running Streamlit.
+
+Troubleshooting
+---------------
+GUI does not start:
+- Ensure no other instance is occupying the same Streamlit port.
+- Retry by launching GarminDataHub.exe again.
+
+Sync/login issues:
+- Always run with --visible and --chrome.
+- Complete login and MFA in the external browser window.
+- Verify internet connectivity.
+
+No new trackpoints after sync:
+- Run a full rebuild once:
+  cli_backup_ingest.exe --rebuild-trackpoints
+
+No activities visible:
+- Confirm sync completed with exit code 0.
+- Confirm database path is correct (default or GARMIN_DATA_HUB_DB override).
+
+Security Notes
+--------------
+- Credentials are handled via interactive browser login.
+- Do not store session cookies or passwords in tracked files.
+- Local data remains on your machine unless you export it.
+
+System Requirements
+-------------------
+- Windows 10 or later
+- Internet connection for Garmin sync
+- Modern browser (Chrome recommended)
+
+Versioning and Build
+--------------------
+- Packaging/build script: packaging/build.ps1
+- Build script updates pyproject version from the provided build version.
+
+End
+---
+If sync hangs, stop and rerun with --visible --chrome.
+If data appears stale, run one sync with --rebuild-trackpoints.

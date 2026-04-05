@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# PyInstaller
+*.spec.bak
+*.manifest
+*.spec~
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Project specific
+*.sqlite3
+*.db
+activities/
+backup/
+release/**
+.tools/
+tools/tmp_test_config.json
+diagnose_new_db.py
+test_reimport_one.py
+scripts/test_single_activity.py
+
+# Logs
+*.log
+
+# Credentials (never commit!)
+*.env
+.env
+credentials.txt
+passwords.txt
+scripts/cookies/*.json
+scripts/downloads/
