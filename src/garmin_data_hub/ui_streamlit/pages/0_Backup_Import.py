@@ -3,6 +3,7 @@ import sys
 import os
 import subprocess
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Ensure src is in sys.path for local imports
@@ -30,6 +31,51 @@ conn.close()
 
 st.caption(f"DB: {db_path}")
 
+LAST_SYNC_STATUS_KEY = "last_sync_status"
+
+
+def _sync_log_path() -> Path:
+    log_dir = db_path.parent / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir / "garmin_sync_latest.log"
+
+
+def _read_sync_log(log_path: Path, max_chars: int = 20000) -> str:
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    return text[-max_chars:] if len(text) > max_chars else text
+
+
+def _load_last_sync_status() -> dict:
+    conn = connect_sqlite(db_path)
+    try:
+        apply_schema(conn, schema_sql_path())
+        return queries.get_setting(conn, LAST_SYNC_STATUS_KEY, {})
+    finally:
+        conn.close()
+
+
+def _save_last_sync_status(exit_code: int, status: str, log_path: Path | None) -> None:
+    conn = connect_sqlite(db_path)
+    try:
+        apply_schema(conn, schema_sql_path())
+        queries.set_setting(
+            conn,
+            LAST_SYNC_STATUS_KEY,
+            {
+                "status": status,
+                "exit_code": int(exit_code),
+                "completed_at_utc": datetime.now(timezone.utc).strftime(
+                    "%Y-%m-%dT%H:%M:%SZ"
+                ),
+                "log_path": str(log_path) if log_path else None,
+            },
+        )
+    finally:
+        conn.close()
+
 
 def _load_metrics_diagnostics() -> dict:
     conn = connect_sqlite(db_path)
@@ -51,6 +97,16 @@ if last_refresh_utc:
     st.caption(f"Last derived-metrics refresh: {last_refresh_utc}")
 else:
     st.caption("Last derived-metrics refresh: not recorded yet")
+
+last_sync = _load_last_sync_status()
+status_cols = st.columns(3)
+status_cols[0].metric(
+    "Last Sync Status", str(last_sync.get("status", "not run")).title()
+)
+status_cols[1].metric("Last Exit Code", str(last_sync.get("exit_code", "—")))
+status_cols[2].metric(
+    "Last Sync Time", str(last_sync.get("completed_at_utc", "—"))
+)
 
 repair_disabled = st.session_state.get("proc") is not None
 if st.button(
@@ -85,6 +141,7 @@ if "proc" not in st.session_state:
     st.session_state.proc = None
     st.session_state.log = ""
     st.session_state.start_ts = None
+    st.session_state.log_path = str(_sync_log_path())
 
 
 def _progress_from_log(log_text: str) -> float:
@@ -141,18 +198,25 @@ with col_actions:
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
 
-        st.session_state.proc = subprocess.Popen(
-            cmd,
-            stdout=None,
-            stderr=None,
-            env=env,
-        )
+        log_path = _sync_log_path()
+        st.session_state.log_path = str(log_path)
+        start_message = "Started: " + " ".join(cmd)
+        log_path.write_text(start_message + "\n", encoding="utf-8")
 
-        st.session_state.log = (
-            "Started: "
-            + " ".join(cmd)
-            + "\nLive sync logs are written to the terminal running Streamlit."
-        )
+        try:
+            with log_path.open("a", encoding="utf-8") as log_file:
+                st.session_state.proc = subprocess.Popen(
+                    cmd,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    env=env,
+                    text=True,
+                )
+        except OSError as e:
+            st.error(f"Failed to start sync process: {e}")
+            st.stop()
+
+        st.session_state.log = _read_sync_log(log_path)
         st.session_state.start_ts = time.time()
         st.rerun()
 
@@ -166,10 +230,21 @@ with col_actions:
         st.session_state.start_ts = None
         st.rerun()
 
+    if st.button("Clear Log", disabled=st.session_state.proc is not None):
+        log_path = Path(st.session_state.get("log_path") or _sync_log_path())
+        if log_path.exists():
+            log_path.write_text("", encoding="utf-8")
+        st.session_state.log = ""
+        st.rerun()
+
 # Progress and log display
 prog_placeholder = st.empty()
 
 proc = st.session_state.proc
+log_path = Path(st.session_state.get("log_path") or _sync_log_path())
+if log_path.exists():
+    st.session_state.log = _read_sync_log(log_path)
+
 if proc is not None:
     return_code = proc.poll()
 
@@ -181,14 +256,27 @@ if proc is not None:
     if elapsed is not None:
         label += f" • {elapsed:0.0f}s"
     prog_placeholder.progress(pct, text=label)
-    st.info("Sync is running. Open the terminal window for live output.")
+    st.info("Sync is running. Live output is shown below and saved to the local sync log.")
     st.code(st.session_state.get("log", ""))
     if st.button("Refresh status", key="refresh_sync_status"):
         st.rerun()
 
     if return_code is not None:
-        if f"Process exited with code {return_code}" not in st.session_state.log:
-            st.session_state.log += f"\nProcess exited with code {return_code}"
+        exit_message = f"Process exited with code {return_code}"
+        if exit_message not in st.session_state.log:
+            with log_path.open("a", encoding="utf-8") as log_file:
+                log_file.write(exit_message + "\n")
+            st.session_state.log = _read_sync_log(log_path)
+
+        sync_status = "success" if return_code == 0 else "failed"
+        _save_last_sync_status(return_code, sync_status, log_path)
+
+        if return_code == 0:
+            st.cache_data.clear()
+            st.success("Sync completed successfully. Cached activity views were refreshed.")
+        else:
+            st.error(f"Sync failed with exit code {return_code}. Review the log below.")
+
         st.session_state.proc = None
         st.session_state.start_ts = None
         prog_placeholder.empty()
