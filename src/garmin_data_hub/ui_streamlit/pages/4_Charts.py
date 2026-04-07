@@ -499,6 +499,175 @@ def render_cycling_power_analysis(df):
         st.info("No Cycling Power data.")
 
 
+def render_training_load(df):
+    st.subheader("Training Load Trend")
+
+    load_df = df.copy()
+    load_df["tss"] = pd.to_numeric(load_df.get("tss"), errors="coerce")
+    if "training_stress_score" in load_df.columns:
+        load_df["tss"] = load_df["tss"].fillna(
+            pd.to_numeric(load_df["training_stress_score"], errors="coerce")
+        )
+    load_df["trimp"] = pd.to_numeric(load_df.get("trimp"), errors="coerce")
+
+    if load_df["tss"].fillna(0).sum() <= 0 and load_df["trimp"].fillna(0).sum() <= 0:
+        st.info("No training load data available in the selected range.")
+        return
+
+    agg_mode = st.radio(
+        "Aggregation",
+        ["Daily", "Weekly"],
+        horizontal=True,
+        key="training_load_agg_selector",
+    )
+    resample_rule = "D" if agg_mode == "Daily" else "W-MON"
+
+    load_summary = (
+        load_df.set_index("date")[["tss", "trimp"]]
+        .fillna(0)
+        .resample(resample_rule)
+        .sum()
+        .reset_index()
+    )
+
+    load_long = load_summary.melt(
+        id_vars="date",
+        value_vars=["tss", "trimp"],
+        var_name="metric",
+        value_name="load",
+    )
+    load_long = load_long[load_long["load"] > 0].copy()
+    load_long["metric"] = load_long["metric"].map({"tss": "TSS", "trimp": "TRIMP"})
+
+    if load_long.empty:
+        st.info("No training load values to chart yet.")
+        return
+
+    chart = (
+        alt.Chart(load_long)
+        .mark_line(point=True)
+        .encode(
+            x=alt.X("date:T", title="Date"),
+            y=alt.Y("load:Q", title="Load"),
+            color=alt.Color("metric:N", title="Metric"),
+            tooltip=["date", "metric", alt.Tooltip("load:Q", format=".1f")],
+        )
+        .interactive()
+    )
+    st.altair_chart(chart, width="stretch")
+
+    latest = load_summary.iloc[-1]
+    m1, m2 = st.columns(2)
+    with m1:
+        st.metric("Latest TSS", f"{float(latest['tss'] or 0):.1f}")
+    with m2:
+        st.metric("Latest TRIMP", f"{float(latest['trimp'] or 0):.1f}")
+
+
+def render_power_profile_zones(df):
+    st.subheader("Power Profile & FTP Zones")
+
+    peak_columns = {
+        "5s": "peak_power_5s_w",
+        "30s": "peak_power_30s_w",
+        "60s": "peak_power_60s_w",
+        "5m": "peak_power_300s_w",
+        "20m": "peak_power_1200s_w",
+    }
+    zone_columns = {
+        "Z1": "power_zone_1_s",
+        "Z2": "power_zone_2_s",
+        "Z3": "power_zone_3_s",
+        "Z4": "power_zone_4_s",
+        "Z5": "power_zone_5_s",
+        "Z6": "power_zone_6_s",
+        "Z7": "power_zone_7_s",
+    }
+
+    has_peak_data = any(
+        col in df.columns
+        and pd.to_numeric(df[col], errors="coerce").fillna(0).gt(0).any()
+        for col in peak_columns.values()
+    )
+    has_zone_data = any(
+        col in df.columns
+        and pd.to_numeric(df[col], errors="coerce").fillna(0).gt(0).any()
+        for col in zone_columns.values()
+    )
+
+    if not has_peak_data and not has_zone_data:
+        st.info("No power-profile or power-zone data available in the selected range.")
+        return
+
+    if has_peak_data:
+        peak_df = df[["date", "sport", *peak_columns.values()]].copy()
+        for col in peak_columns.values():
+            peak_df[col] = pd.to_numeric(peak_df[col], errors="coerce")
+        peak_long = peak_df.melt(
+            id_vars=["date", "sport"],
+            value_vars=list(peak_columns.values()),
+            var_name="duration",
+            value_name="watts",
+        )
+        peak_long = peak_long.dropna(subset=["watts"])
+        peak_long = peak_long[peak_long["watts"] > 0]
+        peak_long["duration"] = peak_long["duration"].map(
+            {value: key for key, value in peak_columns.items()}
+        )
+
+        if not peak_long.empty:
+            peak_chart = (
+                alt.Chart(peak_long)
+                .mark_line(point=True)
+                .encode(
+                    x=alt.X("date:T", title="Date"),
+                    y=alt.Y("watts:Q", title="Peak Power (W)"),
+                    color=alt.Color(
+                        "duration:N",
+                        title="Duration",
+                        sort=["5s", "30s", "60s", "5m", "20m"],
+                    ),
+                    tooltip=[
+                        "date",
+                        "sport",
+                        "duration",
+                        alt.Tooltip("watts:Q", format=".0f"),
+                    ],
+                )
+                .interactive()
+            )
+            st.altair_chart(peak_chart, width="stretch")
+
+    if has_zone_data:
+        zone_totals = pd.DataFrame(
+            {
+                "zone": list(zone_columns.keys()),
+                "minutes": [
+                    pd.to_numeric(df[col], errors="coerce").fillna(0).sum() / 60.0
+                    for col in zone_columns.values()
+                ],
+            }
+        )
+        zone_totals = zone_totals[zone_totals["minutes"] > 0]
+
+        if not zone_totals.empty:
+            zone_chart = (
+                alt.Chart(zone_totals)
+                .mark_bar()
+                .encode(
+                    x=alt.X("zone:N", title="Power Zone"),
+                    y=alt.Y("minutes:Q", title="Time in Zone (min)"),
+                    color=alt.Color("zone:N", legend=None),
+                    tooltip=["zone", alt.Tooltip("minutes:Q", format=".1f")],
+                )
+                .interactive()
+            )
+            st.altair_chart(zone_chart, width="stretch")
+            st.caption(
+                "Power zones use the effective FTP from `athlete_profile` or the app's recent power estimate."
+            )
+
+
 def render_running_training_status(df):
     st.subheader("Running Training Status")
 
@@ -622,12 +791,14 @@ CHART_FUNCS = {
     "Distance Over Time": render_distance_over_time,
     "Duration Over Time": render_duration_over_time,
     "Weekly Volume": render_weekly_volume,
+    "Training Load Trend": render_training_load,
     "Speed/Pace Trends": render_speed_pace,
     "Heart Rate Trends": render_heart_rate,
     "Elevation Gain": render_elevation,
     "Cadence Trends": render_cadence,
     "Power Trends": render_power,
     "Cycling Power Analysis": render_cycling_power_analysis,
+    "Power Profile & FTP Zones": render_power_profile_zones,
 }
 
 # --- Chart Selection ---
@@ -667,8 +838,14 @@ if not default_charts:
         "Running Training Status",
         "Distance Over Time",
         "Weekly Volume",
+        "Training Load Trend",
+        "Power Profile & FTP Zones",
         "Activity Distribution",
     ]
+
+for chart_name in ["Training Load Trend", "Power Profile & FTP Zones"]:
+    if chart_name in available_charts and chart_name not in default_charts:
+        default_charts.append(chart_name)
 
 # Add a "Select All" checkbox
 select_all = st.checkbox("Select All Charts")

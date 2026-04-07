@@ -11,9 +11,9 @@ SUMMARY OF KEY DEPENDENCIES
 - openpyxl — MIT License
 - fitparse — MIT License
 - gpxpy — Apache License 2.0
-- garminexport — Apache License 2.0
-- garmin-givemydata — open-source Garmin Connect download utility used by this app to fetch FIT/activity data (see its repository and bundled license for details)
 - requests — Apache License 2.0
+- plotly — MIT License (included in some builds/environments)
+- garmin-givemydata — GNU Affero General Public License v3.0 (AGPLv3)
 - pyinstaller runtime — GPL with exception (bootloader exception permits non-GPL use; see PyInstaller license)
 
 FULL LICENSE TEXTS
@@ -86,6 +86,15 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+GNU Affero General Public License v3.0 (AGPLv3)
+----------------------------------------------
+`garmin-givemydata` reports AGPLv3 in its package metadata. If you redistribute
+this application bundled with `garmin-givemydata`, review and comply with the
+upstream AGPL license terms and include the corresponding source/license notices
+required by that project.
+
+Upstream project: https://github.com/nrvim/garmin-givemydata
 
 PYINSTALLER LICENSE (GPL WITH EXCEPTION)
 ---------------------------------------

@@ -31,12 +31,27 @@ def refresh_post_sync_tables(
             exc_info=True,
         )
 
+    effective_lthr = queries.get_effective_lthr(conn)
     metrics_summary = queries.refresh_persisted_activity_metrics(
         conn,
         activity_ids=activity_ids,
         start_ts_iso=start_ts_iso,
-        lthr=queries.get_effective_lthr(conn),
+        lthr=effective_lthr,
     )
-
     summary.update(metrics_summary)
+
+    # Incremental syncs usually target only changed or trackpoint-backed activities.
+    # Do a small top-off pass for any rows still flagged as needing derived metrics so
+    # the sync page does not show a stale non-zero count after an otherwise successful run.
+    if activity_ids is not None or start_ts_iso is not None:
+        remaining_ids = queries.list_activities_needing_metrics(conn)
+        if remaining_ids:
+            topoff_summary = queries.refresh_persisted_activity_metrics(
+                conn,
+                activity_ids=remaining_ids,
+                lthr=effective_lthr,
+            )
+            for key in summary:
+                summary[key] += int(topoff_summary.get(key, 0) or 0)
+
     return summary

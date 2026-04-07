@@ -87,16 +87,30 @@ def update_athlete_profile(conn: sqlite3.Connection):
         hrmax_calc, lthr_calc = db_queries.get_hrmax_robust_and_lthr(
             conn, cutoff_iso, percentile=0.995
         )
+        ftp_calc = db_queries.get_effective_ftp(conn)
 
         if hrmax_calc:
             db_queries.ensure_athlete_profile_table(conn)
             db_queries.set_calculated_metrics(conn, hrmax_calc, lthr_calc)
-            message = f"Athlete profile updated. HRMax: {hrmax_calc} bpm, LTHR: {lthr_calc} bpm"
+            if ftp_calc:
+                db_queries.set_calculated_ftp(conn, ftp_calc)
+            message = (
+                f"Athlete profile updated. HRMax: {hrmax_calc} bpm, "
+                f"LTHR: {lthr_calc} bpm" + (f", FTP: {ftp_calc} W" if ftp_calc else "")
+            )
+            logger.info(message)
+            print(message)
+        elif ftp_calc:
+            db_queries.ensure_athlete_profile_table(conn)
+            db_queries.set_calculated_ftp(conn, ftp_calc)
+            message = f"Athlete profile updated. FTP: {ftp_calc} W"
             logger.info(message)
             print(message)
         else:
-            logger.info("No recent HR data available to update athlete profile")
-            print("No recent HR data to update athlete profile.")
+            logger.info(
+                "No recent HR or power data available to update athlete profile"
+            )
+            print("No recent HR or power data to update athlete profile.")
     except (ImportError, sqlite3.Error, TypeError, ValueError):
         logger.exception("Failed to update athlete profile from synced activities")
         print("ERROR updating athlete_profile via db.queries. See logs for details.")

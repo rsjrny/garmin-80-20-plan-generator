@@ -17,11 +17,25 @@ def db_conn(tmp_path):
             activity_id INTEGER PRIMARY KEY,
             start_time_gmt TEXT,
             elapsed_duration_seconds REAL,
+            moving_duration_seconds REAL,
             average_speed REAL,
             max_hr INTEGER,
             training_stress_score REAL,
             average_hr REAL,
-            activity_type TEXT
+            activity_type TEXT,
+            avg_power REAL,
+            max_power REAL,
+            norm_power REAL,
+            intensity_factor REAL,
+            avg_cadence REAL,
+            elevation_gain REAL,
+            elevation_loss REAL,
+            min_elevation REAL,
+            max_elevation REAL,
+            aerobic_training_effect REAL,
+            anaerobic_training_effect REAL,
+            min_temperature REAL,
+            max_temperature REAL
         )
         """
     )

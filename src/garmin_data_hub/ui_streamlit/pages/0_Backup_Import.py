@@ -18,6 +18,11 @@ from garmin_data_hub.db.sqlite import connect_sqlite
 from garmin_data_hub.db.migrate import apply_schema
 from garmin_data_hub.db import queries
 from garmin_data_hub.analytics.post_sync_refresh import refresh_post_sync_tables
+from garmin_data_hub.ui_streamlit.sync_status import (
+    derived_refresh_summary_from_log,
+    progress_from_log,
+    sync_completed_from_state,
+)
 
 st.set_page_config(page_title="Garmin Sync", layout="wide")
 st.header("Garmin Sync  (garmin-givemydata)")
@@ -90,11 +95,27 @@ diag = _load_metrics_diagnostics()
 col_d1, col_d2, col_d3 = st.columns(3)
 col_d1.metric("Activities", f"{diag.get('total_activities', 0):,}")
 col_d2.metric("Metrics Rows", f"{diag.get('total_metrics_rows', 0):,}")
-col_d3.metric("Missing Metrics", f"{diag.get('missing_metrics_count', 0):,}")
+col_d3.metric(
+    "Needs Derived Refresh",
+    f"{diag.get('missing_metrics_count', 0):,}",
+    help="Activities whose cached derived metrics are incomplete. Raw Garmin activity data may still be present and usable.",
+)
+
+st.caption(
+    "'Needs Derived Refresh' counts activities with incomplete cached app metrics; it does not necessarily mean Garmin data is missing."
+)
 
 last_refresh_utc = diag.get("last_refresh_utc")
+last_refresh_summary = diag.get("last_refresh_summary") or {}
 if last_refresh_utc:
     st.caption(f"Last derived-metrics refresh: {last_refresh_utc}")
+    if last_refresh_summary:
+        st.caption(
+            "Derived refresh summary: "
+            f"targets={last_refresh_summary.get('target_activities', 0)}, "
+            f"upserted={last_refresh_summary.get('rows_upserted', 0)}, "
+            f"zones={last_refresh_summary.get('zones_updated', 0)}"
+        )
 else:
     st.caption("Last derived-metrics refresh: not recorded yet")
 
@@ -105,6 +126,18 @@ status_cols[0].metric(
 )
 status_cols[1].metric("Last Exit Code", str(last_sync.get("exit_code", "—")))
 status_cols[2].metric("Last Sync Time", str(last_sync.get("completed_at_utc", "—")))
+
+sync_banner = st.session_state.pop("sync_banner", None)
+if isinstance(sync_banner, dict):
+    message = str(sync_banner.get("message", "")).strip()
+    level = str(sync_banner.get("level", "info")).strip().lower()
+    if message:
+        if level == "success":
+            st.success(message)
+        elif level == "error":
+            st.error(message)
+        else:
+            st.info(message)
 
 repair_disabled = st.session_state.get("proc") is not None
 if st.button(
@@ -140,24 +173,6 @@ if "proc" not in st.session_state:
     st.session_state.log = ""
     st.session_state.start_ts = None
     st.session_state.log_path = str(_sync_log_path())
-
-
-def _progress_from_log(log_text: str) -> float:
-    """Heuristic progress based on garmin-givemydata CLI messages."""
-    lt = log_text.lower()
-    checkpoints = [
-        ("garmin data sync", 0.05),
-        ("fetching", 0.15),
-        ("activities", 0.40),
-        ("health", 0.65),
-        ("app schema applied", 0.90),
-        ("sync complete", 1.0),
-    ]
-    prog = 0.05 if log_text.strip() else 0.0
-    for marker, val in checkpoints:
-        if marker in lt:
-            prog = max(prog, val)
-    return min(max(prog, 0.0), 1.0)
 
 
 col_inputs, col_actions = st.columns([2, 1])
@@ -244,9 +259,16 @@ if log_path.exists():
     st.session_state.log = _read_sync_log(log_path)
 
 if proc is not None:
-    return_code = proc.poll()
+    try:
+        return_code = proc.poll()
+    except Exception:
+        return_code = None
 
-    pct = _progress_from_log(st.session_state.get("log", ""))
+    log_text = st.session_state.get("log", "")
+    if sync_completed_from_state(return_code, log_text) and return_code is None:
+        return_code = 0
+
+    pct = progress_from_log(log_text)
     elapsed = None
     if st.session_state.start_ts:
         elapsed = time.time() - st.session_state.start_ts
@@ -257,7 +279,10 @@ if proc is not None:
     st.info(
         "Sync is running. Live output is shown below and saved to the local sync log."
     )
-    st.code(st.session_state.get("log", ""))
+    st.caption(
+        "Status refreshes automatically every 2 seconds while the sync is active."
+    )
+    st.code(log_text)
     if st.button("Refresh status", key="refresh_sync_status"):
         st.rerun()
 
@@ -273,15 +298,32 @@ if proc is not None:
 
         if return_code == 0:
             st.cache_data.clear()
-            st.success(
-                "Sync completed successfully. Cached activity views were refreshed."
-            )
+            refresh_summary = derived_refresh_summary_from_log(log_text) or {}
+            refresh_message = "Cached activity views were refreshed."
+            if refresh_summary:
+                refresh_message += (
+                    " Derived metrics refreshed: "
+                    f"targets={refresh_summary.get('target_activities', 0)}, "
+                    f"upserted={refresh_summary.get('rows_upserted', 0)}, "
+                    f"zones={refresh_summary.get('zones_updated', 0)}."
+                )
+            st.session_state.sync_banner = {
+                "level": "success",
+                "message": f"Sync completed successfully. {refresh_message}",
+            }
         else:
-            st.error(f"Sync failed with exit code {return_code}. Review the log below.")
+            st.session_state.sync_banner = {
+                "level": "error",
+                "message": f"Sync failed with exit code {return_code}. Review the log below.",
+            }
 
         st.session_state.proc = None
         st.session_state.start_ts = None
         prog_placeholder.empty()
+        st.rerun()
+    else:
+        time.sleep(2)
+        st.rerun()
 else:
     st.info(
         "Ready to sync. Click **Run sync** and complete login in the external browser window."

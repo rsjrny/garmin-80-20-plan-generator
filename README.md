@@ -1,39 +1,40 @@
 # Garmin Data Hub
 
-A local Garmin analytics app built on Streamlit + SQLite.
+A local Garmin analytics app built on **SQLite + Streamlit**.
 
-The app syncs Garmin data using `garmin-givemydata`, applies app-specific schema extensions, and provides pages for activity analysis, charts, and training plan generation.
+The project syncs Garmin data using `garmin-givemydata`, applies app-specific schema extensions, ingests FIT trackpoints, and refreshes cached derived metrics used across the UI.
 
-> Garmin Connect download support in this project is powered by the open-source [`garmin-givemydata`](https://github.com/pe-st/garmin-givemydata) project, which is used to authenticate and download activity FIT files/data for local analysis. Garmin is not affiliated with or endorsing this application.
+> Garmin Connect download support in this project is powered by the open-source [`garmin-givemydata`](https://github.com/pe-st/garmin-givemydata) project. Garmin is not affiliated with or endorsing this application.
 
 ## Current Architecture
 
-- Data sync source: `garmin-givemydata`
-- Primary local database: `%LOCALAPPDATA%\GarminDataHub\garmin.db`
-- Optional DB override: `GARMIN_DATA_HUB_DB`
-- App-specific schema and metrics are applied after each sync
-- Trackpoints are incrementally ingested from new/changed FIT archives
+- **Sync source:** `garmin-givemydata`
+- **Primary local database:** `%LOCALAPPDATA%\GarminDataHub\garmin.db`
+- **Optional DB override:** `GARMIN_DATA_HUB_DB`
+- **Post-sync refresh:** schema updates, athlete profile refresh, and `activity_metrics` derived-metric rebuilds
+- **Trackpoints:** incrementally ingested from new/changed FIT archives for mapping and analysis
 
 ## Main Capabilities
 
-- Garmin Connect sync via browser login flow
-- Incremental trackpoint ingestion into `activity_trackpoint`
-- Activity analysis with map and chart views
-- Build Plan page with 80/20 planning workflow
-- Charts and compliance views for trend analysis
+- Garmin Connect sync via visible browser login flow
+- Incremental FIT trackpoint ingestion into `activity_trackpoint`
+- Activity analysis with map and detail views
+- Derived metrics including HR zones, TRIMP/TSS, FTP estimates, and power zones
+- Charts for training load, pace/power trends, and power profile analysis
+- Build Plan and compliance pages for planning workflows
 - Local-first operation with SQLite storage
 
-## Streamlit Pages (Current)
+## Streamlit Pages
 
 Located in `src/garmin_data_hub/ui_streamlit/pages`:
 
-- `0_Backup_Import.py` (Garmin Sync)
-- `2_Activities.py`
-- `3_Build_Plan.py`
-- `4_Charts.py`
-- `5_Compliance.py`
+- `0_Backup_Import.py` — Garmin sync, progress, and derived-refresh diagnostics
+- `2_Activities.py` — activity browsing and analysis
+- `3_Build_Plan.py` — plan creation workflow
+- `4_Charts.py` — trend and power/load charts
+- `5_Compliance.py` — compliance and zone analysis
 - `6_8020_Help.py`
-- `_1_MCP_Query.py` (currently hidden by Streamlit filename convention)
+- `_1_MCP_Query.py` — hidden helper page (Streamlit naming convention)
 
 ## Quick Start (Developers)
 
@@ -42,46 +43,69 @@ cd Training_Planner
 python -m venv .venv
 .\.venv\Scripts\activate
 pip install -U pip
-pip install -e .
+pip install -e .[dev]
 streamlit run src/garmin_data_hub/ui_streamlit/app.py
 ```
 
-## CLI Usage
+## Launch Options
 
-CLI module:
+### Streamlit UI
 
 ```powershell
-python -m garmin_data_hub.cli_backup_ingest --visible --chrome
+streamlit run src/garmin_data_hub/ui_streamlit/app.py
 ```
 
-Helpful options:
-
-- `--days <N>`: limit sync window
-- `--skip-trackpoints`: skip FIT trackpoint extraction
-- `--rebuild-trackpoints`: rebuild all trackpoints
-- `--trackpoints-max <N>`: cap processed activities
-- `--db <path>`: custom DB path (filename is normalized to `garmin.db` behavior)
-
-Project script entry point:
+### Sync CLI
 
 ```powershell
 garmin-sync --visible --chrome
 ```
 
+or:
+
+```powershell
+python -m garmin_data_hub.cli_backup_ingest --visible --chrome
+```
+
+Helpful sync options:
+
+- `--days <N>` — limit sync window
+- `--skip-trackpoints` — skip FIT trackpoint extraction
+- `--rebuild-trackpoints` — rebuild all trackpoints
+- `--trackpoints-max <N>` — cap processed activities
+- `--db <path>` — use a custom SQLite path
+
+## Tests
+
+Run the project test suite with:
+
+```powershell
+python -m pytest
+```
+
+Targeted regression checks used during recent sync/metrics work:
+
+```powershell
+python -m pytest tests/test_sync_progress.py tests/test_metrics_refresh.py
+```
+
 ## Packaging / Release
 
-Build pipeline script:
+The Windows packaging pipeline lives in `packaging/build.ps1`.
 
-- `packaging/build.ps1`
+Example build command:
 
-What it does:
+```powershell
+powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 0.1.0
+```
 
-- Builds Streamlit app executable directory (`GarminDataHub`)
-- Builds CLI executable directory (`cli_backup_ingest`)
-- Bundles `garmin-givemydata.exe` alongside app artifacts
-- Organizes outputs under `release/<version>/`
-- Updates `pyproject.toml` version from build `-Version`
-- Optionally compiles installer via Inno Setup if `ISCC.exe` is available
+It will:
+
+- build the Streamlit app directory (`GarminDataHub`)
+- build the CLI directory (`cli_backup_ingest`)
+- bundle `garmin-givemydata.exe` with the release artifacts
+- copy outputs under `release/<version>/`
+- optionally build the installer via Inno Setup when available
 
 ## Project Requirements
 
@@ -101,6 +125,8 @@ Core dependencies are defined in `pyproject.toml`, including:
 
 - Secret-like artifacts under `scripts/cookies/*.json` are gitignored
 - Download artifacts under `scripts/downloads/` are gitignored
+- Build/release artifacts under `build/` and `release/` are not intended for source control
+- Metric/source lineage reference: `docs/activity-metrics-data-lineage.md`
 
 ## License
 
