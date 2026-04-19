@@ -1,6 +1,6 @@
 [project]
 name = "garmin-data-hub"
-version = "0.1.0"
+version = "0.2.3"
 description = "Garmin FIT/CSV ingestion + analytics + exports (SQLite + Streamlit)"
 requires-python = ">=3.10"
 dependencies = [

@@ -2,7 +2,7 @@
 ; See https://jrsoftware.org/ishelp/ for documentation
 
 #define MyAppName "GarminDataHub"
-#define MyAppVersion "0.1.0"
+#define MyAppVersion "0.2.3"
 #define MyAppPublisher "Your Name"
 #define MyAppURL "https://example.com"
 #define MyAppExeName "GarminDataHub.exe"

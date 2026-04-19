@@ -178,7 +178,10 @@ def run_sync(
         cmd.append("--visible")
 
     if cmd and chrome:
-        cmd.append("--chrome")
+        print(
+            "[INFO] --chrome requested, but upstream garmin-givemydata no longer accepts "
+            "that flag; continuing with default browser mode"
+        )
 
     if cmd and (not skip_trackpoints):
         cmd.append("--parse-trackpoints")
@@ -186,13 +189,13 @@ def run_sync(
     if cmd and extra_args:
         cmd.extend(extra_args)
 
-    exe_dir = Path(sys.executable).parent if getattr(sys, "frozen", False) else None
+    sync_cwd = data_dir
 
     if derived_metrics_only:
         print("[SKIP] Garmin download disabled (--derived-metrics-only)")
     else:
         try:
-            subprocess.run(cmd, check=True, cwd=exe_dir, env=env)
+            subprocess.run(cmd, check=True, cwd=sync_cwd, env=env)
             print("[OK] Sync completed")
         except subprocess.CalledProcessError as e:
             print(f"[ERROR] garmin-givemydata failed (exit {e.returncode})")
@@ -318,7 +321,7 @@ Examples:
     parser.add_argument(
         "--chrome",
         action="store_true",
-        help="Use Chrome engine for login",
+        help="Legacy compatibility flag (upstream garmin-givemydata ignores it)",
     )
 
     parser.add_argument(
