@@ -433,7 +433,7 @@ def _refresh_trackpoint_derived_metrics(
     candidate_ids: list[int],
     ftp: int | None = None,
 ) -> None:
-    """Populate metrics that are best derived from `activity_trackpoint`."""
+    """Populate metrics that are best derived from `activity_trackpoints`."""
     if not candidate_ids:
         return
 
@@ -451,7 +451,7 @@ def _refresh_trackpoint_derived_metrics(
             MAX(temperature_c) AS max_temperature_c,
             MIN(altitude_m) AS min_altitude_m,
             MAX(altitude_m) AS max_altitude_m
-        FROM activity_trackpoint
+        FROM activity_trackpoints
         WHERE activity_id IN ({placeholders})
         GROUP BY activity_id
         """,
@@ -497,7 +497,7 @@ def _refresh_trackpoint_derived_metrics(
                     PARTITION BY activity_id
                     ORDER BY seq
                 ) AS delta_altitude
-            FROM activity_trackpoint
+            FROM activity_trackpoints
             WHERE activity_id IN ({placeholders})
               AND altitude_m IS NOT NULL
         )
@@ -532,7 +532,7 @@ def _refresh_trackpoint_derived_metrics(
                 CASE WHEN speed_mps IS NOT NULL AND speed_mps > 0 THEN speed_mps END AS speed_mps,
                 ROW_NUMBER() OVER (PARTITION BY activity_id ORDER BY seq) AS rn,
                 COUNT(*) OVER (PARTITION BY activity_id) AS total_points
-            FROM activity_trackpoint
+            FROM activity_trackpoints
             WHERE activity_id IN ({placeholders})
               AND heart_rate_bpm IS NOT NULL
               AND heart_rate_bpm >= 35
@@ -586,7 +586,7 @@ def _refresh_trackpoint_derived_metrics(
         f"""
         WITH power_samples AS (
             SELECT activity_id, seq, CAST(power_w AS REAL) AS power_w
-            FROM activity_trackpoint
+            FROM activity_trackpoints
             WHERE activity_id IN ({placeholders})
               AND power_w IS NOT NULL
               AND power_w > 0
@@ -655,8 +655,8 @@ def _refresh_trackpoint_derived_metrics(
                     tp.activity_id,
                     tp.power_w AS power,
                     (julianday(tp_next.timestamp_utc) - julianday(tp.timestamp_utc)) * 86400.0 AS dt_s
-                FROM activity_trackpoint tp
-                JOIN activity_trackpoint tp_next
+                FROM activity_trackpoints tp
+                JOIN activity_trackpoints tp_next
                   ON tp_next.activity_id = tp.activity_id
                  AND tp_next.seq = tp.seq + 1
                 WHERE tp.activity_id IN ({placeholders})
@@ -1200,7 +1200,7 @@ def get_activity_trackpoints(conn, activity_id: int) -> pd.DataFrame:
                 cadence        AS cadence_spm,
                 power_w,
                 temperature_c
-            FROM activity_trackpoint
+            FROM activity_trackpoints
             WHERE activity_id = ?
             ORDER BY seq ASC
         """
@@ -1221,7 +1221,7 @@ def get_activities_dataframe(
     Column aliases preserve the legacy names expected by UI pages.
 
     When `use_temp_zone_metrics` is True, zone columns are sourced from a
-    connection-local temp table computed from `activity_trackpoint`, with
+    connection-local temp table computed from `activity_trackpoints`, with
     fallback to persisted `activity_metrics` values.
     """
     try:
@@ -1410,9 +1410,9 @@ def refresh_temp_activity_zone_metrics(
                     tp.activity_id,
                     tp.heart_rate_bpm AS hr,
                     (julianday(tp_next.timestamp_utc) - julianday(tp.timestamp_utc)) * 86400.0 AS dt_s
-                FROM activity_trackpoint tp
+                FROM activity_trackpoints tp
                 JOIN activity a ON a.activity_id = tp.activity_id
-                JOIN activity_trackpoint tp_next
+                JOIN activity_trackpoints tp_next
                   ON tp_next.activity_id = tp.activity_id
                  AND tp_next.seq = tp.seq + 1
                 WHERE tp.heart_rate_bpm IS NOT NULL
@@ -1480,7 +1480,7 @@ def refresh_persisted_activity_metrics(
 ) -> dict[str, int]:
     """Refresh persisted `activity_metrics` fields after sync.
 
-    Updates are based on `activity` + `activity_trackpoint` so pages can read
+    Updates are based on `activity` + `activity_trackpoints` so pages can read
     precomputed values without connection-local temp tables.
     """
     summary = {
@@ -1567,8 +1567,8 @@ def refresh_persisted_activity_metrics(
                         tp.activity_id,
                         tp.heart_rate_bpm AS hr,
                         (julianday(tp_next.timestamp_utc) - julianday(tp.timestamp_utc)) * 86400.0 AS dt_s
-                    FROM activity_trackpoint tp
-                    JOIN activity_trackpoint tp_next
+                    FROM activity_trackpoints tp
+                    JOIN activity_trackpoints tp_next
                       ON tp_next.activity_id = tp.activity_id
                      AND tp_next.seq = tp.seq + 1
                     WHERE tp.heart_rate_bpm IS NOT NULL
@@ -1697,7 +1697,7 @@ def list_activities_needing_metrics(conn) -> list[int]:
                OR (
                     EXISTS (
                         SELECT 1
-                        FROM activity_trackpoint tp
+                        FROM activity_trackpoints tp
                         WHERE tp.activity_id = a.activity_id
                           AND tp.heart_rate_bpm IS NOT NULL
                           AND tp.heart_rate_bpm >= 35

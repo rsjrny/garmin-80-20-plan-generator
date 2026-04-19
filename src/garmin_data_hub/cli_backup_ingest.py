@@ -170,7 +170,6 @@ def run_sync(
     if chrome:
         _clear_stale_chrome_profile_locks(data_dir / "browser_profile")
     fit_dir = data_dir / "fit"
-    fit_snapshot = _snapshot_fit_archives(fit_dir)
 
     if cmd and days is not None:
         cmd.extend(["--days", str(days)])
@@ -180,6 +179,9 @@ def run_sync(
 
     if cmd and chrome:
         cmd.append("--chrome")
+
+    if cmd and (not skip_trackpoints):
+        cmd.append("--parse-trackpoints")
 
     if cmd and extra_args:
         cmd.extend(extra_args)
@@ -209,9 +211,6 @@ def run_sync(
         from garmin_data_hub.db.sqlite import connect_sqlite
         from garmin_data_hub.db.migrate import apply_schema
         from garmin_data_hub.analytics.post_sync_refresh import refresh_post_sync_tables
-        from garmin_data_hub.ingest.trackpoints import (
-            ingest_trackpoints_from_fit_archives,
-        )
         from garmin_data_hub.paths import schema_sql_path
 
         conn = connect_sqlite(data_dir / "garmin.db")
@@ -224,36 +223,8 @@ def run_sync(
         elif skip_trackpoints:
             print("[SKIP] Trackpoint ingestion disabled (--skip-trackpoints)")
         else:
-            changed_fit_archives = _find_changed_fit_archives(fit_dir, fit_snapshot)
-            archive_paths = _select_trackpoint_archive_paths(
-                changed_fit_archives,
-                rebuild_trackpoints,
-            )
-            if changed_fit_archives:
-                print(
-                    f"[trackpoints] checking {len(changed_fit_archives)} new/updated FIT archive(s)"
-                )
-            elif rebuild_trackpoints:
-                print("[trackpoints] rebuilding from all downloaded FIT archives")
-            else:
-                print(
-                    "[trackpoints] no new FIT archives downloaded; "
-                    "scanning existing FIT files for activities missing trackpoints"
-                )
-            trackpoint_summary = ingest_trackpoints_from_fit_archives(
-                conn,
-                fit_dir,
-                replace_existing=rebuild_trackpoints,
-                max_activities=trackpoints_max,
-                archive_paths=archive_paths,
-            )
             print(
-                "[OK] Trackpoints: "
-                f"targets={trackpoint_summary['target_activities']}, "
-                f"archives={trackpoint_summary['matched_archives']}, "
-                f"activities={trackpoint_summary['ingested_activities']}, "
-                f"points={trackpoint_summary['ingested_points']}, "
-                f"errors={trackpoint_summary['errors']}"
+                "[trackpoints] parsed during garmin-givemydata sync (--parse-trackpoints)"
             )
 
         refresh_ids = None
@@ -353,7 +324,7 @@ Examples:
     parser.add_argument(
         "--skip-trackpoints",
         action="store_true",
-        help="Skip FIT trackpoint extraction into activity_trackpoint",
+        help="Skip FIT trackpoint extraction into activity_trackpoints",
     )
 
     parser.add_argument(

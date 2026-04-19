@@ -354,9 +354,9 @@ def get_activity_track_counts(
         ).fetchall()
         split_counts = {int(r[0]): int(r[1]) for r in split_rows}
 
-        # Trackpoint counts from activity_trackpoint
+        # Trackpoint counts from activity_trackpoints
         trackpoint_rows = conn.execute(
-            f"SELECT activity_id, COUNT(*) AS trackpoint_count FROM activity_trackpoint WHERE activity_id IN ({placeholders}) GROUP BY activity_id",
+            f"SELECT activity_id, COUNT(*) AS trackpoint_count FROM activity_trackpoints WHERE activity_id IN ({placeholders}) GROUP BY activity_id",
             activity_ids,
         ).fetchall()
         trackpoint_counts = {int(r[0]): int(r[1]) for r in trackpoint_rows}

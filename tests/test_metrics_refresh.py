@@ -84,7 +84,7 @@ def _insert_trackpoints(conn, activity_id: int) -> None:
     ]
     conn.executemany(
         """
-        INSERT INTO activity_trackpoint (activity_id, seq, timestamp_utc, heart_rate_bpm)
+        INSERT INTO activity_trackpoints (activity_id, seq, timestamp_utc, heart_rate_bpm)
         VALUES (?, ?, ?, ?)
         """,
         rows,
@@ -105,7 +105,7 @@ def _insert_power_trackpoints(conn, activity_id: int) -> None:
     ]
     conn.executemany(
         """
-        INSERT INTO activity_trackpoint (
+        INSERT INTO activity_trackpoints (
             activity_id, seq, timestamp_utc, heart_rate_bpm, cadence, power_w
         ) VALUES (?, ?, ?, ?, ?, ?)
         """,

@@ -1,35 +1,24 @@
 from __future__ import annotations
 
-import io
-import re
 import sqlite3
 import zipfile
 from collections.abc import Iterable
 from pathlib import Path
 
-from fitparse import FitFile
-
-_ACTIVITY_ID_RE = re.compile(r"(\d+)_activity\.fit$", re.IGNORECASE)
-_ZIP_ACTIVITY_ID_RE = re.compile(r"(?:^|_)(\d{7,})(?:_|$)")
-
-
-def _semicircles_to_degrees(value: object) -> float | None:
-    if value is None:
-        return None
-    try:
-        return float(value) * (180.0 / (2**31))
-    except Exception:
-        return None
+from garmin_mcp.parse_activity_files import (
+    _activity_id_from_zip_filename as _parse_activity_id_from_zip_filename,
+)
+from garmin_mcp.parse_activity_files import (
+    _extract_activity_id_from_member as _parse_activity_id_from_member,
+)
+from garmin_mcp.parse_activity_files import (
+    _track_rows_from_fit_bytes as _parse_track_rows_from_fit_bytes,
+)
+from garmin_mcp.parse_activity_files import parse_trackpoints_from_fit_archive
 
 
 def _extract_activity_id_from_member(name: str) -> int | None:
-    m = _ACTIVITY_ID_RE.search(name)
-    if m:
-        try:
-            return int(m.group(1))
-        except Exception:
-            return None
-    return None
+    return _parse_activity_id_from_member(name)
 
 
 def _get_target_activity_ids(
@@ -56,7 +45,7 @@ def _get_target_activity_ids(
             f"""
             SELECT a.activity_id
             FROM activity a
-            LEFT JOIN activity_trackpoint t ON t.activity_id = a.activity_id
+            LEFT JOIN activity_trackpoints t ON t.activity_id = a.activity_id
             WHERE a.activity_id IN ({placeholders})
               AND t.activity_id IS NULL
             ORDER BY a.start_time_gmt DESC, a.activity_id DESC
@@ -88,46 +77,11 @@ def _activity_id_from_zip_filename(zip_path: Path) -> int | None:
     Expected format: YYYY-MM-DD_<activity_id>_<name>.zip
     Tries all numeric groups >= 7 digits (activity IDs are large ints).
     """
-    stem = zip_path.stem
-    for m in _ZIP_ACTIVITY_ID_RE.finditer(stem):
-        try:
-            candidate = int(m.group(1))
-            if candidate > 1_000_000:
-                return candidate
-        except Exception:
-            continue
-    return None
+    return _parse_activity_id_from_zip_filename(zip_path)
 
 
 def _track_rows_from_fit_bytes(fit_blob: bytes) -> list[tuple]:
-    fit = FitFile(io.BytesIO(fit_blob))
-    rows: list[tuple] = []
-    seq = 0
-
-    for msg in fit.get_messages("record"):
-        values = {f.name: f.value for f in msg}
-        ts = values.get("timestamp")
-        if ts is None:
-            continue
-
-        rows.append(
-            (
-                seq,
-                ts.isoformat(),
-                _semicircles_to_degrees(values.get("position_lat")),
-                _semicircles_to_degrees(values.get("position_long")),
-                values.get("enhanced_altitude", values.get("altitude")),
-                values.get("distance"),
-                values.get("enhanced_speed", values.get("speed")),
-                values.get("heart_rate"),
-                values.get("cadence"),
-                values.get("power"),
-                values.get("temperature"),
-            )
-        )
-        seq += 1
-
-    return rows
+    return _parse_track_rows_from_fit_bytes(fit_blob)
 
 
 def ingest_trackpoints_from_fit_archives(
@@ -215,15 +169,18 @@ def ingest_trackpoints_from_fit_archives(
             continue
 
         try:
-            with zipfile.ZipFile(zip_path, "r") as zf:
-                fit_members = [n for n in zf.namelist() if n.lower().endswith(".fit")]
-                if not fit_members:
-                    summary["skipped_no_fit"] += 1
-                    continue
-
-                fit_bytes = zf.read(fit_members[0])
-
-            rows = _track_rows_from_fit_bytes(fit_bytes)
+            parsed_activity_id, rows = parse_trackpoints_from_fit_archive(zip_path)
+            if parsed_activity_id is None:
+                summary["skipped_no_fit"] += 1
+                continue
+            if parsed_activity_id != activity_id:
+                summary["errors"] += 1
+                print(
+                    f"[trackpoints] {idx}/{total} {activity_id}: "
+                    f"ERROR archive activity mismatch ({parsed_activity_id})",
+                    flush=True,
+                )
+                continue
             if not rows:
                 summary["skipped_no_records"] += 1
                 print(
@@ -232,12 +189,12 @@ def ingest_trackpoints_from_fit_archives(
                 continue
 
             conn.execute(
-                "DELETE FROM activity_trackpoint WHERE activity_id = ?",
+                "DELETE FROM activity_trackpoints WHERE activity_id = ?",
                 (activity_id,),
             )
             conn.executemany(
                 """
-                INSERT INTO activity_trackpoint (
+                INSERT INTO activity_trackpoints (
                     activity_id,
                     seq,
                     timestamp_utc,

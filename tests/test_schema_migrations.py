@@ -82,7 +82,7 @@ def test_apply_schema_upgrades_legacy_tables(tmp_path):
         )
         conn.execute(
             """
-            CREATE TABLE activity_trackpoint (
+            CREATE TABLE activity_trackpoints (
               activity_id    INTEGER NOT NULL,
               seq            INTEGER NOT NULL,
               timestamp_utc  TEXT NOT NULL,
@@ -116,7 +116,7 @@ def test_apply_schema_upgrades_legacy_tables(tmp_path):
         assert "updated_at" in settings_cols
 
         ddl = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='activity_trackpoint'"
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='activity_trackpoints'"
         ).fetchone()[0]
         assert "ON DELETE CASCADE" not in ddl.upper()
 

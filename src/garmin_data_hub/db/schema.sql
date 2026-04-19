@@ -108,7 +108,7 @@ CREATE TABLE IF NOT EXISTS app_settings (
 -- =========================
 --  E) TRACKPOINTS (PER-SAMPLE GPS/PHYSIOLOGY STREAM)
 -- =========================
-CREATE TABLE IF NOT EXISTS activity_trackpoint (
+CREATE TABLE IF NOT EXISTS activity_trackpoints (
   activity_id    INTEGER NOT NULL,
   seq            INTEGER NOT NULL,
   timestamp_utc  TEXT NOT NULL,
@@ -126,7 +126,7 @@ CREATE TABLE IF NOT EXISTS activity_trackpoint (
 );
 
 CREATE INDEX IF NOT EXISTS idx_activity_trackpoint_activity_time
-  ON activity_trackpoint(activity_id, timestamp_utc);
+  ON activity_trackpoints(activity_id, timestamp_utc);
 
 CREATE INDEX IF NOT EXISTS idx_activity_trackpoint_latlon
-  ON activity_trackpoint(latitude, longitude);
+  ON activity_trackpoints(latitude, longitude);

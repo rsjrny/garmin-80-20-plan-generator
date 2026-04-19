@@ -151,7 +151,7 @@ def _migration_3_upgrade_app_tables(conn: sqlite3.Connection) -> None:
 
 
 def _fix_trackpoint_cascade(conn: sqlite3.Connection) -> None:
-    """Remove ON DELETE CASCADE from activity_trackpoint if present.
+    """Remove ON DELETE CASCADE from activity_trackpoints if present.
 
     garmin-givemydata uses INSERT OR REPLACE on the activity table, which
     internally does DELETE + INSERT and fires the cascade, wiping all
@@ -159,7 +159,7 @@ def _fix_trackpoint_cascade(conn: sqlite3.Connection) -> None:
     the cascade so existing trackpoint data is preserved.
     """
     row = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type='table' AND name='activity_trackpoint'"
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='activity_trackpoints'"
     ).fetchone()
     if row is None:
         return  # table doesn't exist yet; schema.sql will create it correctly
@@ -167,11 +167,11 @@ def _fix_trackpoint_cascade(conn: sqlite3.Connection) -> None:
     if "ON DELETE CASCADE" not in ddl.upper():
         return  # already fixed
 
-    existing_columns = _get_table_columns(conn, "activity_trackpoint")
+    existing_columns = _get_table_columns(conn, "activity_trackpoints")
     required_columns = {"activity_id", "seq", "timestamp_utc"}
     if not required_columns.issubset(existing_columns):
         raise sqlite3.OperationalError(
-            "Legacy activity_trackpoint table is missing required key columns"
+            "Legacy activity_trackpoints table is missing required key columns"
         )
 
     ordered_columns = [
@@ -224,21 +224,44 @@ def _fix_trackpoint_cascade(conn: sqlite3.Connection) -> None:
         )
         SELECT """
         + ", ".join(select_columns)
-        + " FROM activity_trackpoint"
+        + " FROM activity_trackpoints"
     )
     conn.executescript(
         """
-        DROP TABLE activity_trackpoint;
-        ALTER TABLE activity_trackpoint_new RENAME TO activity_trackpoint;
+        DROP TABLE activity_trackpoints;
+        ALTER TABLE activity_trackpoint_new RENAME TO activity_trackpoints;
 
         CREATE INDEX IF NOT EXISTS idx_activity_trackpoint_activity_time
-          ON activity_trackpoint(activity_id, timestamp_utc);
+          ON activity_trackpoints(activity_id, timestamp_utc);
 
         CREATE INDEX IF NOT EXISTS idx_activity_trackpoint_latlon
-          ON activity_trackpoint(latitude, longitude);
+          ON activity_trackpoints(latitude, longitude);
 
         PRAGMA foreign_keys=ON;
         """
+    )
+    conn.commit()
+
+
+def _rename_legacy_trackpoint_table(conn: sqlite3.Connection) -> None:
+    """Rename legacy singular trackpoint table to upstream plural naming."""
+    has_plural = _table_exists(conn, "activity_trackpoints")
+    has_singular = _table_exists(conn, "activity_trackpoint")
+    if has_plural or not has_singular:
+        return
+
+    conn.execute("ALTER TABLE activity_trackpoint RENAME TO activity_trackpoints")
+    conn.execute(
+        """
+                CREATE INDEX IF NOT EXISTS idx_activity_trackpoint_activity_time
+                    ON activity_trackpoints(activity_id, timestamp_utc)
+                """
+    )
+    conn.execute(
+        """
+                CREATE INDEX IF NOT EXISTS idx_activity_trackpoint_latlon
+                    ON activity_trackpoints(latitude, longitude)
+                """
     )
     conn.commit()
 
@@ -250,6 +273,7 @@ def apply_schema(conn: sqlite3.Connection, schema_path: Path | None = None) -> N
 
     # Preflight older trackpoint tables before replaying schema.sql, otherwise
     # legacy `ON DELETE CASCADE` DDL can make the later index creation fail.
+    _rename_legacy_trackpoint_table(conn)
     _fix_trackpoint_cascade(conn)
 
     migrations = [
@@ -270,7 +294,7 @@ def apply_schema(conn: sqlite3.Connection, schema_path: Path | None = None) -> N
         ),
         (
             4,
-            "fix activity_trackpoint cascade behavior",
+            "fix activity_trackpoints cascade behavior",
             lambda: _fix_trackpoint_cascade(conn),
         ),
     ]
