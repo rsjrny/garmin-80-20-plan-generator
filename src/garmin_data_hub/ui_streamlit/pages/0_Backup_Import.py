@@ -2,6 +2,7 @@ from __future__ import annotations
 import sys
 import os
 import subprocess
+import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,12 +28,32 @@ from garmin_data_hub.ui_streamlit.sync_status import (
 st.set_page_config(page_title="Garmin Sync", layout="wide")
 st.header("Garmin Sync  (garmin-givemydata)")
 
+
+def _apply_schema_best_effort(conn, retries: int = 3) -> bool:
+    """Apply schema with short retries, tolerating transient DB locks."""
+    for attempt in range(retries):
+        try:
+            apply_schema(conn, schema_sql_path())
+            return True
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower() or attempt >= retries - 1:
+                return False
+            time.sleep(0.25 * (attempt + 1))
+    return False
+
+
 # Ensure dirs and app-internal schema once
 ensure_app_dirs()
 db_path = default_db_path()
-conn = connect_sqlite(db_path)
-apply_schema(conn, schema_sql_path())
+conn = connect_sqlite(db_path, timeout=30.0)
+schema_ready = _apply_schema_best_effort(conn)
 conn.close()
+
+if not schema_ready:
+    st.warning(
+        "Database schema check is temporarily blocked by another process. "
+        "The page will keep working and retry automatically on refresh."
+    )
 
 st.caption(f"DB: {db_path}")
 
@@ -54,18 +75,16 @@ def _read_sync_log(log_path: Path, max_chars: int = 20000) -> str:
 
 
 def _load_last_sync_status() -> dict:
-    conn = connect_sqlite(db_path)
+    conn = connect_sqlite(db_path, timeout=30.0)
     try:
-        apply_schema(conn, schema_sql_path())
         return queries.get_setting(conn, LAST_SYNC_STATUS_KEY, {})
     finally:
         conn.close()
 
 
 def _save_last_sync_status(exit_code: int, status: str, log_path: Path | None) -> None:
-    conn = connect_sqlite(db_path)
+    conn = connect_sqlite(db_path, timeout=30.0)
     try:
-        apply_schema(conn, schema_sql_path())
         queries.set_setting(
             conn,
             LAST_SYNC_STATUS_KEY,
@@ -83,9 +102,8 @@ def _save_last_sync_status(exit_code: int, status: str, log_path: Path | None) -
 
 
 def _load_metrics_diagnostics() -> dict:
-    conn = connect_sqlite(db_path)
+    conn = connect_sqlite(db_path, timeout=30.0)
     try:
-        apply_schema(conn, schema_sql_path())
         return queries.get_activity_metrics_diagnostics(conn)
     finally:
         conn.close()
@@ -146,9 +164,8 @@ if st.button(
     disabled=repair_disabled,
 ):
     with st.spinner("Refreshing derived metrics..."):
-        conn = connect_sqlite(db_path)
+        conn = connect_sqlite(db_path, timeout=30.0)
         try:
-            apply_schema(conn, schema_sql_path())
             refresh_summary = refresh_post_sync_tables(conn)
         finally:
             conn.close()
@@ -207,6 +224,7 @@ with col_actions:
             cmd.extend(["--days", str(int(days))])
         cmd.append("--visible")
         cmd.append("--chrome")
+        cmd.append("--parse-trackpoints")
 
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"

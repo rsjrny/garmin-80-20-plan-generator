@@ -101,23 +101,99 @@ def _find_givemydata_cmd() -> list[str] | None:
     """Locate the garmin-givemydata executable."""
     import shutil
 
+    def _python_has_module(python_exe: str) -> bool:
+        try:
+            probe = subprocess.run(
+                [python_exe, "-c", "import garmin_givemydata"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=20,
+            )
+            return probe.returncode == 0
+        except Exception:
+            return False
+
     exe_dir = None
     if getattr(sys, "frozen", False):
         exe_dir = Path(sys.executable).parent
 
+    candidates: list[list[str]] = []
+    seen_candidates: set[tuple[str, ...]] = set()
+
+    def _append_candidate(cmd: list[str]) -> None:
+        key = tuple(cmd)
+        if key in seen_candidates:
+            return
+        seen_candidates.add(key)
+        candidates.append(cmd)
+
+    # Prefer bundled binaries first when present.
     if exe_dir:
         for candidate in [
             exe_dir / "garmin-givemydata.exe",
             exe_dir / "_internal" / "garmin-givemydata.exe",
         ]:
             if candidate.exists():
-                return [str(candidate)]
+                _append_candidate([str(candidate)])
+
+    # Prefer an adjacent workspace virtualenv when available.
+    cwd_venv_exe = Path.cwd() / ".venv" / "Scripts" / "garmin-givemydata.exe"
+    if cwd_venv_exe.exists():
+        _append_candidate([str(cwd_venv_exe)])
+
+    cwd_python_exe = Path.cwd() / ".venv" / "Scripts" / "python.exe"
+    if cwd_python_exe.exists():
+        _append_candidate([str(cwd_python_exe), "-m", "garmin_givemydata"])
+
+    docs_repo_root = Path.home() / "Documents" / "gitRepositories"
+    if docs_repo_root.exists():
+        for repo_dir in docs_repo_root.iterdir():
+            if not repo_dir.is_dir():
+                continue
+            repo_venv_exe = repo_dir / ".venv" / "Scripts" / "garmin-givemydata.exe"
+            if repo_venv_exe.exists():
+                _append_candidate([str(repo_venv_exe)])
+            repo_python_exe = repo_dir / ".venv" / "Scripts" / "python.exe"
+            if repo_python_exe.exists():
+                _append_candidate([str(repo_python_exe), "-m", "garmin_givemydata"])
 
     found = shutil.which("garmin-givemydata")
     if found:
-        return [found]
+        _append_candidate([found])
+
+    invalid_candidates: list[str] = []
+    for candidate_cmd in candidates:
+        if len(candidate_cmd) >= 3 and candidate_cmd[1:3] == [
+            "-m",
+            "garmin_givemydata",
+        ]:
+            if _python_has_module(candidate_cmd[0]):
+                return candidate_cmd
+            invalid_candidates.append(" ".join(candidate_cmd))
+            continue
+
+        if len(candidate_cmd) == 1 and candidate_cmd[0].lower().endswith(
+            "garmin-givemydata.exe"
+        ):
+            exe_path = Path(candidate_cmd[0])
+            bundle_roots = [exe_path.parent, exe_path.parent / "_internal"]
+            if not any(
+                (root / "garmin_givemydata.py").exists() for root in bundle_roots
+            ):
+                invalid_candidates.append(" ".join(candidate_cmd))
+                continue
+
+        return candidate_cmd
 
     print("[ERROR] 'garmin-givemydata' not found.")
+    if invalid_candidates:
+        print(
+            f"[INFO] Checked {len(invalid_candidates)} unavailable/broken command candidate(s)."
+        )
+        for candidate in invalid_candidates[:5]:
+            print(f"[INFO]   rejected: {candidate}")
+        if len(invalid_candidates) > 5:
+            print(f"[INFO]   ... and {len(invalid_candidates) - 5} more")
     print("[INFO]  Install it: pip install garmin-givemydata")
     if exe_dir:
         print(f"[INFO]  Or bundle 'garmin-givemydata.exe' alongside: {exe_dir}")
@@ -136,6 +212,7 @@ def run_sync(
     rebuild_derived_metrics: bool = False,
     rebuild_derived_metrics_all: bool = False,
     derived_metrics_only: bool = False,
+    parse_trackpoints: bool = False,
 ) -> int:
     """Invoke garmin-givemydata to sync data into db_path.
 
@@ -183,8 +260,15 @@ def run_sync(
             "that flag; continuing with default browser mode"
         )
 
-    if cmd and (not skip_trackpoints):
-        cmd.append("--parse-trackpoints")
+    if cmd and skip_trackpoints:
+        cmd.append("--no-trackpoints")
+    elif cmd and rebuild_trackpoints:
+        cmd.append("--rebuild-trackpoints")
+
+    if cmd and parse_trackpoints and not skip_trackpoints:
+        print(
+            "[INFO] --parse-trackpoints requested; trackpoint parsing is enabled by default upstream"
+        )
 
     if cmd and extra_args:
         cmd.extend(extra_args)
@@ -331,6 +415,15 @@ Examples:
     )
 
     parser.add_argument(
+        "--parse-trackpoints",
+        action="store_true",
+        help=(
+            "Explicitly enable FIT trackpoint extraction (default upstream behavior). "
+            "Accepted for compatibility with UI/import commands."
+        ),
+    )
+
+    parser.add_argument(
         "--rebuild-trackpoints",
         action="store_true",
         help="Rebuild trackpoints for all activities (deletes and reinserts per activity)",
@@ -383,6 +476,7 @@ Examples:
         rebuild_derived_metrics=args.rebuild_derived_metrics,
         rebuild_derived_metrics_all=args.rebuild_derived_metrics_all,
         derived_metrics_only=args.derived_metrics_only,
+        parse_trackpoints=args.parse_trackpoints,
     )
 
     sys.exit(rc)
