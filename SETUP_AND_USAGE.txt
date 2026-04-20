@@ -114,6 +114,12 @@ Versioning and Build
 --------------------
 - Packaging/build script: packaging/build.ps1
 - Build script updates pyproject version from the provided build version.
+- Build defaults to PyPI source mode for garmin-givemydata.
+- Use local source mode when validating unreleased changes:
+  powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version <x.y.z> -GivemydataSource local
+- Use explicit PyPI version pin when needed:
+  powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version <x.y.z> -GivemydataSource pypi -GivemydataPypiSpec "garmin-givemydata==<version>"
+- Build output includes a mode banner showing LOCAL or PYPI.
 
 End
 ---

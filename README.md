@@ -99,11 +99,31 @@ Example build command:
 powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 0.1.0
 ```
 
+`garmin-givemydata` source selection:
+
+- Default mode is `pypi` (no extra args needed)
+- Use `-GivemydataSource local` to package against your local sibling repo copy
+- Use `-GivemydataPypiSpec` to pin a specific PyPI version
+
+Examples:
+
+```powershell
+# Default PyPI mode
+powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 0.1.0
+
+# Local repo mode
+powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 0.1.0 -GivemydataSource local
+
+# PyPI mode with explicit version
+powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 0.1.0 -GivemydataSource pypi -GivemydataPypiSpec "garmin-givemydata==0.1.10"
+```
+
 It will:
 
 - build the Streamlit app directory (`GarminDataHub`)
 - build the CLI directory (`cli_backup_ingest`)
-- bundle `garmin-givemydata.exe` with the release artifacts
+- print a source-mode banner (`LOCAL` or `PYPI`) in build logs
+- bundle `garmin-givemydata.exe` from project `.venv` with the release artifacts
 - copy outputs under `release/<version>/`
 - optionally build the installer via Inno Setup when available
 
