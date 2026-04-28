@@ -269,7 +269,7 @@ New-Item -ItemType Directory -Path $StreamlitBuildDir -Force | Out-Null
 New-Item -ItemType Directory -Path $CliBuildDir -Force | Out-Null
 
 # --- BUILD STREAMLIT APP ---
-Write-Host ""
+Write-Host ""mistral:7b
 Write-Host "---------------------------------------------------" -ForegroundColor Cyan
 Write-Host "Step 1: Building Streamlit Application (as a directory)" -ForegroundColor Cyan
 Write-Host "---------------------------------------------------"
@@ -282,10 +282,8 @@ $pyinstallerArgsStreamlit = @(
     "--distpath", $StreamlitDistDir,
     "--workpath", (Join-Path $StreamlitBuildDir "build"),
     "--specpath", $StreamlitBuildDir,
-    "--add-data", ((Join-Path $ProjectRoot 'src\garmin_data_hub\ui_streamlit') + ";garmin_data_hub/ui_streamlit"),
-    "--add-data", ((Join-Path $ProjectRoot 'src\garmin_data_hub\db\schema.sql') + ";garmin_data_hub/db"),
+    "--add-data", ((Join-Path $ProjectRoot 'src\garmin_data_hub') + ";garmin_data_hub"),
     "--collect-all", "streamlit",
-    "--collect-all", "garmin_data_hub",
     "--hidden-import", "pandas",
     "--hidden-import", "plotly",
     $LauncherFile
@@ -293,7 +291,7 @@ $pyinstallerArgsStreamlit = @(
 
 try {
     Write-Host "Running PyInstaller for Streamlit app..."
-    python -m PyInstaller @pyinstallerArgsStreamlit
+    & $VenvPython -m PyInstaller @pyinstallerArgsStreamlit
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed for Streamlit app." }
     Write-Host "[SUCCESS] Streamlit app built." -ForegroundColor Green
 }
@@ -330,7 +328,7 @@ $pyinstallerArgsCli = @(
 
 try {
     Write-Host "Running PyInstaller for CLI tool..."
-    python -m PyInstaller @pyinstallerArgsCli
+    & $VenvPython -m PyInstaller @pyinstallerArgsCli
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed for CLI tool." }
     Write-Host "[SUCCESS] CLI tool built." -ForegroundColor Green
 }

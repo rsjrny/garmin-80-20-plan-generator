@@ -59,7 +59,7 @@ conn = connect_sqlite(db_path)
 render_sidebar(conn)
 conn.close()
 
-st.header("Plan Review")
+st.header("Plan Review (Upcoming Activities)")
 
 settings = get_cached_plan_settings(str(db_path), db_mtime, refresh_token)
 inputs, analysis, day_plans, weekly_rows = get_cached_generated_plan(
