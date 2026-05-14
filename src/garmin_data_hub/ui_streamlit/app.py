@@ -24,7 +24,7 @@ with st.sidebar:
 
 st.title("Garmin Data Hub")
 st.write(
-    "Use the pages in the left sidebar: **Garmin Sync**, **MCP Query**, **Activities**, **Build Plan**, **Charts**, and **Compliance**."
+    "Use the pages in the left sidebar: **Garmin Sync**, **MCP Query**, **Activities**, **Build Plan**, **Charts**, **Compliance**, and **Sleep Table**."
 )
 st.info(
     "Database is stored in Windows AppData by default. You can override with env var `GARMIN_DATA_HUB_DB`."

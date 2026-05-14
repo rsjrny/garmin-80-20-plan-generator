@@ -9,7 +9,7 @@ Before packaging, ensure:
 - the project environment is installed (`pip install -e .[dev]`)
 - `PyInstaller` is available in the active environment
 - project virtual environment exists at `.venv` (build uses `.venv\\Scripts\\python.exe`)
-- `garmin-givemydata` is installable from your selected source mode (`pypi` by default, or local repo)
+- `garmin-givemydata` is available on PyPI (build upgrades/installs it in `.venv`)
 - optional: `ISCC.exe` is installed if you want the Inno Setup installer built
 
 ## 2. Build Command
@@ -20,19 +20,14 @@ From the repository root:
 powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 0.1.0
 ```
 
-By default, builds now run in `pypi` mode.
-
 Common variants:
 
 ```powershell
-# Default (PyPI)
+# Default (upgrades PyPI package in .venv)
 powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 0.1.0
 
-# Local repo mode (for pre-release / PR validation)
-powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 0.1.0 -GivemydataSource local
-
 # PyPI mode with explicit version pin
-powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 0.1.0 -GivemydataSource pypi -GivemydataPypiSpec "garmin-givemydata==0.1.10"
+powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 0.1.0 -GivemydataPypiSpec "garmin-givemydata==0.1.10"
 ```
 
 ## 2.1 Build Modes Quick Reference
@@ -40,26 +35,20 @@ powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 0.1.0 -G
 Use these ready-to-run commands for current release `0.2.3`:
 
 ```powershell
-# Default (PyPI mode)
+# Default (upgrades PyPI package in .venv)
 powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 0.2.3
 
-# Local mode (use local ../garmin-givemydata repo)
-powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 0.2.3 -GivemydataSource local
-
 # PyPI mode with explicit pin
-powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 0.2.3 -GivemydataSource pypi -GivemydataPypiSpec "garmin-givemydata==0.1.10"
+powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 0.2.3 -GivemydataPypiSpec "garmin-givemydata==0.1.10"
 
 # PyPI mode, no auto-update (validate-only)
-powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 0.2.3 -GivemydataSource pypi -AutoUpdateGivemydata:$false
+powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 0.2.3 -AutoUpdateGivemydata:$false
 ```
 
 ## 3. What `build.ps1` Does
 
 1. Updates `pyproject.toml` with the requested version
-2. Prints a garmin-givemydata mode banner (`LOCAL` or `PYPI`) at startup
-3. Resolves and validates `garmin-givemydata` in `.venv` based on selected source mode:
-	- `pypi` (default): installs/upgrades from `-GivemydataPypiSpec`
-	- `local`: validates against sibling repo `../garmin-givemydata` and optionally auto-refreshes
+2. Resolves and validates `garmin-givemydata` in `.venv` from PyPI (`-GivemydataPypiSpec`)
 2. Cleans and recreates `build/` and `release/<version>/`
 3. Builds the Streamlit app into `build/streamlit_app/dist/GarminDataHub/`
 4. Builds the sync CLI into `build/cli_tool/dist/cli_backup_ingest/`
@@ -79,7 +68,6 @@ After a successful run, verify:
 
 Before publishing a release, confirm:
 
-- startup banner shows expected source mode (`PYPI` or `LOCAL`)
 - the app launches successfully from the packaged GUI build
 - the CLI help works: `cli_backup_ingest.exe --help`
 - the sync flow can open the browser and finish a run

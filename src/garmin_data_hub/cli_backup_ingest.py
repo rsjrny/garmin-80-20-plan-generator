@@ -47,85 +47,13 @@ def _clear_stale_chrome_profile_locks(profile_dir: Path) -> None:
         print(f"[INFO] Cleared {removed} stale browser profile lock file(s)")
 
 
-def _snapshot_fit_archives(fit_dir: Path) -> dict[str, tuple[int, int]]:
-    if not fit_dir.exists():
-        return {}
-
-    snapshot: dict[str, tuple[int, int]] = {}
-    for zip_path in fit_dir.glob("*.zip"):
-        try:
-            stat = zip_path.stat()
-        except OSError:
-            continue
-        snapshot[zip_path.name] = (stat.st_mtime_ns, stat.st_size)
-    return snapshot
-
-
-def _find_changed_fit_archives(
-    fit_dir: Path,
-    before: dict[str, tuple[int, int]],
-) -> list[Path]:
-    if not fit_dir.exists():
-        return []
-
-    changed: list[Path] = []
-    for zip_path in fit_dir.glob("*.zip"):
-        try:
-            stat = zip_path.stat()
-        except OSError:
-            continue
-        signature = (stat.st_mtime_ns, stat.st_size)
-        if before.get(zip_path.name) != signature:
-            changed.append(zip_path)
-    return changed
-
-
-def _select_trackpoint_archive_paths(
-    changed_fit_archives: list[Path],
-    rebuild_trackpoints: bool,
-) -> list[Path] | None:
-    """Choose which FIT archives to scan for trackpoint ingestion.
-
-    When no new ZIPs were downloaded, return ``None`` so the ingestion step scans
-    the existing FIT cache and backfills any activities that are still missing
-    trackpoints from an earlier failed run.
-    """
-    if rebuild_trackpoints:
-        return None
-    if changed_fit_archives:
-        return changed_fit_archives
-    return None
-
-
 def _find_givemydata_cmd() -> list[str] | None:
     """Locate the garmin-givemydata executable."""
     import shutil
 
-    def _python_has_module(python_exe: str) -> bool:
-        try:
-            probe = subprocess.run(
-                [python_exe, "-c", "import garmin_givemydata"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=20,
-            )
-            return probe.returncode == 0
-        except Exception:
-            return False
-
     exe_dir = None
     if getattr(sys, "frozen", False):
         exe_dir = Path(sys.executable).parent
-
-    candidates: list[list[str]] = []
-    seen_candidates: set[tuple[str, ...]] = set()
-
-    def _append_candidate(cmd: list[str]) -> None:
-        key = tuple(cmd)
-        if key in seen_candidates:
-            return
-        seen_candidates.add(key)
-        candidates.append(cmd)
 
     # Prefer bundled binaries first when present.
     if exe_dir:
@@ -134,66 +62,13 @@ def _find_givemydata_cmd() -> list[str] | None:
             exe_dir / "_internal" / "garmin-givemydata.exe",
         ]:
             if candidate.exists():
-                _append_candidate([str(candidate)])
-
-    # Prefer an adjacent workspace virtualenv when available.
-    cwd_venv_exe = Path.cwd() / ".venv" / "Scripts" / "garmin-givemydata.exe"
-    if cwd_venv_exe.exists():
-        _append_candidate([str(cwd_venv_exe)])
-
-    cwd_python_exe = Path.cwd() / ".venv" / "Scripts" / "python.exe"
-    if cwd_python_exe.exists():
-        _append_candidate([str(cwd_python_exe), "-m", "garmin_givemydata"])
-
-    docs_repo_root = Path.home() / "Documents" / "gitRepositories"
-    if docs_repo_root.exists():
-        for repo_dir in docs_repo_root.iterdir():
-            if not repo_dir.is_dir():
-                continue
-            repo_venv_exe = repo_dir / ".venv" / "Scripts" / "garmin-givemydata.exe"
-            if repo_venv_exe.exists():
-                _append_candidate([str(repo_venv_exe)])
-            repo_python_exe = repo_dir / ".venv" / "Scripts" / "python.exe"
-            if repo_python_exe.exists():
-                _append_candidate([str(repo_python_exe), "-m", "garmin_givemydata"])
+                return [str(candidate)]
 
     found = shutil.which("garmin-givemydata")
     if found:
-        _append_candidate([found])
-
-    invalid_candidates: list[str] = []
-    for candidate_cmd in candidates:
-        if len(candidate_cmd) >= 3 and candidate_cmd[1:3] == [
-            "-m",
-            "garmin_givemydata",
-        ]:
-            if _python_has_module(candidate_cmd[0]):
-                return candidate_cmd
-            invalid_candidates.append(" ".join(candidate_cmd))
-            continue
-
-        if len(candidate_cmd) == 1 and candidate_cmd[0].lower().endswith(
-            "garmin-givemydata.exe"
-        ):
-            exe_path = Path(candidate_cmd[0])
-            bundle_roots = [exe_path.parent, exe_path.parent / "_internal"]
-            if not any(
-                (root / "garmin_givemydata.py").exists() for root in bundle_roots
-            ):
-                invalid_candidates.append(" ".join(candidate_cmd))
-                continue
-
-        return candidate_cmd
+        return [found]
 
     print("[ERROR] 'garmin-givemydata' not found.")
-    if invalid_candidates:
-        print(
-            f"[INFO] Checked {len(invalid_candidates)} unavailable/broken command candidate(s)."
-        )
-        for candidate in invalid_candidates[:5]:
-            print(f"[INFO]   rejected: {candidate}")
-        if len(invalid_candidates) > 5:
-            print(f"[INFO]   ... and {len(invalid_candidates) - 5} more")
     print("[INFO]  Install it: pip install garmin-givemydata")
     if exe_dir:
         print(f"[INFO]  Or bundle 'garmin-givemydata.exe' alongside: {exe_dir}")
@@ -206,13 +81,9 @@ def run_sync(
     visible: bool = False,
     chrome: bool = False,
     extra_args: list[str] | None = None,
-    skip_trackpoints: bool = False,
-    rebuild_trackpoints: bool = False,
-    trackpoints_max: int | None = None,
     rebuild_derived_metrics: bool = False,
     rebuild_derived_metrics_all: bool = False,
     derived_metrics_only: bool = False,
-    parse_trackpoints: bool = False,
 ) -> int:
     """Invoke garmin-givemydata to sync data into db_path.
 
@@ -246,7 +117,6 @@ def run_sync(
     env["PYTHONUNBUFFERED"] = "1"
     if chrome:
         _clear_stale_chrome_profile_locks(data_dir / "browser_profile")
-    fit_dir = data_dir / "fit"
 
     if cmd and days is not None:
         cmd.extend(["--days", str(days)])
@@ -258,16 +128,6 @@ def run_sync(
         print(
             "[INFO] --chrome requested, but upstream garmin-givemydata no longer accepts "
             "that flag; continuing with default browser mode"
-        )
-
-    if cmd and skip_trackpoints:
-        cmd.append("--no-trackpoints")
-    elif cmd and rebuild_trackpoints:
-        cmd.append("--rebuild-trackpoints")
-
-    if cmd and parse_trackpoints and not skip_trackpoints:
-        print(
-            "[INFO] --parse-trackpoints requested; trackpoint parsing is enabled by default upstream"
         )
 
     if cmd and extra_args:
@@ -304,16 +164,6 @@ def run_sync(
         apply_schema(conn, schema_sql_path())
         print("[OK] App schema applied")
 
-        trackpoint_summary = None
-        if derived_metrics_only:
-            print("[SKIP] Trackpoint ingestion disabled (--derived-metrics-only)")
-        elif skip_trackpoints:
-            print("[SKIP] Trackpoint ingestion disabled (--skip-trackpoints)")
-        else:
-            print(
-                "[trackpoints] parsed during garmin-givemydata sync (--parse-trackpoints)"
-            )
-
         refresh_ids = None
         start_ts_iso = None
 
@@ -328,11 +178,7 @@ def run_sync(
                     datetime.now(timezone.utc) - timedelta(days=int(days) + 1)
                 ).strftime("%Y-%m-%dT%H:%M:%SZ")
         else:
-            if trackpoint_summary:
-                candidate_ids = trackpoint_summary.get("target_activity_ids") or []
-                refresh_ids = [int(v) for v in candidate_ids if v is not None]
-
-            if not refresh_ids and days and int(days) > 0:
+            if days and int(days) > 0:
                 start_ts_iso = (
                     datetime.now(timezone.utc) - timedelta(days=int(days) + 1)
                 ).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -409,34 +255,6 @@ Examples:
     )
 
     parser.add_argument(
-        "--skip-trackpoints",
-        action="store_true",
-        help="Skip FIT trackpoint extraction into activity_trackpoints",
-    )
-
-    parser.add_argument(
-        "--parse-trackpoints",
-        action="store_true",
-        help=(
-            "Explicitly enable FIT trackpoint extraction (default upstream behavior). "
-            "Accepted for compatibility with UI/import commands."
-        ),
-    )
-
-    parser.add_argument(
-        "--rebuild-trackpoints",
-        action="store_true",
-        help="Rebuild trackpoints for all activities (deletes and reinserts per activity)",
-    )
-
-    parser.add_argument(
-        "--trackpoints-max",
-        type=int,
-        default=None,
-        help="Optional cap on number of activities to ingest trackpoints for",
-    )
-
-    parser.add_argument(
         "--rebuild-derived-metrics",
         action="store_true",
         help=(
@@ -470,13 +288,9 @@ Examples:
         visible=args.visible,
         chrome=args.chrome,
         extra_args=extra or None,
-        skip_trackpoints=args.skip_trackpoints,
-        rebuild_trackpoints=args.rebuild_trackpoints,
-        trackpoints_max=args.trackpoints_max,
         rebuild_derived_metrics=args.rebuild_derived_metrics,
         rebuild_derived_metrics_all=args.rebuild_derived_metrics_all,
         derived_metrics_only=args.derived_metrics_only,
-        parse_trackpoints=args.parse_trackpoints,
     )
 
     sys.exit(rc)

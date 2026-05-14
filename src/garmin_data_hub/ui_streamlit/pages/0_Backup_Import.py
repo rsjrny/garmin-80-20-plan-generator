@@ -224,7 +224,6 @@ with col_actions:
             cmd.extend(["--days", str(int(days))])
         cmd.append("--visible")
         cmd.append("--chrome")
-        cmd.append("--parse-trackpoints")
 
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
@@ -350,14 +349,13 @@ else:
 
 st.divider()
 st.subheader("How the sync works")
-st.write(
-    """
+st.write("""
     **Garmin Sync Process:**
 
     1. **Browser Login** — A visible browser window opens for you to log into your Garmin account and authorize the sync.
     2. **Fetch Latest Data** — Once authorized, your latest activities, health metrics, and training data are downloaded from Garmin Connect.
     3. **Store in Local DB** — All data is stored in the local SQLite database to preserve history and enable offline analysis.
-    4. **Extract Trackpoints** — For new and changed activities, detailed GPS trackpoint data is extracted from FIT files and stored separately for mapping and analysis.
+    4. **Extract Trackpoints** — garmin-givemydata extracts GPS trackpoint data during sync and stores it for mapping and analysis.
     5. **Schema Applied** — Database schema is applied automatically to ensure all tables and columns are up-to-date.
     6. **Ready to Analyze** — Once complete, navigate to other pages (Activities, Charts, Build Plan, etc.) to view and analyze your data.
 
@@ -367,5 +365,4 @@ st.write(
     - The sync runs with **browser visible** and **Chrome engine** to ensure MFA works reliably.
     - Specify **Days to sync** to limit the date range; leave at 0 for the default (recent data only).
     - The log shows real-time progress; watch it to confirm data is being fetched correctly.
-    """
-)
+    """)

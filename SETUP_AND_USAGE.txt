@@ -51,12 +51,6 @@ Common flags:
   Uses Chrome engine for login stability.
 - --days <N>
   Limits sync range by number of days.
-- --skip-trackpoints
-  Skips FIT trackpoint extraction.
-- --rebuild-trackpoints
-  Rebuilds all trackpoints (delete/reinsert per activity).
-- --trackpoints-max <N>
-  Caps number of activities for trackpoint ingestion.
 - --db <path>
   Custom DB path.
 
@@ -91,8 +85,7 @@ Sync/login issues:
 - Verify internet connectivity.
 
 No new trackpoints after sync:
-- Run a full rebuild once:
-  cli_backup_ingest.exe --rebuild-trackpoints
+- Rerun sync and check the sync log for garmin-givemydata errors.
 
 No activities visible:
 - Confirm sync completed with exit code 0.
@@ -114,14 +107,11 @@ Versioning and Build
 --------------------
 - Packaging/build script: packaging/build.ps1
 - Build script updates pyproject version from the provided build version.
-- Build defaults to PyPI source mode for garmin-givemydata.
-- Use local source mode when validating unreleased changes:
-  powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version <x.y.z> -GivemydataSource local
+- Build uses PyPI install/upgrade for garmin-givemydata in `.venv`.
 - Use explicit PyPI version pin when needed:
-  powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version <x.y.z> -GivemydataSource pypi -GivemydataPypiSpec "garmin-givemydata==<version>"
-- Build output includes a mode banner showing LOCAL or PYPI.
+  powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version <x.y.z> -GivemydataPypiSpec "garmin-givemydata==<version>"
 
 End
 ---
 If sync hangs, stop and rerun with --visible --chrome.
-If data appears stale, run one sync with --rebuild-trackpoints.
+If data appears stale, run sync again and then use Repair Derived Metrics.

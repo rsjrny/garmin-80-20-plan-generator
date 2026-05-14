@@ -30,7 +30,7 @@ Located in `src/garmin_data_hub/ui_streamlit/pages`:
 
 - `0_Backup_Import.py` — Garmin sync, progress, and derived-refresh diagnostics
 - `2_Activities.py` — activity browsing and analysis
-- `3_Build_Plan.py` — plan creation workflow
+- `5_Build_Plan.py` — plan creation workflow
 - `4_Charts.py` — trend and power/load charts
 - `5_Compliance.py` — compliance and zone analysis
 - `6_8020_Help.py`
@@ -70,9 +70,6 @@ python -m garmin_data_hub.cli_backup_ingest --visible --chrome
 Helpful sync options:
 
 - `--days <N>` — limit sync window
-- `--skip-trackpoints` — skip FIT trackpoint extraction
-- `--rebuild-trackpoints` — rebuild all trackpoints
-- `--trackpoints-max <N>` — cap processed activities
 - `--db <path>` — use a custom SQLite path
 
 ## Tests
@@ -99,30 +96,25 @@ Example build command:
 powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 0.1.0
 ```
 
-`garmin-givemydata` source selection:
+`garmin-givemydata` packaging behavior:
 
-- Default mode is `pypi` (no extra args needed)
-- Use `-GivemydataSource local` to package against your local sibling repo copy
-- Use `-GivemydataPypiSpec` to pin a specific PyPI version
+- Build uses PyPI package install/upgrade into `.venv`
+- Use `-GivemydataPypiSpec` to pin a specific PyPI version when needed
 
 Examples:
 
 ```powershell
-# Default PyPI mode
+# Default (upgrades PyPI package in .venv)
 powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 0.1.0
 
-# Local repo mode
-powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 0.1.0 -GivemydataSource local
-
-# PyPI mode with explicit version
-powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 0.1.0 -GivemydataSource pypi -GivemydataPypiSpec "garmin-givemydata==0.1.10"
+# PyPI with explicit version
+powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 0.1.0 -GivemydataPypiSpec "garmin-givemydata==0.1.10"
 ```
 
 It will:
 
 - build the Streamlit app directory (`GarminDataHub`)
 - build the CLI directory (`cli_backup_ingest`)
-- print a source-mode banner (`LOCAL` or `PYPI`) in build logs
 - bundle `garmin-givemydata.exe` from project `.venv` with the release artifacts
 - copy outputs under `release/<version>/`
 - optionally build the installer via Inno Setup when available

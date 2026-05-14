@@ -3,10 +3,8 @@
 
 param(
     [string]$Version = "0.0.0", # Default version if not specified
-    [switch]$AutoUpdateGivemydata = $true,
-    [ValidateSet("local", "pypi")]
-    [string]$GivemydataSource = "pypi",
-    [string]$GivemydataPypiSpec = "garmin-givemydata"
+    [bool]$AutoUpdateGivemydata = $true,
+    [string]$GivemydataPypiSpec = "garmin-givemydata>=0.1.10"
 )
 
 # Set error action preference to stop on errors
@@ -32,8 +30,6 @@ $PyProjectPath = Join-Path $ProjectRoot "pyproject.toml"
 $VenvPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
 $VenvScriptsDir = Join-Path $ProjectRoot ".venv\Scripts"
 $VenvGivemydataExe = Join-Path $VenvScriptsDir "garmin-givemydata.exe"
-$GivemydataRepo = Join-Path (Split-Path -Parent $ProjectRoot) "garmin-givemydata"
-$GivemydataSourceFile = Join-Path $GivemydataRepo "garmin_givemydata.py"
 
 function Update-PyProjectVersion {
     param(
@@ -78,107 +74,6 @@ function Update-PyProjectVersion {
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllLines($FilePath, $lines, $utf8NoBom)
     Write-Host "Updated pyproject version to $NewVersion" -ForegroundColor Green
-}
-
-function Assert-GivemydataVenvIsCurrent {
-    param(
-        [string]$PythonExe,
-        [string]$SourceFile,
-        [switch]$TryAutoUpdate
-    )
-
-    if (-not (Test-Path $PythonExe)) {
-        Write-Host "[ERROR] Expected venv Python not found: $PythonExe" -ForegroundColor Red
-        exit 1
-    }
-
-    if (-not (Test-Path $SourceFile)) {
-        Write-Host "[ERROR] Expected source file not found: $SourceFile" -ForegroundColor Red
-        exit 1
-    }
-
-    $probeLines = & $PythonExe -c "import json, sys
-try:
-    import garmin_givemydata as g
-    print(json.dumps({'ok': True, 'module_file': getattr(g, '__file__', '')}))
-except Exception as e:
-    print(json.dumps({'ok': False, 'error': str(e)}))
-    sys.exit(1)
-" 2>$null
-
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "[ERROR] Could not import garmin_givemydata from venv." -ForegroundColor Red
-        Write-Host "        Fix with: $PythonExe -m pip install -e `"$GivemydataRepo`"" -ForegroundColor Yellow
-        exit 1
-    }
-
-    $probeJson = ($probeLines | Select-Object -Last 1)
-    $probe = $probeJson | ConvertFrom-Json
-    $moduleFile = [System.IO.Path]::GetFullPath([string]$probe.module_file)
-    $sourceFullPath = [System.IO.Path]::GetFullPath($SourceFile)
-    $sourceDir = Split-Path -Parent $sourceFullPath
-
-    # Editable install points directly into the source repo and is always current.
-    if ($moduleFile.StartsWith($sourceDir, [System.StringComparison]::OrdinalIgnoreCase)) {
-        Write-Host "[OK] garmin_givemydata is editable-linked to source repo." -ForegroundColor Green
-        return
-    }
-
-    if (-not (Test-Path $moduleFile)) {
-        Write-Host "[ERROR] Installed module path does not exist: $moduleFile" -ForegroundColor Red
-        exit 1
-    }
-
-    $installedHash = (Get-FileHash -Path $moduleFile -Algorithm SHA256).Hash
-    $sourceHash = (Get-FileHash -Path $sourceFullPath -Algorithm SHA256).Hash
-
-    if ($installedHash -ne $sourceHash) {
-        if ($TryAutoUpdate) {
-            Write-Host "[WARN] .venv garmin_givemydata is stale; reinstalling from local repo..." -ForegroundColor Yellow
-            & $PythonExe -m pip install --force-reinstall --no-deps "$GivemydataRepo"
-            if ($LASTEXITCODE -ne 0) {
-                Write-Host "[ERROR] Auto-update failed while reinstalling garmin-givemydata." -ForegroundColor Red
-                exit 1
-            }
-
-            $probeLines2 = & $PythonExe -c "import json, sys
-try:
-    import garmin_givemydata as g
-    print(json.dumps({'ok': True, 'module_file': getattr(g, '__file__', '')}))
-except Exception as e:
-    print(json.dumps({'ok': False, 'error': str(e)}))
-    sys.exit(1)
-" 2>$null
-            if ($LASTEXITCODE -ne 0) {
-                Write-Host "[ERROR] Could not import garmin_givemydata after auto-update." -ForegroundColor Red
-                exit 1
-            }
-            $probe2 = ($probeLines2 | Select-Object -Last 1) | ConvertFrom-Json
-            $moduleFile2 = [System.IO.Path]::GetFullPath([string]$probe2.module_file)
-
-            if (-not (Test-Path $moduleFile2)) {
-                Write-Host "[ERROR] Installed module path missing after auto-update: $moduleFile2" -ForegroundColor Red
-                exit 1
-            }
-
-            $installedHash2 = (Get-FileHash -Path $moduleFile2 -Algorithm SHA256).Hash
-            $sourceHash2 = (Get-FileHash -Path $sourceFullPath -Algorithm SHA256).Hash
-            if ($installedHash2 -eq $sourceHash2) {
-                Write-Host "[OK] .venv garmin_givemydata refreshed from local source." -ForegroundColor Green
-                return
-            }
-        }
-
-        Write-Host "[ERROR] .venv garmin_givemydata is stale vs local source repo." -ForegroundColor Red
-        Write-Host "        Installed: $moduleFile" -ForegroundColor Yellow
-        Write-Host "        Source:    $sourceFullPath" -ForegroundColor Yellow
-        Write-Host "        Run one of:" -ForegroundColor Yellow
-        Write-Host "          $PythonExe -m pip install -e `"$GivemydataRepo`"" -ForegroundColor Yellow
-        Write-Host "          $PythonExe -m pip install --force-reinstall --no-deps `"$GivemydataRepo`"" -ForegroundColor Yellow
-        exit 1
-    }
-
-    Write-Host "[OK] .venv garmin_givemydata matches local source file." -ForegroundColor Green
 }
 
 function Ensure-GivemydataFromPypi {
@@ -235,25 +130,10 @@ Write-Host "###################################################" -ForegroundColo
 Write-Host "# GarminDataHub Build Pipeline                    #" -ForegroundColor Magenta
 Write-Host "###################################################" -ForegroundColor Magenta
 Write-Host ""
-Write-Host "===================================================" -ForegroundColor DarkCyan
-Write-Host "garmin-givemydata mode: $($GivemydataSource.ToUpperInvariant())" -ForegroundColor Cyan
-if ($GivemydataSource -eq "pypi") {
-    Write-Host "garmin-givemydata package: $GivemydataPypiSpec" -ForegroundColor Cyan
-}
-Write-Host "===================================================" -ForegroundColor DarkCyan
-Write-Host ""
 Write-Host "Building version: $Version" -ForegroundColor Cyan
-Write-Host "garmin-givemydata source mode: $GivemydataSource" -ForegroundColor Cyan
-if ($GivemydataSource -eq "pypi") {
-    Write-Host "garmin-givemydata package spec: $GivemydataPypiSpec" -ForegroundColor Cyan
-}
+Write-Host "garmin-givemydata package spec: $GivemydataPypiSpec" -ForegroundColor Cyan
 Update-PyProjectVersion -FilePath $PyProjectPath -NewVersion $Version
-if ($GivemydataSource -eq "local") {
-    Assert-GivemydataVenvIsCurrent -PythonExe $VenvPython -SourceFile $GivemydataSourceFile -TryAutoUpdate:$AutoUpdateGivemydata
-}
-else {
-    Ensure-GivemydataFromPypi -PythonExe $VenvPython -PackageSpec $GivemydataPypiSpec -TryAutoUpdate:$AutoUpdateGivemydata
-}
+Ensure-GivemydataFromPypi -PythonExe $VenvPython -PackageSpec $GivemydataPypiSpec -TryAutoUpdate:$AutoUpdateGivemydata
 
 # Clean and create directories
 if (Test-Path $BuildDir) {
@@ -269,7 +149,7 @@ New-Item -ItemType Directory -Path $StreamlitBuildDir -Force | Out-Null
 New-Item -ItemType Directory -Path $CliBuildDir -Force | Out-Null
 
 # --- BUILD STREAMLIT APP ---
-Write-Host ""mistral:7b
+Write-Host ""
 Write-Host "---------------------------------------------------" -ForegroundColor Cyan
 Write-Host "Step 1: Building Streamlit Application (as a directory)" -ForegroundColor Cyan
 Write-Host "---------------------------------------------------"
@@ -349,12 +229,7 @@ if (-not (Test-Path $CliDir)) {
 $srcGivemydata = $VenvGivemydataExe
 if (-not (Test-Path $srcGivemydata)) {
     Write-Host "[ERROR] 'garmin-givemydata.exe' not found in venv at: $srcGivemydata" -ForegroundColor Red
-    if ($GivemydataSource -eq "local") {
-        Write-Host "        Fix with: $VenvPython -m pip install --force-reinstall --no-deps `"$GivemydataRepo`"" -ForegroundColor Red
-    }
-    else {
-        Write-Host "        Fix with: $VenvPython -m pip install --upgrade --no-deps `"$GivemydataPypiSpec`"" -ForegroundColor Red
-    }
+    Write-Host "        Fix with: $VenvPython -m pip install --upgrade --no-deps `"$GivemydataPypiSpec`"" -ForegroundColor Red
     exit 1
 }
 Copy-Item -Path $srcGivemydata -Destination (Join-Path $CliDir $GarminSyncExeName) -Force
@@ -421,12 +296,7 @@ Write-Host "###################################################" -ForegroundColo
 Write-Host "# Build Pipeline Completed!                       #" -ForegroundColor Green
 Write-Host "###################################################"
 Write-Host ""
-Write-Host "Build mode summary:" -ForegroundColor Cyan
-Write-Host "  garmin-givemydata source: $GivemydataSource"
-if ($GivemydataSource -eq "pypi") {
-    Write-Host "  garmin-givemydata package: $GivemydataPypiSpec"
-}
-Write-Host ""
+Write-Host "garmin-givemydata package: $GivemydataPypiSpec" -ForegroundColor Cyan
 Write-Host "Release artifacts are in: $ReleaseDir" -ForegroundColor Cyan
 Get-ChildItem $ReleaseDir | ForEach-Object {
     Write-Host "  - $($_.Name)"
