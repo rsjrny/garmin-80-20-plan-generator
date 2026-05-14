@@ -1,0 +1,27 @@
+- [ ] **can we include chromium in the install folder so the user does not have to download and install chrome.**
+	- [ ] Decide browser source and policy:
+		- [ ] Pick one source of truth (recommended: Playwright Chromium download, pinned version).
+		- [ ] Confirm redistribution/licensing notes and keep notices in release docs.
+	- [ ] Define bundled folder layout in release artifacts:
+		- [ ] Choose final path(s), e.g. GarminDataHub/browser/chromium or shared browser/chromium at installer root.
+		- [ ] Ensure both GUI and CLI can reference the same bundled browser location.
+	- [ ] Add build-time browser acquisition step (packaging only):
+		- [ ] In packaging/build.ps1, download/install pinned Chromium during build if not already present.
+		- [ ] Fail build with a clear error if browser download/extraction fails.
+		- [ ] Record Chromium version in build output/log for reproducibility.
+	- [ ] Add release copy step (packaging only):
+		- [ ] Copy bundled Chromium into release/<version>/GarminDataHub (and/or shared location).
+		- [ ] Verify required executable exists in release folder before installer build.
+	- [ ] Installer inclusion and size checks:
+		- [ ] Confirm GarminDataHub.iss [Files] section includes bundled Chromium path(s).
+		- [ ] Validate install size impact and disk space requirements in release notes.
+	- [ ] Runtime configuration plan (no code changes in this task):
+		- [ ] Document exact env var or launch argument needed so runtime uses bundled Chromium (for later implementation task).
+		- [ ] Document fallback behavior if bundled Chromium is missing/corrupt.
+	- [ ] QA checklist for later verification:
+		- [ ] Fresh Windows VM with no Chrome installed: installer + first sync succeeds.
+		- [ ] Offline test after install confirms no browser download is attempted.
+		- [ ] Upgrade test from previous version preserves working browser path/config.
+	- [ ] Documentation updates:
+		- [ ] Update README/SETUP_AND_USAGE with "bundled Chromium" behavior and troubleshooting.
+		- [ ] Add known limitations (antivirus scan delays, first launch overhead, package size increase).
