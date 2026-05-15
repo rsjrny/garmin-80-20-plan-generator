@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import logging.handlers
 import os
 import sys
 import time
@@ -10,7 +12,62 @@ import anyio
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+def _get_logger() -> logging.Logger:
+    """Return the MCP call logger, creating a rotating-file handler on first use."""
+    logger = logging.getLogger("garmin_data_hub.mcp")
+    if logger.handlers:
+        return logger  # already configured
+    logger.setLevel(logging.DEBUG)
+
+    local_app_data = os.environ.get("LOCALAPPDATA", "")
+    if local_app_data:
+        log_dir = Path(local_app_data) / "GarminDataHub" / "logs"
+    else:
+        log_dir = Path.home() / ".garmin_data_hub" / "logs"
+
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        fh = logging.handlers.RotatingFileHandler(
+            log_dir / "mcp_calls.log",
+            maxBytes=5 * 1024 * 1024,  # 5 MB
+            backupCount=3,
+            encoding="utf-8",
+        )
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(
+            logging.Formatter(
+                "%(asctime)s | %(levelname)-8s | %(message)s",
+                datefmt="%Y-%m-%dT%H:%M:%S",
+            )
+        )
+        logger.addHandler(fh)
+    except OSError:
+        logger.addHandler(logging.NullHandler())
+
+    return logger
+
+
+def _summarize_args(arguments: dict | None) -> str:
+    """Compact single-line summary of tool arguments for log lines."""
+    if not arguments:
+        return "(none)"
+    parts = []
+    for k, v in arguments.items():
+        sv = str(v)
+        if len(sv) > 80:
+            sv = sv[:77] + "..."
+        parts.append(f"{k}={sv!r}")
+    return ", ".join(parts)
+
+
+# ---------------------------------------------------------------------------
 # Configuration constants
+# ---------------------------------------------------------------------------
+
 DEFAULT_TIMEOUT_SEC = 30.0
 DEFAULT_MAX_RETRIES = 2
 BACKOFF_FACTOR = 2.0
@@ -96,14 +153,26 @@ def call_tool_via_sidecar(
         RuntimeError: If tool returns error that isn't retryable
         Exception: If sidecar cannot be started or other critical failures
     """
+    log = _get_logger()
     last_error = None
-    
+    t_start = time.monotonic()
+    log.info("CALL  tool=%s args=%s", tool_name, _summarize_args(arguments))
+
     for attempt in range(max_retries + 1):
+        attempt_start = time.monotonic()
         try:
-            return anyio.run(
+            result = anyio.run(
                 _call_tool_async, tool_name, arguments, db_path, timeout_sec
             )
+            duration_ms = int((time.monotonic() - t_start) * 1000)
+            log.info("OK    tool=%s duration_ms=%d", tool_name, duration_ms)
+            return result
         except TimeoutError as e:
+            attempt_ms = int((time.monotonic() - attempt_start) * 1000)
+            log.warning(
+                "TIMEOUT tool=%s attempt=%d/%d duration_ms=%d",
+                tool_name, attempt + 1, max_retries + 1, attempt_ms,
+            )
             last_error = e
             if attempt < max_retries:
                 backoff = INITIAL_BACKOFF_SEC * (BACKOFF_FACTOR ** attempt)
@@ -111,18 +180,30 @@ def call_tool_via_sidecar(
                 continue
             raise
         except RuntimeError as e:
-            # Non-retryable tool errors (invalid SQL, bad args, etc.)
+            duration_ms = int((time.monotonic() - t_start) * 1000)
+            log.error(
+                "ERROR tool=%s type=RuntimeError duration_ms=%d msg=%s",
+                tool_name, duration_ms, e,
+            )
             raise
         except Exception as e:
-            last_error = e
+            attempt_ms = int((time.monotonic() - attempt_start) * 1000)
             if attempt < max_retries:
-                # Retry on transient errors (connection issues, etc.)
+                log.warning(
+                    "RETRY tool=%s attempt=%d/%d type=%s duration_ms=%d msg=%s",
+                    tool_name, attempt + 1, max_retries + 1, type(e).__name__, attempt_ms, e,
+                )
+                last_error = e
                 backoff = INITIAL_BACKOFF_SEC * (BACKOFF_FACTOR ** attempt)
                 time.sleep(backoff)
                 continue
+            duration_ms = int((time.monotonic() - t_start) * 1000)
+            log.error(
+                "FAIL  tool=%s type=%s duration_ms=%d msg=%s",
+                tool_name, type(e).__name__, duration_ms, e,
+            )
             raise
-    
-    # Should not reach here, but just in case
+
     if last_error:
         raise last_error
     raise RuntimeError(f"Unexpected failure calling MCP tool '{tool_name}'")

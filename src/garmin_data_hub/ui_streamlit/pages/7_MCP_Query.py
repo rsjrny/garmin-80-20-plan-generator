@@ -4,6 +4,8 @@ import json
 import os
 import re
 import sys
+import threading
+import time as _time
 
 # Ensure src is in sys.path for local imports
 sys.path.insert(
@@ -396,6 +398,49 @@ def _apply_mcp_query_preset() -> None:
 
 def _apply_raw_sql_preset() -> None:
     st.session_state.mcp_sql = PRESETS[st.session_state.raw_sql_preset]
+
+
+def _launch_bg(mode: str, tool: str, args: dict | None, ctx: dict) -> None:
+    """Start a background MCP call and trigger an immediate rerun."""
+    bg = st.session_state["mcp_bg"]
+    bg["running"] = True
+    bg["mode"] = mode
+    bg["tool"] = tool
+    bg["result"] = None
+    bg["error"] = None
+    bg["start"] = _time.monotonic()
+    bg["ctx"] = ctx
+
+    def _worker() -> None:
+        try:
+            if mode == "sql":
+                bg["result"] = _run_query(args["sql"])
+            else:
+                bg["result"] = call_tool_via_sidecar(tool, args, db_path)
+        except Exception as exc:  # noqa: BLE001
+            bg["error"] = exc
+        finally:
+            bg["running"] = False
+
+    threading.Thread(target=_worker, daemon=True).start()
+    st.rerun()
+
+
+def _poll_bg() -> bool:
+    """If a background task is running, show elapsed-time spinner and rerun.
+
+    Returns True when a completed result (or error) is ready to display.
+    Returns False and redraws when still running.
+    Does nothing (returns False) when no task is active.
+    """
+    bg = st.session_state["mcp_bg"]
+    if bg["running"]:
+        elapsed = _time.monotonic() - bg["start"]
+        st.info(f"⏳ Running **{bg['tool']}**… ({elapsed:.1f}s elapsed)")
+        _time.sleep(0.3)
+        st.rerun()
+        return False
+    return bg["result"] is not None or bg["error"] is not None
 
 
 if not mcp_available:
@@ -960,7 +1005,14 @@ if mode == "MCP tools":
             "period2_end": period2_end.strip(),
         })
 
-    run_tool = st.button("Run MCP Tool", type="primary", width="stretch", disabled=not mcp_available)
+    _bg = st.session_state["mcp_bg"]
+    _tool_running = _bg["running"] and _bg["mode"] == "tool"
+    run_tool = st.button(
+        "Run MCP Tool",
+        type="primary",
+        width="stretch",
+        disabled=not mcp_available or _tool_running,
+    )
     autorun_payload = st.session_state.mcp_autorun
     if run_tool or autorun_payload is not None:
         if not mcp_available:
@@ -1008,28 +1060,36 @@ if mode == "MCP tools":
                     st.error(msg)
                     st.stop()
 
-            with st.spinner(f"Running {effective_tool}..."):
-                try:
-                    output = call_tool_via_sidecar(effective_tool, effective_args, db_path)
-                except TimeoutError as exc:
+            _launch_bg(
+                "tool",
+                effective_tool,
+                effective_args,
+                ctx={"limit_view_rows": limit_view_rows, "prompt": effective_prompt},
+            )
+
+    # --- Display area for tool results (persists across reruns) ---
+    if _poll_bg():
+        _bg = st.session_state["mcp_bg"]
+        if _bg["mode"] == "tool":
+            if _bg["error"] is not None:
+                exc = _bg["error"]
+                if isinstance(exc, TimeoutError):
                     st.error(
                         "Tool execution timed out. The sidecar may be busy. "
                         "Please try again or check if garmin_mcp is responsive."
                     )
                     st.caption(str(exc))
-                except RuntimeError as exc:
+                elif isinstance(exc, RuntimeError):
                     st.error(f"Tool error: {exc}")
-                except Exception as exc:
-                    st.error(
-                        f"Tool execution failed unexpectedly: {type(exc).__name__}: {exc}"
-                    )
                 else:
-                    _show_mcp_result(
-                        effective_tool,
-                        output,
-                        limit_view_rows,
-                        user_prompt=effective_prompt,
-                    )
+                    st.error(f"Tool execution failed unexpectedly: {type(exc).__name__}: {exc}")
+            elif _bg["result"] is not None:
+                _show_mcp_result(
+                    _bg["tool"],
+                    _bg["result"],
+                    _bg["ctx"]["limit_view_rows"],
+                    user_prompt=_bg["ctx"].get("prompt"),
+                )
 
 else:
     st.caption("Advanced mode: run direct read-only SQL through MCP DB utilities.")
@@ -1060,7 +1120,14 @@ else:
     run_col, clear_col = st.columns([1, 1])
     with run_col:
         run_now = st.button(
-            "Run SQL", type="primary", width="stretch", key="raw_sql_run", disabled=not mcp_available
+            "Run SQL",
+            type="primary",
+            width="stretch",
+            key="raw_sql_run",
+            disabled=not mcp_available or (
+                st.session_state["mcp_bg"]["running"]
+                and st.session_state["mcp_bg"]["mode"] == "sql"
+            ),
         )
     with clear_col:
         clear_now = st.button("Clear", width="stretch", key="raw_sql_clear")
@@ -1077,46 +1144,57 @@ else:
             if not ok:
                 st.error(msg)
             else:
-                with st.spinner("Running query..."):
-                    try:
-                        df = _run_query(sql_text)
-                    except TimeoutError as exc:
-                        st.error(
-                            "Query execution timed out. The sidecar may be busy. "
-                            "Please try again or check if garmin_mcp is responsive."
-                        )
-                        st.caption(str(exc))
-                    except RuntimeError as exc:
-                        st.error(f"Query error: {exc}")
-                    except Exception as exc:
-                        st.error(
-                            f"Query execution failed unexpectedly: {type(exc).__name__}: {exc}"
-                        )
-                    else:
-                        st.success(f"Query returned {len(df)} row(s).")
-                        st.subheader("AI Response")
-                        st.write(
-                            _build_ai_response(
-                                "garmin_query",
-                                df.to_dict(orient="records"),
-                                user_prompt="Run SQL (read-only)",
-                            )
-                        )
-                        with st.expander("Structured Response", expanded=False):
-                            if df.empty:
-                                st.info("No rows returned.")
-                            else:
-                                if len(df) > limit_view_rows:
-                                    st.warning(
-                                        f"Showing first {limit_view_rows} row(s) of {len(df)} total. "
-                                        "Refine your query for smaller result sets."
-                                    )
-                                st.dataframe(df.head(limit_view_rows), width="stretch")
+                _launch_bg(
+                    "sql",
+                    "garmin_query",
+                    {"sql": sql_text},
+                    ctx={"limit_view_rows": limit_view_rows},
+                )
 
-                                csv_bytes = df.to_csv(index=False).encode("utf-8")
-                                st.download_button(
-                                    label="Download CSV",
-                                    data=csv_bytes,
-                                    file_name="mcp_query_results.csv",
-                                    mime="text/csv",
-                                )
+    # --- Display area for SQL results (persists across reruns) ---
+    if _poll_bg():
+        _bg = st.session_state["mcp_bg"]
+        if _bg["mode"] == "sql":
+            if _bg["error"] is not None:
+                exc = _bg["error"]
+                if isinstance(exc, TimeoutError):
+                    st.error(
+                        "Query execution timed out. The sidecar may be busy. "
+                        "Please try again or check if garmin_mcp is responsive."
+                    )
+                    st.caption(str(exc))
+                elif isinstance(exc, RuntimeError):
+                    st.error(f"Query error: {exc}")
+                else:
+                    st.error(
+                        f"Query execution failed unexpectedly: {type(exc).__name__}: {exc}"
+                    )
+            else:
+                df = _bg["result"]
+                _lv = _bg["ctx"]["limit_view_rows"]
+                st.success(f"Query returned {len(df)} row(s).")
+                st.subheader("AI Response")
+                st.write(
+                    _build_ai_response(
+                        "garmin_query",
+                        df.to_dict(orient="records"),
+                        user_prompt="Run SQL (read-only)",
+                    )
+                )
+                with st.expander("Structured Response", expanded=False):
+                    if df.empty:
+                        st.info("No rows returned.")
+                    else:
+                        if len(df) > _lv:
+                            st.warning(
+                                f"Showing first {_lv} row(s) of {len(df)} total. "
+                                "Refine your query for smaller result sets."
+                            )
+                        st.dataframe(df.head(_lv), width="stretch")
+                        csv_bytes = df.to_csv(index=False).encode("utf-8")
+                        st.download_button(
+                            label="Download CSV",
+                            data=csv_bytes,
+                            file_name="mcp_query_results.csv",
+                            mime="text/csv",
+                        )
