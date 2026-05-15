@@ -23,6 +23,11 @@
 		- [ ] Document each MCP tool's input schema, output schema, and error conditions.
 		- [ ] Add inline help text for each tool parameter in the UI.
 		- [ ] Update README or inline docs with MCP Query use cases and examples.
+	- [x] **Phase 3 Complete (2026-05-15): Add comprehensive tool documentation**
+		- [x] Created TOOL_DOCS dictionary with full schema for all 6 MCP tools (description, inputs, outputs, examples, error cases)
+		- [x] Added expandable documentation panel in MCP Query page
+		- [x] Added detailed help text to all tool parameter inputs (tool selector, query, health summary, activities, trends)
+		- [x] Updated README.md with dedicated MCP Query Page section (requirements, troubleshooting, examples, features)
 	- [ ] Phase 4: Validate all six MCP tools and no-sidecar behavior in manual + automated checks.
 	- [ ] Ready-to-start decisions required:
 		- [ ] Decide if MCP page is always visible in sidebar or gated as advanced/feature-flagged.
