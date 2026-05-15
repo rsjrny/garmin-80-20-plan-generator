@@ -25,3 +25,46 @@
 	- [ ] Documentation updates:
 		- [ ] Update README/SETUP_AND_USAGE with "bundled Chromium" behavior and troubleshooting.
 		- [ ] Add known limitations (antivirus scan delays, first launch overhead, package size increase).
+	- [ ] Review notes captured (2026-05-14):
+		- [ ] Packaging currently bundles app/CLI artifacts only; Chromium acquisition/copy is not yet present.
+		- [ ] Installer currently includes only release\\<version>\\GarminDataHub and release\\<version>\\cli_backup_ingest trees.
+		- [ ] If Chromium is placed outside those trees, installer script must be updated to include it.
+		- [ ] Runtime browser selection contract is still undefined for bundled Chromium (env var/arg and fallback behavior pending).
+		- [ ] Upstream behavior note: --chrome handling has changed upstream, so final runtime wiring should not assume that flag alone is sufficient.
+	- [ ] Ready-to-start entry criteria (for later):
+		- [ ] Decide exact final Chromium location in release layout.
+		- [ ] Decide exact runtime contract (browser executable path source + fallback).
+		- [ ] Confirm license/notice text to ship with installer.
+		- [ ] Confirm acceptance test matrix: no-Chrome VM, offline post-install, upgrade path.
+
+- [ ] **MCP query workstream: promote existing MCP console and harden for production (do later).**
+	- [ ] Findings captured (2026-05-14):
+		- [ ] An MCP query implementation already exists in test_pages/_1_MCP_Query.py (not in active production pages).
+		- [ ] Main app text references "MCP Query", but production page list currently does not include an MCP page.
+		- [ ] MCP sidecar integration already exists in src/garmin_data_hub/mcp_sidecar_client.py and calls python -m garmin_mcp.
+		- [ ] Existing tool coverage in MCP page: garmin_schema, garmin_query, garmin_health_summary, garmin_activities, garmin_trends, garmin_sync.
+	- [ ] Recommendation captured:
+		- [ ] Do not build a net-new page first; reuse the existing MCP console as baseline.
+		- [ ] Prioritize reliability hardening (timeout, retry, sidecar-unavailable UX) before expanding features.
+		- [ ] Keep read-only SQL guardrails and define explicit argument bounds/result limits for each MCP tool.
+	- [x] **Phase 1 Complete (2026-05-15): Promote/adapt MCP page into production**
+		- [x] Moved test_pages/_1_MCP_Query.py → src/garmin_data_hub/ui_streamlit/pages/7_MCP_Query.py
+		- [x] Updated app.py guidance to reference MCP Query as available advanced page
+		- [ ] **Next: Move to Phase 2 hardening work**
+	- [ ] Phase 2: Add reliability controls (timeout, retry policy, graceful failures).
+		- [ ] Add timeout wrapper around call_tool_via_sidecar() calls with configurable default (e.g., 30s).
+		- [ ] Add retry logic with exponential backoff (up to 2 retries on transient failures).
+		- [ ] Improve sidecar unavailable UI: graceful degradation instead of st.stop(), actionable error messages.
+		- [ ] Cache MCP results within session to reduce subprocess spawning for repeated queries.
+	- [ ] Phase 3: Finalize contract/docs for tool inputs/outputs/errors and update user guidance.
+		- [ ] Document each MCP tool's input schema, output schema, and error conditions.
+		- [ ] Add inline help text for each tool parameter in the UI.
+		- [ ] Update README or inline docs with MCP Query use cases and examples.
+	- [ ] Phase 4: Validate all six MCP tools and no-sidecar behavior in manual + automated checks.
+		- [ ] Manual test: Run each of the six MCP tools from the production page UI.
+		- [ ] Test no-sidecar behavior: Simulate garmin_mcp unavailable and confirm graceful error/guidance.
+		- [ ] Verify all six tools run: schema, query, health_summary, activities, trends, sync.
+	- [ ] Ready-to-start decisions required:
+		- [ ] Decide if MCP page is always visible in sidebar or gated as advanced/feature-flagged.
+		- [ ] Decide synchronous-only calls vs queued background execution for long-running MCP operations.
+		- [ ] Decide minimal telemetry/logging needed for MCP tool success/failure tracking.
