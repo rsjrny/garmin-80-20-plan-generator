@@ -513,26 +513,105 @@ TOOL_DOCS = {
     },
 }
 
+# ---------------------------------------------------------------------------
+# Data-driven parameter specification for all 50 MCP tools
+# type: none | days | sleep | fitness_age | activity_id | trackpoints | compare | sync
+#       query | health_summary | activities | trends (last four have custom UI above)
+# ---------------------------------------------------------------------------
+TOOL_PARAMS: dict[str, dict] = {
+    # ---- No parameters ----
+    "garmin_schema":           {"type": "none", "desc": "Database schema: tables, row counts, columns."},
+    "garmin_today":            {"type": "none", "desc": "Today's health snapshot: steps, HR, stress, sleep, battery."},
+    "garmin_training_load":    {"type": "none", "desc": "Training load history and fitness/fatigue balance."},
+    "garmin_records":          {"type": "none", "desc": "All personal records (PRs) with dates."},
+    "garmin_body_composition": {"type": "none", "desc": "Body weight, BMI, fat %, muscle mass history."},
+    "garmin_devices":          {"type": "none", "desc": "Registered Garmin devices and firmware versions."},
+    "garmin_week_summary":     {"type": "none", "desc": "Weekly training and health summary."},
+    "garmin_workouts":         {"type": "none", "desc": "Planned/structured workouts from Garmin Connect."},
+    "garmin_badges":           {"type": "none", "desc": "Earned badges and achievements."},
+    "garmin_goals":            {"type": "none", "desc": "Active goals and progress."},
+    "garmin_challenges":       {"type": "none", "desc": "Active challenges and leaderboard position."},
+    "garmin_user_profile":     {"type": "none", "desc": "Athlete profile: age, gender, HR zones, FTP."},
+    "garmin_vo2max":           {"type": "none", "desc": "VO2max history and trend."},
+    "garmin_health_snapshot":  {"type": "none", "desc": "Composite health snapshot across all metrics."},
+    "garmin_gear":             {"type": "none", "desc": "Gear/equipment usage and distance."},
+    "garmin_activity_types":   {"type": "none", "desc": "All activity types in the database."},
+    "garmin_hr_zones":         {"type": "none", "desc": "Heart rate zone configuration and thresholds."},
+    "garmin_lactate_threshold": {"type": "none", "desc": "Lactate threshold heart rate and pace data."},
+    "garmin_load_focus":       {"type": "none", "desc": "Training load focus breakdown (aerobic/anaerobic)."},
+    "garmin_wellness_activity": {"type": "none", "desc": "Non-sport wellness activities (steps, etc.)."},
+    # ---- days: int parameter ----
+    "garmin_hrv":               {"type": "days", "default": 30,  "max": 365, "desc": "HRV (heart rate variability) daily data."},
+    "garmin_body_battery":      {"type": "days", "default": 14,  "max": 365, "desc": "Body battery charged/drained daily values."},
+    "garmin_stress":            {"type": "days", "default": 14,  "max": 365, "desc": "Daily stress level average and peak."},
+    "garmin_heart_rate":        {"type": "days", "default": 30,  "max": 365, "desc": "Resting and max heart rate daily values."},
+    "garmin_spo2":              {"type": "days", "default": 14,  "max": 365, "desc": "Blood oxygen (SpO2) daily readings."},
+    "garmin_training_status":   {"type": "days", "default": 90,  "max": 365, "desc": "Training status (peaking/maintaining/detraining) over time."},
+    "garmin_hydration":         {"type": "days", "default": 30,  "max": 365, "desc": "Daily hydration intake data."},
+    "garmin_respiration":       {"type": "days", "default": 14,  "max": 365, "desc": "Waking and sleep respiration rate."},
+    "garmin_intensity_minutes": {"type": "days", "default": 30,  "max": 365, "desc": "Moderate and vigorous intensity minutes."},
+    "garmin_floors":            {"type": "days", "default": 14,  "max": 365, "desc": "Daily floors climbed."},
+    "garmin_steps":             {"type": "days", "default": 14,  "max": 365, "desc": "Daily step count and goal."},
+    "garmin_calories":          {"type": "days", "default": 14,  "max": 365, "desc": "Total and active calories daily."},
+    "garmin_blood_pressure":    {"type": "days", "default": 90,  "max": 365, "desc": "Blood pressure readings (if device supports it)."},
+    "garmin_race_predictions":  {"type": "days", "default": 30,  "max": 365, "desc": "Race time predictions (5K, 10K, HM, marathon)."},
+    "garmin_endurance_score":   {"type": "days", "default": 30,  "max": 365, "desc": "Endurance score history."},
+    "garmin_hill_score":        {"type": "days", "default": 30,  "max": 365, "desc": "Hill score history."},
+    "garmin_daily_events":      {"type": "days", "default": 7,   "max": 90,  "desc": "Calendar events and reminders."},
+    "garmin_recovery":          {"type": "days", "param_name": "days_after", "default": 3, "max": 14,
+                                 "desc": "Post-activity recovery time recommendations."},
+    # ---- sleep: start_date + days ----
+    "garmin_sleep":             {"type": "sleep", "desc": "Sleep stages (light, deep, REM) and quality score."},
+    # ---- fitness_age: period select ----
+    "garmin_fitness_age":       {"type": "fitness_age", "desc": "Fitness age estimate vs chronological age."},
+    # ---- activity_id: id + last bool ----
+    "garmin_activity_detail":   {"type": "activity_id", "desc": "Full detail for a single activity by ID."},
+    # ---- trackpoints: activity_id + limit ----
+    "garmin_activity_trackpoints": {"type": "trackpoints", "desc": "GPS/power/HR trackpoints for a single activity."},
+    # ---- compare: 4 date inputs ----
+    "garmin_compare":           {"type": "compare", "desc": "Side-by-side comparison of two date periods across all metrics."},
+    # ---- sync: refresh bool (handled by existing UI) ----
+    "garmin_sync":              {"type": "sync", "desc": "Trigger Garmin Connect sync or check sync status."},
+    # ---- custom/complex UI (handled by dedicated elif blocks) ----
+    "garmin_query":             {"type": "query",          "desc": "Run a read-only SELECT query against the Garmin database."},
+    "garmin_health_summary":    {"type": "health_summary", "desc": "Daily health metrics (HR, stress, battery) for a date range."},
+    "garmin_activities":        {"type": "activities",     "desc": "List activities with filters (type, date range, limit)."},
+    "garmin_trends":            {"type": "trends",         "desc": "Metric trend data aggregated by week or month."},
+}
+
+# Sorted tool list for the selectbox
+ALL_TOOLS = sorted(TOOL_PARAMS.keys())
+
+
 with st.expander("📖 Tool Documentation & Input Schema", expanded=False):
     st.markdown("""
 ### MCP Tool Reference
 
-Below is a summary of all 6 available MCP tools. Click on a tool name to expand details.
+Below is a summary of all 50 available MCP tools from garmin-givemydata. Click on a tool name to expand details.
     """)
-    
-    for tool_name, doc in TOOL_DOCS.items():
-        with st.expander(f"**{tool_name}**"):
-            st.write(f"**Description:** {doc['description']}")
-            st.write(f"**Inputs:** {doc['inputs']}")
-            st.write(f"**Output:** {doc['output']}")
-            
+
+    # Show detailed docs for tools with full schema entries
+    for _tn, _doc in TOOL_DOCS.items():
+        with st.expander(f"**{_tn}**"):
+            st.write(f"**Description:** {_doc['description']}")
+            st.write(f"**Inputs:** {_doc['inputs']}")
+            st.write(f"**Output:** {_doc['output']}")
             st.write("**Examples:**")
-            for ex in doc["examples"]:
-                st.write(f"- {ex}")
-            
+            for _ex in _doc["examples"]:
+                st.write(f"- {_ex}")
             st.write("**Error Cases:**")
-            for err in doc["error_cases"]:
-                st.write(f"- {err}")
+            for _err in _doc["error_cases"]:
+                st.write(f"- {_err}")
+
+    # Summary table of all remaining tools from TOOL_PARAMS
+    st.markdown("#### All Other Tools")
+    _other_tools = sorted(set(TOOL_PARAMS) - set(TOOL_DOCS))
+    _rows = [
+        {"Tool": t, "Parameter Type": TOOL_PARAMS[t]["type"], "Description": TOOL_PARAMS[t]["desc"]}
+        for t in _other_tools
+    ]
+    if _rows:
+        st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True)
 
 
 def _show_mcp_result(
@@ -606,17 +685,13 @@ if mode == "MCP tools":
 
     tool_name = st.selectbox(
         "MCP tool",
-        options=[
-            "garmin_schema",
-            "garmin_query",
-            "garmin_health_summary",
-            "garmin_activities",
-            "garmin_trends",
-            "garmin_sync",
-        ],
+        options=ALL_TOOLS,
         key="mcp_tool",
-        help="Select an MCP tool from the six available: schema, query, health summary, activities, trends, or sync. See documentation above for input/output details.",
+        help="Select from all 50 available garmin-givemydata MCP tools. See documentation panel above for descriptions.",
     )
+    _tool_desc = TOOL_PARAMS.get(tool_name, {}).get("desc", "")
+    if _tool_desc:
+        st.caption(f"🔧 {_tool_desc}")
 
     ai_prompt = st.text_area(
         "AI prompt (optional)",
@@ -637,6 +712,8 @@ if mode == "MCP tools":
     )
 
     tool_args = {}
+    _tool_ptype = TOOL_PARAMS.get(tool_name, {}).get("type", "none")
+
     if tool_name == "garmin_query":
         st.caption("Tool input: custom SELECT query")
         st.markdown("""
@@ -754,6 +831,134 @@ if mode == "MCP tools":
                 help="Aggregation period: 'week' for weekly averages, 'month' for monthly averages.",
             )
         tool_args.update({"metric": metric, "period": period})
+
+    elif _tool_ptype == "sync":
+        refresh = st.checkbox(
+            "Trigger new sync",
+            value=True,
+            help="True: start a new background sync (~2 min). False: check current sync status only.",
+        )
+        tool_args["refresh"] = refresh
+
+    elif _tool_ptype == "none":
+        st.caption("No parameters required. Click Run to execute.")
+
+    elif _tool_ptype == "days":
+        _spec = TOOL_PARAMS[tool_name]
+        _param_name = _spec.get("param_name", "days")
+        _default = _spec.get("default", 7)
+        _max = _spec.get("max", 365)
+        days_val = st.number_input(
+            "Days",
+            min_value=1,
+            max_value=_max,
+            value=_default,
+            help=f"Number of days of data to retrieve (1–{_max}).",
+        )
+        tool_args[_param_name] = int(days_val)
+
+    elif _tool_ptype == "sleep":
+        sl_col1, sl_col2 = st.columns([1, 1])
+        with sl_col1:
+            start_date = st.text_input(
+                "Start date (YYYY-MM-DD)",
+                value="",
+                help="Start of sleep date range. Leave empty to use 'Days' only.",
+            )
+        with sl_col2:
+            days_val = st.number_input(
+                "Days",
+                min_value=1,
+                max_value=365,
+                value=7,
+                help="Number of days to fetch when start_date is empty.",
+            )
+        tool_args["start_date"] = start_date.strip()
+        tool_args["days"] = int(days_val)
+
+    elif _tool_ptype == "fitness_age":
+        fa_period = st.selectbox(
+            "Period",
+            options=["week", "month", "year"],
+            index=1,
+            help="Aggregation period for fitness age analysis.",
+        )
+        tool_args["period"] = fa_period
+
+    elif _tool_ptype == "activity_id":
+        st.caption("Use garmin_activities to find valid activity IDs.")
+        ad_col1, ad_col2 = st.columns([2, 1])
+        with ad_col1:
+            activity_id = st.number_input(
+                "Activity ID (0 = use 'last')",
+                min_value=0,
+                value=0,
+                help="Leave at 0 and check 'Use last activity' to fetch the most recent activity.",
+            )
+        with ad_col2:
+            last = st.checkbox(
+                "Use last activity",
+                value=True,
+                help="If checked, returns the most recent activity regardless of ID.",
+            )
+        tool_args["activity_id"] = int(activity_id)
+        tool_args["last"] = last
+
+    elif _tool_ptype == "trackpoints":
+        st.caption("Fetch GPS/power/HR trackpoints for a single activity. Run garmin_activities first to get an ID.")
+        tp_col1, tp_col2 = st.columns([2, 1])
+        with tp_col1:
+            activity_id = st.number_input(
+                "Activity ID",
+                min_value=1,
+                value=1,
+                help="Required. Run garmin_activities to find valid activity IDs.",
+            )
+        with tp_col2:
+            tp_limit = st.number_input(
+                "Limit",
+                min_value=1,
+                max_value=500,
+                value=50,
+                help="Max trackpoints to return (1–500).",
+            )
+        tool_args["activity_id"] = int(activity_id)
+        tool_args["limit"] = int(tp_limit)
+
+    elif _tool_ptype == "compare":
+        st.caption("Compare two date periods side-by-side across all health metrics (steps, HR, stress, sleep, etc.).")
+        p1_col1, p1_col2 = st.columns([1, 1])
+        with p1_col1:
+            period1_start = st.text_input(
+                "Period 1 start (YYYY-MM-DD)",
+                key="cmp_p1_start",
+                help="Start of the first comparison period.",
+            )
+        with p1_col2:
+            period1_end = st.text_input(
+                "Period 1 end (YYYY-MM-DD)",
+                key="cmp_p1_end",
+                help="End of the first comparison period.",
+            )
+        p2_col1, p2_col2 = st.columns([1, 1])
+        with p2_col1:
+            period2_start = st.text_input(
+                "Period 2 start (YYYY-MM-DD)",
+                key="cmp_p2_start",
+                help="Start of the second comparison period.",
+            )
+        with p2_col2:
+            period2_end = st.text_input(
+                "Period 2 end (YYYY-MM-DD)",
+                key="cmp_p2_end",
+                help="End of the second comparison period.",
+            )
+        tool_args.update({
+            "period1_start": period1_start.strip(),
+            "period1_end": period1_end.strip(),
+            "period2_start": period2_start.strip(),
+            "period2_end": period2_end.strip(),
+        })
 
     run_tool = st.button("Run MCP Tool", type="primary", width="stretch", disabled=not mcp_available)
     autorun_payload = st.session_state.mcp_autorun
@@ -898,20 +1103,20 @@ else:
                             )
                         )
                         with st.expander("Structured Response", expanded=False):
-                        if df.empty:
-                            st.info("No rows returned.")
-                        else:
-                            if len(df) > limit_view_rows:
-                                st.warning(
-                                    f"Showing first {limit_view_rows} row(s) of {len(df)} total. "
-                                    "Refine your query for smaller result sets."
-                                )
-                            st.dataframe(df.head(limit_view_rows), width="stretch")
+                            if df.empty:
+                                st.info("No rows returned.")
+                            else:
+                                if len(df) > limit_view_rows:
+                                    st.warning(
+                                        f"Showing first {limit_view_rows} row(s) of {len(df)} total. "
+                                        "Refine your query for smaller result sets."
+                                    )
+                                st.dataframe(df.head(limit_view_rows), width="stretch")
 
-                            csv_bytes = df.to_csv(index=False).encode("utf-8")
-                            st.download_button(
-                                label="Download CSV",
-                                data=csv_bytes,
-                                file_name="mcp_query_results.csv",
-                                mime="text/csv",
-                            )
+                                csv_bytes = df.to_csv(index=False).encode("utf-8")
+                                st.download_button(
+                                    label="Download CSV",
+                                    data=csv_bytes,
+                                    file_name="mcp_query_results.csv",
+                                    mime="text/csv",
+                                )
