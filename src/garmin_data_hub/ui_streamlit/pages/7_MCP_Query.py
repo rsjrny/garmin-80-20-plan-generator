@@ -400,17 +400,33 @@ def _apply_raw_sql_preset() -> None:
 
 if not mcp_available:
     st.error("MCP sidecar is unavailable in this environment.")
-    st.caption(
-        "Verify garmin_mcp is installed in the active .venv and can start via `python -m garmin_mcp`."
+    st.warning(
+        "The MCP Query tools require the garmin-mcp package to be installed and running. "
+        "Without it, advanced query features are not available, but you can still view "
+        "your Garmin data through other pages."
     )
-    st.code(mcp_error)
-    st.stop()
+    with st.expander("Diagnostic Information"):
+        st.caption("Error details:")
+        st.code(mcp_error)
+        st.caption("To fix this:")
+        st.markdown("""
+1. Verify garmin_mcp is installed in the active .venv: `pip list | grep garmin-mcp`
+2. Try manually starting the sidecar: `python -m garmin_mcp`
+3. Restart this application and return to the MCP Query page
+        """)
+    st.info("Visit the **Garmin Sync** or **Activities** pages to explore your data.")
+    mcp_available = False  # Prevent tool execution below
 
-mode = st.radio(
-    "Mode",
-    options=["MCP tools", "Raw SQL"],
-    horizontal=True,
-)
+if mcp_available:
+    mode = st.radio(
+        "Mode",
+        options=["MCP tools", "Raw SQL"],
+        horizontal=True,
+    )
+else:
+    # Graceful degradation when sidecar unavailable
+    st.warning("⚠️ MCP sidecar is unavailable. Tool mode is disabled.")
+    mode = None
 
 
 def _show_mcp_result(
@@ -577,63 +593,76 @@ if mode == "MCP tools":
             period = st.selectbox("Period", options=["week", "month"], index=1)
         tool_args.update({"metric": metric, "period": period})
 
-    run_tool = st.button("Run MCP Tool", type="primary", width="stretch")
+    run_tool = st.button("Run MCP Tool", type="primary", width="stretch", disabled=not mcp_available)
     autorun_payload = st.session_state.mcp_autorun
     if run_tool or autorun_payload is not None:
-        effective_prompt = None
-        if autorun_payload is not None:
-            effective_tool = autorun_payload["tool"]
-            effective_args = dict(autorun_payload.get("args", {}))
-            if autorun_payload.get("prompt"):
-                st.caption(f"Prompt: {autorun_payload['prompt']}")
-                effective_prompt = str(autorun_payload["prompt"])
-            if autorun_payload.get("rationale"):
-                st.info(f"Prompt routing: {autorun_payload['rationale']}")
-            st.session_state.mcp_autorun = None
+        if not mcp_available:
+            st.error("MCP sidecar is unavailable. Cannot execute tools.")
         else:
-            effective_tool = tool_name
-            effective_args = dict(tool_args)
-            effective_prompt = ai_prompt.strip() or None
-
-            if ai_prompt.strip():
-                inferred_tool, inferred_args, rationale = _infer_tool_from_prompt(
-                    ai_prompt
-                )
-                effective_tool = inferred_tool
-                if inferred_args:
-                    effective_args = inferred_args
-                st.caption(f"Prompt: {ai_prompt.strip()}")
-                st.info(f"Prompt routing: {rationale}")
-
-                # Switch dropdown safely on next rerun, then auto-run once.
-                if inferred_tool != tool_name:
-                    st.session_state.mcp_tool_pending = inferred_tool
-                    st.session_state.mcp_autorun = {
-                        "tool": effective_tool,
-                        "args": effective_args,
-                        "prompt": ai_prompt.strip(),
-                        "rationale": rationale,
-                    }
-                    st.rerun()
-
-        if effective_tool == "garmin_query":
-            ok, msg = _validate_select(effective_args.get("sql", ""))
-            if not ok:
-                st.error(msg)
-                st.stop()
-
-        with st.spinner(f"Running {effective_tool}..."):
-            try:
-                output = call_tool_via_sidecar(effective_tool, effective_args, db_path)
-            except Exception as exc:
-                st.error(f"Tool execution failed: {exc}")
+            effective_prompt = None
+            if autorun_payload is not None:
+                effective_tool = autorun_payload["tool"]
+                effective_args = dict(autorun_payload.get("args", {}))
+                if autorun_payload.get("prompt"):
+                    st.caption(f"Prompt: {autorun_payload['prompt']}")
+                    effective_prompt = str(autorun_payload["prompt"])
+                if autorun_payload.get("rationale"):
+                    st.info(f"Prompt routing: {autorun_payload['rationale']}")
+                st.session_state.mcp_autorun = None
             else:
-                _show_mcp_result(
-                    effective_tool,
-                    output,
-                    limit_view_rows,
-                    user_prompt=effective_prompt,
-                )
+                effective_tool = tool_name
+                effective_args = dict(tool_args)
+                effective_prompt = ai_prompt.strip() or None
+
+                if ai_prompt.strip():
+                    inferred_tool, inferred_args, rationale = _infer_tool_from_prompt(
+                        ai_prompt
+                    )
+                    effective_tool = inferred_tool
+                    if inferred_args:
+                        effective_args = inferred_args
+                    st.caption(f"Prompt: {ai_prompt.strip()}")
+                    st.info(f"Prompt routing: {rationale}")
+
+                    # Switch dropdown safely on next rerun, then auto-run once.
+                    if inferred_tool != tool_name:
+                        st.session_state.mcp_tool_pending = inferred_tool
+                        st.session_state.mcp_autorun = {
+                            "tool": effective_tool,
+                            "args": effective_args,
+                            "prompt": ai_prompt.strip(),
+                            "rationale": rationale,
+                        }
+                        st.rerun()
+
+            if effective_tool == "garmin_query":
+                ok, msg = _validate_select(effective_args.get("sql", ""))
+                if not ok:
+                    st.error(msg)
+                    st.stop()
+
+            with st.spinner(f"Running {effective_tool}..."):
+                try:
+                    output = call_tool_via_sidecar(effective_tool, effective_args, db_path)
+                except TimeoutError as exc:
+                    st.error(
+                        "Tool execution timed out. The sidecar may be busy. "
+                        "Please try again or check if garmin_mcp is responsive."
+                    )
+                    st.caption(str(exc))
+                except RuntimeError as exc:
+                    st.error(f"Tool error: {exc}")
+                except Exception as exc:
+                    st.error(
+                        f"Tool execution failed unexpectedly: {type(exc).__name__}: {exc}"
+                    )
+                else:
+                    _show_mcp_result(
+                        effective_tool,
+                        output,
+                        limit_view_rows,
+                        user_prompt=effective_prompt,
+                    )
 
 else:
     st.caption("Advanced mode: run direct read-only SQL through MCP DB utilities.")
@@ -664,7 +693,7 @@ else:
     run_col, clear_col = st.columns([1, 1])
     with run_col:
         run_now = st.button(
-            "Run SQL", type="primary", width="stretch", key="raw_sql_run"
+            "Run SQL", type="primary", width="stretch", key="raw_sql_run", disabled=not mcp_available
         )
     with clear_col:
         clear_now = st.button("Clear", width="stretch", key="raw_sql_clear")
@@ -674,26 +703,39 @@ else:
         st.rerun()
 
     if run_now:
-        ok, msg = _validate_select(sql_text)
-        if not ok:
-            st.error(msg)
+        if not mcp_available:
+            st.error("MCP sidecar is unavailable. Cannot execute queries.")
         else:
-            with st.spinner("Running query..."):
-                try:
-                    df = _run_query(sql_text)
-                except Exception as exc:
-                    st.error(f"Query failed: {exc}")
-                else:
-                    st.success(f"Query returned {len(df)} row(s).")
-                    st.subheader("AI Response")
-                    st.write(
-                        _build_ai_response(
-                            "garmin_query",
-                            df.to_dict(orient="records"),
-                            user_prompt="Run SQL (read-only)",
+            ok, msg = _validate_select(sql_text)
+            if not ok:
+                st.error(msg)
+            else:
+                with st.spinner("Running query..."):
+                    try:
+                        df = _run_query(sql_text)
+                    except TimeoutError as exc:
+                        st.error(
+                            "Query execution timed out. The sidecar may be busy. "
+                            "Please try again or check if garmin_mcp is responsive."
                         )
-                    )
-                    with st.expander("Structured Response", expanded=False):
+                        st.caption(str(exc))
+                    except RuntimeError as exc:
+                        st.error(f"Query error: {exc}")
+                    except Exception as exc:
+                        st.error(
+                            f"Query execution failed unexpectedly: {type(exc).__name__}: {exc}"
+                        )
+                    else:
+                        st.success(f"Query returned {len(df)} row(s).")
+                        st.subheader("AI Response")
+                        st.write(
+                            _build_ai_response(
+                                "garmin_query",
+                                df.to_dict(orient="records"),
+                                user_prompt="Run SQL (read-only)",
+                            )
+                        )
+                        with st.expander("Structured Response", expanded=False):
                         if df.empty:
                             st.info("No rows returned.")
                         else:
