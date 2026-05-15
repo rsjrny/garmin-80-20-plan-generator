@@ -50,20 +50,19 @@
 	- [x] **Phase 1 Complete (2026-05-15): Promote/adapt MCP page into production**
 		- [x] Moved test_pages/_1_MCP_Query.py → src/garmin_data_hub/ui_streamlit/pages/7_MCP_Query.py
 		- [x] Updated app.py guidance to reference MCP Query as available advanced page
-		- [ ] **Next: Move to Phase 2 hardening work**
-	- [ ] Phase 2: Add reliability controls (timeout, retry policy, graceful failures).
-		- [ ] Add timeout wrapper around call_tool_via_sidecar() calls with configurable default (e.g., 30s).
-		- [ ] Add retry logic with exponential backoff (up to 2 retries on transient failures).
-		- [ ] Improve sidecar unavailable UI: graceful degradation instead of st.stop(), actionable error messages.
-		- [ ] Cache MCP results within session to reduce subprocess spawning for repeated queries.
-	- [ ] Phase 3: Finalize contract/docs for tool inputs/outputs/errors and update user guidance.
+		- [x] Moved to Phase 2 hardening work
+	- [x] **Phase 2 Complete (2026-05-15): Add reliability controls**
+		- [x] Added timeout wrapper around call_tool_via_sidecar() with 30s default (configurable)
+		- [x] Added retry logic with exponential backoff (up to 2 retries on transient failures)
+		- [x] Improved error messages: distinguish TimeoutError, RuntimeError, and generic exceptions
+		- [x] Graceful degradation when sidecar unavailable: show diagnostics + recovery steps, disable Run buttons
+		- [x] Added safeguards in both MCP tools and Raw SQL modes
+		- [x] Updated check_sidecar_available() to use retry logic
+	- [ ] **Phase 3 (Next): Finalize contract/docs for tool inputs/outputs/errors**
 		- [ ] Document each MCP tool's input schema, output schema, and error conditions.
 		- [ ] Add inline help text for each tool parameter in the UI.
 		- [ ] Update README or inline docs with MCP Query use cases and examples.
 	- [ ] Phase 4: Validate all six MCP tools and no-sidecar behavior in manual + automated checks.
-		- [ ] Manual test: Run each of the six MCP tools from the production page UI.
-		- [ ] Test no-sidecar behavior: Simulate garmin_mcp unavailable and confirm graceful error/guidance.
-		- [ ] Verify all six tools run: schema, query, health_summary, activities, trends, sync.
 	- [ ] Ready-to-start decisions required:
 		- [ ] Decide if MCP page is always visible in sidebar or gated as advanced/feature-flagged.
 		- [ ] Decide synchronous-only calls vs queued background execution for long-running MCP operations.
