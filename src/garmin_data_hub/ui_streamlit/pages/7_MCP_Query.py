@@ -429,6 +429,112 @@ else:
     mode = None
 
 
+# Tool documentation reference
+TOOL_DOCS = {
+    "garmin_schema": {
+        "description": "Retrieve database schema with table names, row counts, and column info.",
+        "inputs": "No parameters required. Optionally pass empty dict.",
+        "output": "Dict with table names as keys; each value contains row_count and columns list.",
+        "examples": [
+            "View all available tables and row counts in the Garmin database",
+            "Check column structure of specific tables (activity, daily_summary, sleep)",
+        ],
+        "error_cases": [
+            "Database file missing or inaccessible",
+            "Sidecar process timeout (connection issue)",
+        ],
+    },
+    "garmin_query": {
+        "description": "Execute a read-only SELECT query directly against the Garmin database.",
+        "inputs": "sql (required, string): A SELECT query. No INSERT, UPDATE, DELETE, DROP, or DDL allowed.",
+        "output": "List of dicts representing query rows. Each dict is a record with column names as keys.",
+        "examples": [
+            "SELECT * FROM activity ORDER BY start_time_local DESC LIMIT 10",
+            "SELECT calendar_date, total_steps FROM daily_summary WHERE calendar_date >= '2024-01-01'",
+        ],
+        "error_cases": [
+            "SQL syntax error: Invalid column name or table name",
+            "Blocked keywords: INSERT, DELETE, DROP, PRAGMA, CREATE, etc.",
+            "Query timeout: Too many rows or slow aggregation",
+        ],
+    },
+    "garmin_health_summary": {
+        "description": "Retrieve health metrics (HR, stress, body battery) for a date range or last N days.",
+        "inputs": "start_date (optional, YYYY-MM-DD), end_date (optional, YYYY-MM-DD), days (optional, int: 1-365, default 7)",
+        "output": "List of daily health summaries with metrics like resting_hr, stress, body_battery.",
+        "examples": [
+            "Last 30 days of daily health metrics to identify stress/recovery trends",
+            "Compare health metrics for a specific date range (e.g., training block)",
+        ],
+        "error_cases": [
+            "Invalid date format: Must be YYYY-MM-DD",
+            "No data for requested date range",
+        ],
+    },
+    "garmin_activities": {
+        "description": "List activities with filtering by type, date range, and result limit.",
+        "inputs": "activity_type (optional, string: 'running', 'cycling', 'swimming', etc.), start_date (optional, YYYY-MM-DD), end_date (optional, YYYY-MM-DD), limit (optional, 1-1000, default 20)",
+        "output": "List of activity records with activity_id, activity_name, activity_type, distance, duration, calories, etc.",
+        "examples": [
+            "Last 20 running activities with distance and duration",
+            "All cycling activities in the past 3 months (set date range, activity_type='cycling')",
+        ],
+        "error_cases": [
+            "Invalid date range: start_date after end_date",
+            "Activity type not found in database (case-sensitive)",
+            "Limit too high causing slow query",
+        ],
+    },
+    "garmin_trends": {
+        "description": "Retrieve trend data for a single health metric over time (weekly or monthly aggregation).",
+        "inputs": "metric (required, string: see TREND_METRICS list), period (required, 'week' or 'month')",
+        "output": "Dict with trend data grouped by period; each entry contains metric value and aggregation info.",
+        "examples": [
+            "Weekly resting heart rate trend to see if HR is improving with training",
+            "Monthly body battery trend to evaluate recovery patterns",
+        ],
+        "error_cases": [
+            "Invalid metric name: Must be one of the supported TREND_METRICS",
+            "No data for metric: Metric may not be tracked on your device",
+        ],
+    },
+    "garmin_sync": {
+        "description": "Trigger a data sync/refresh from Garmin Connect and return sync status.",
+        "inputs": "No parameters required.",
+        "output": "String message indicating sync result (e.g., 'Sync completed successfully', 'Latest data already up to date').",
+        "examples": [
+            "Force a fresh pull of the latest Garmin data before analyzing",
+        ],
+        "error_cases": [
+            "Network error: Cannot reach Garmin Connect",
+            "Auth error: Saved credentials are invalid or expired",
+            "Sync timeout: Large data pull is taking too long",
+        ],
+    },
+}
+
+with st.expander("📖 Tool Documentation & Input Schema", expanded=False):
+    st.markdown("""
+### MCP Tool Reference
+
+Below is a summary of all 6 available MCP tools. Click on a tool name to expand details.
+    """)
+    
+    for tool_name, doc in TOOL_DOCS.items():
+        with st.expander(f"**{tool_name}**"):
+            st.write(f"**Description:** {doc['description']}")
+            st.write(f"**Inputs:** {doc['inputs']}")
+            st.write(f"**Output:** {doc['output']}")
+            
+            st.write("**Examples:**")
+            for ex in doc["examples"]:
+                st.write(f"- {ex}")
+            
+            st.write("**Error Cases:**")
+            for err in doc["error_cases"]:
+                st.write(f"- {err}")
+
+
 def _show_mcp_result(
     tool_name: str,
     result_text: str,
@@ -509,6 +615,7 @@ if mode == "MCP tools":
             "garmin_sync",
         ],
         key="mcp_tool",
+        help="Select an MCP tool from the six available: schema, query, health summary, activities, trends, or sync. See documentation above for input/output details.",
     )
 
     ai_prompt = st.text_area(
@@ -532,30 +639,51 @@ if mode == "MCP tools":
     tool_args = {}
     if tool_name == "garmin_query":
         st.caption("Tool input: custom SELECT query")
+        st.markdown("""
+*Execute a read-only SQL query. Only SELECT statements are allowed. No INSERT, UPDATE, DELETE, DROP, or DDL.*
+        """)
         st.selectbox(
             "Preset query",
             options=list(PRESETS.keys()),
             key="mcp_query_preset",
             on_change=_apply_mcp_query_preset,
+            help="Choose a predefined query or write your own below.",
         )
 
         query_sql = st.text_area(
             "SQL for garmin_query",
             key="mcp_query_tool_sql",
             height=220,
-            help="Only SELECT statements are allowed.",
+            help="Enter a SELECT query. Common tables: activity, daily_summary, sleep, record. Use presets as examples.",
         )
         tool_args["sql"] = query_sql
 
     elif tool_name == "garmin_health_summary":
         st.caption("Tool input: optional date range or last N days")
+        st.markdown("""
+*Retrieve daily health metrics (resting HR, stress, body battery, etc.). Leave date fields empty to use 'days' parameter.*
+        """)
         hs_col_1, hs_col_2, hs_col_3 = st.columns([1, 1, 1])
         with hs_col_1:
-            start_date = st.text_input("Start date (YYYY-MM-DD)", value="")
+            start_date = st.text_input(
+                "Start date (YYYY-MM-DD)",
+                value="",
+                help="Inclusive start date. Leave empty to use 'Days' parameter only.",
+            )
         with hs_col_2:
-            end_date = st.text_input("End date (YYYY-MM-DD)", value="")
+            end_date = st.text_input(
+                "End date (YYYY-MM-DD)",
+                value="",
+                help="Inclusive end date. Leave empty to use 'Days' parameter only.",
+            )
         with hs_col_3:
-            days = st.number_input("Days", min_value=1, max_value=365, value=7)
+            days = st.number_input(
+                "Days",
+                min_value=1,
+                max_value=365,
+                value=7,
+                help="Fetch the last N days of data. Ignored if start_date/end_date are provided.",
+            )
         tool_args.update(
             {
                 "start_date": start_date.strip(),
@@ -566,15 +694,36 @@ if mode == "MCP tools":
 
     elif tool_name == "garmin_activities":
         st.caption("Tool input: filters for activity listing")
+        st.markdown("""
+*List activities with optional filtering by type, date range, and limit. Leave fields empty for defaults.*
+        """)
         a_col_1, a_col_2, a_col_3, a_col_4 = st.columns([1, 1, 1, 1])
         with a_col_1:
-            activity_type = st.text_input("Activity type", value="")
+            activity_type = st.text_input(
+                "Activity type",
+                value="",
+                help="Filter by activity type (e.g., 'running', 'cycling', 'swimming'). Leave empty for all types.",
+            )
         with a_col_2:
-            start_date = st.text_input("Start date (YYYY-MM-DD)", value="")
+            start_date = st.text_input(
+                "Start date (YYYY-MM-DD)",
+                value="",
+                help="Earliest activity date to include. Leave empty for no lower bound.",
+            )
         with a_col_3:
-            end_date = st.text_input("End date (YYYY-MM-DD)", value="")
+            end_date = st.text_input(
+                "End date (YYYY-MM-DD)",
+                value="",
+                help="Latest activity date to include. Leave empty for no upper bound.",
+            )
         with a_col_4:
-            limit = st.number_input("Limit", min_value=1, max_value=1000, value=20)
+            limit = st.number_input(
+                "Limit",
+                min_value=1,
+                max_value=1000,
+                value=20,
+                help="Maximum number of activities to return (1-1000).",
+            )
         tool_args.update(
             {
                 "activity_type": activity_type.strip(),
@@ -586,11 +735,24 @@ if mode == "MCP tools":
 
     elif tool_name == "garmin_trends":
         st.caption("Tool input: metric and aggregation period")
+        st.markdown("""
+*Retrieve a single health metric trend over time, aggregated by week or month.*
+        """)
         t_col_1, t_col_2 = st.columns([1, 1])
         with t_col_1:
-            metric = st.selectbox("Metric", options=TREND_METRICS, index=0)
+            metric = st.selectbox(
+                "Metric",
+                options=TREND_METRICS,
+                index=0,
+                help="Select a health metric to trend: resting_hr, stress, body_battery, sleep_hours, etc.",
+            )
         with t_col_2:
-            period = st.selectbox("Period", options=["week", "month"], index=1)
+            period = st.selectbox(
+                "Period",
+                options=["week", "month"],
+                index=1,
+                help="Aggregation period: 'week' for weekly averages, 'month' for monthly averages.",
+            )
         tool_args.update({"metric": metric, "period": period})
 
     run_tool = st.button("Run MCP Tool", type="primary", width="stretch", disabled=not mcp_available)

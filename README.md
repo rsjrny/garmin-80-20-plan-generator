@@ -29,14 +29,58 @@ The project syncs Garmin data using `garmin-givemydata`, applies app-specific sc
 Located in `src/garmin_data_hub/ui_streamlit/pages`:
 
 - `0_Backup_Import.py` — Garmin sync, progress, and derived-refresh diagnostics
-- `2_Activities.py` — activity browsing and analysis
-- `5_Build_Plan.py` — plan creation workflow
+- `1_Plan_Review.py` — plan review and training planning
+- `2_Compliance.py` — compliance and zone analysis
+- `3_Past_Activities.py` — activity browsing and analysis
 - `4_Charts.py` — trend and power/load charts
-- `5_Compliance.py` — compliance and zone analysis
-- `6_8020_Help.py`
-- `_1_MCP_Query.py` — hidden helper page (Streamlit naming convention)
+- `5_Build_Plan.py` — plan creation workflow
+- `6_8020_Help.py` — 80/20 training methodology guidance
+- `7_MCP_Query.py` — **Advanced:** MCP tool console for database queries and Garmin data access (requires garmin_mcp sidecar)
 
-## Quick Start (Developers)
+### MCP Query Page (Advanced)
+
+The **MCP Query** page (page 7) provides advanced database access through six Model Context Protocol (MCP) tools:
+
+#### Available MCP Tools
+
+1. **garmin_schema** — View database schema (tables, row counts, columns)
+2. **garmin_query** — Execute read-only SELECT queries with preset templates
+3. **garmin_health_summary** — Fetch daily health metrics (HR, stress, body battery) by date range
+4. **garmin_activities** — List activities with filtering by type, date, and limit
+5. **garmin_trends** — Retrieve metric trends (weekly or monthly aggregation)
+6. **garmin_sync** — Trigger manual sync and view sync status
+
+#### Requirements
+
+- **garmin_mcp** package must be installed in the active Python environment
+- Sidecar subprocess spawned automatically on page load
+- If sidecar is unavailable, the page shows diagnostics and recovery steps
+
+#### Usage Examples
+
+- Query the database schema: "Show me all tables and row counts"
+- Find recent activities: "List my last 10 running activities with distance and duration"
+- Analyze health trends: "Plot my resting heart rate trend over the last month"
+- Retrieve daily metrics: "Get my stress and body battery for the past 7 days"
+- Execute custom SQL: Use preset queries or write custom SELECT queries
+
+#### Features
+
+- **Dual-mode interface:** MCP tools dropdown or raw SQL mode
+- **Natural language routing:** Type a question and the UI auto-selects the best tool
+- **Result export:** Download results as CSV, view structured JSON
+- **AI summaries:** Automatic narrative interpretation of results
+- **Error handling:** Timeouts, retries, and clear error messages
+- **Read-only enforcement:** SQL validation blocks INSERT, DELETE, DROP, and DDL
+
+#### Troubleshooting
+
+If MCP Query shows "sidecar unavailable":
+1. Verify garmin_mcp is installed: `pip list | grep garmin-mcp`
+2. Test sidecar manually: `python -m garmin_mcp`
+3. Restart the Streamlit app
+
+---## Quick Start (Developers)
 
 ```powershell
 cd Training_Planner
