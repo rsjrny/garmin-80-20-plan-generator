@@ -11,6 +11,7 @@ from garmin_data_hub.paths import ensure_app_dirs, default_db_path, schema_sql_p
 from garmin_data_hub.db.sqlite import connect_sqlite
 from garmin_data_hub.db.migrate import apply_schema
 from garmin_data_hub.ui_streamlit.sidebar import render_sidebar
+from garmin_data_hub.ui_streamlit.chatgpt_link import render_chatgpt_link
 from garmin_data_hub.services.plan_persistence import (
     load_generated_plan,
     load_plan_settings,
@@ -45,6 +46,7 @@ def get_cached_generated_plan(db_path_str: str, db_mtime: float, refresh_token: 
 
 
 st.set_page_config(page_title="Plan Review", layout="wide")
+render_chatgpt_link()
 
 ensure_app_dirs()
 db_path = default_db_path()

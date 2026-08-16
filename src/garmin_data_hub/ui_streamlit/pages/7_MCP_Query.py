@@ -20,8 +20,10 @@ from garmin_data_hub.mcp_sidecar_client import (
     check_sidecar_available,
 )
 from garmin_data_hub.paths import default_db_path
+from garmin_data_hub.ui_streamlit.chatgpt_link import render_chatgpt_link
 
 st.set_page_config(page_title="MCP Query", layout="wide")
+render_chatgpt_link()
 st.header("MCP Tool Console")
 
 db_path = default_db_path()
@@ -385,6 +387,17 @@ if "mcp_tool_pending" not in st.session_state:
 if "mcp_autorun" not in st.session_state:
     st.session_state.mcp_autorun = None
 
+if "mcp_bg" not in st.session_state:
+    st.session_state.mcp_bg = {
+        "running": False,
+        "mode": None,
+        "tool": None,
+        "result": None,
+        "error": None,
+        "start": 0.0,
+        "ctx": {},
+    }
+
 if "mcp_query_preset" not in st.session_state:
     st.session_state.mcp_query_preset = "Recent activities"
 
@@ -433,7 +446,9 @@ def _poll_bg() -> bool:
     Returns False and redraws when still running.
     Does nothing (returns False) when no task is active.
     """
-    bg = st.session_state["mcp_bg"]
+    bg = st.session_state.get("mcp_bg")
+    if bg is None:
+        return False
     if bg["running"]:
         elapsed = _time.monotonic() - bg["start"]
         st.info(f"⏳ Running **{bg['tool']}**… ({elapsed:.1f}s elapsed)")
@@ -656,7 +671,7 @@ Below is a summary of all 50 available MCP tools from garmin-givemydata. Click o
         for t in _other_tools
     ]
     if _rows:
-        st.dataframe(pd.DataFrame(_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(_rows), width="stretch", hide_index=True)
 
 
 def _show_mcp_result(

@@ -12,6 +12,7 @@ from garmin_data_hub.paths import ensure_app_dirs, default_db_path, schema_sql_p
 from garmin_data_hub.db.sqlite import connect_sqlite
 from garmin_data_hub.db.migrate import apply_schema
 from garmin_data_hub.ui_streamlit.sidebar import render_sidebar
+from garmin_data_hub.ui_streamlit.chatgpt_link import render_chatgpt_link
 from garmin_data_hub.services.athlete_metrics_service import (
     calculate_metrics_from_db_sources,
     clear_override_metrics,
@@ -80,6 +81,7 @@ def get_cached_generated_plan(db_path_str: str, db_mtime: float):
 # UI
 # ---------------------------
 st.set_page_config(page_title="Build Plan", layout="wide")
+render_chatgpt_link()
 
 # Force refresh of compliance data when page is visited
 # This ensures latest data is always displayed

@@ -1,5 +1,10 @@
 import streamlit as st
 
+from garmin_data_hub.ui_streamlit.chatgpt_link import render_chatgpt_link
+
+
+render_chatgpt_link()
+
 # ---------------------------------------------------------
 # 80/20 TRAINING PRINCIPLE FOR MASTER RUNNERS — HELP PAGE
 # ---------------------------------------------------------

@@ -10,6 +10,7 @@ from pathlib import Path
 from datetime import datetime
 import json
 import math
+import base64
 
 from garmin_data_hub.paths import default_db_path, ensure_app_dirs
 from garmin_data_hub.db.sqlite import connect_sqlite
@@ -20,9 +21,11 @@ from garmin_data_hub.analytics.queries import (
 )
 from garmin_data_hub.db.queries import get_activity_trackpoints
 from garmin_data_hub.ui_streamlit.sidebar import render_sidebar
+from garmin_data_hub.ui_streamlit.chatgpt_link import render_chatgpt_link
 from garmin_data_hub.db import queries
 
 st.set_page_config(page_title="Activities", layout="wide")
+render_chatgpt_link()
 
 
 # --- Helper Functions for Enhanced Mapping ---
@@ -333,6 +336,62 @@ def get_activity_detail_frames(
         records_df = get_activity_records(conn, activity_id)
         trackpoints_df = get_activity_trackpoints(conn, activity_id)
         return records_df.copy(), trackpoints_df.copy()
+    finally:
+        conn.close()
+
+
+def _json_safe_value(value):
+    """Convert SQLite values to lossless JSON-compatible values."""
+    if isinstance(value, bytes):
+        return {
+            "encoding": "base64",
+            "data": base64.b64encode(value).decode("ascii"),
+        }
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
+
+
+@st.cache_data(show_spinner=False)
+def get_complete_activity_details(
+    db_path: str, db_mtime: float, activity_id: int
+) -> dict[str, list[dict]]:
+    """Return every database row directly associated with an activity."""
+    conn = connect_sqlite(Path(db_path))
+    try:
+        table_rows = conn.execute(
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table'
+              AND name NOT LIKE 'sqlite_%'
+            ORDER BY name
+            """
+        ).fetchall()
+
+        details: dict[str, list[dict]] = {}
+        for table_row in table_rows:
+            table_name = str(table_row[0])
+            quoted_table = table_name.replace('"', '""')
+            columns = conn.execute(
+                f'PRAGMA table_info("{quoted_table}")'
+            ).fetchall()
+            if "activity_id" not in {str(column[1]) for column in columns}:
+                continue
+
+            rows = conn.execute(
+                f'SELECT * FROM "{quoted_table}" WHERE activity_id = ?',
+                (int(activity_id),),
+            ).fetchall()
+            if rows:
+                details[table_name] = [
+                    {
+                        key: _json_safe_value(row[key])
+                        for key in row.keys()
+                    }
+                    for row in rows
+                ]
+        return details
     finally:
         conn.close()
 
@@ -1535,5 +1594,73 @@ else:
             stats_c7.metric("Elevation Range", "—")
 
         stats_c8.metric("Trackpoints", f"{len(trackpoints_df):,}")
+
+        st.divider()
+        st.subheader("AI Analysis Export")
+        st.write(
+            "This export contains every database row directly associated with "
+            "the selected activity, including raw activity fields, splits, "
+            "derived metrics, and full-resolution trackpoints when available."
+        )
+        st.warning(
+            "The export may include precise GPS coordinates and health data. "
+            "Review it before uploading or sharing it."
+        )
+
+        complete_details = get_complete_activity_details(
+            str(db_path), db_mtime, activity_id
+        )
+        export_payload = {
+            "purpose": "Complete Garmin activity data for AI analysis",
+            "activity_id": int(activity_id),
+            "units_note": "Database values use their field-name units (for example, meters, seconds, bpm, and watts).",
+            "datasets": complete_details,
+        }
+        export_json = json.dumps(export_payload, indent=2, ensure_ascii=False)
+
+        export_col1, export_col2 = st.columns([1, 3])
+        with export_col1:
+            st.download_button(
+                "Download complete activity JSON",
+                data=export_json,
+                file_name=f"activity_{activity_id}_ai_analysis.json",
+                mime="application/json",
+                use_container_width=True,
+            )
+        with export_col2:
+            st.info(
+                "Download this file, open ChatGPT with the button at the top, "
+                "upload the JSON, and ask ChatGPT to analyze the activity."
+            )
+
+        if complete_details:
+            dataset_summary = pd.DataFrame(
+                [
+                    {
+                        "Dataset": table_name,
+                        "Rows": len(dataset_rows),
+                        "Fields": len(dataset_rows[0]) if dataset_rows else 0,
+                    }
+                    for table_name, dataset_rows in complete_details.items()
+                ]
+            )
+            st.dataframe(dataset_summary, hide_index=True, width="stretch")
+
+            with st.expander("Preview all available fields"):
+                for table_name, dataset_rows in complete_details.items():
+                    st.markdown(f"**{table_name}** — {len(dataset_rows):,} rows")
+                    preview_rows = dataset_rows[:200]
+                    st.dataframe(
+                        pd.DataFrame(preview_rows),
+                        hide_index=True,
+                        width="stretch",
+                    )
+                    if len(dataset_rows) > len(preview_rows):
+                        st.caption(
+                            f"Previewing 200 of {len(dataset_rows):,} rows. "
+                            "The downloaded JSON contains every row."
+                        )
+        else:
+            st.warning("No database details were found for this activity.")
 
 conn.close()

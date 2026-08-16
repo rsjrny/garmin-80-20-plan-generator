@@ -24,8 +24,10 @@ from garmin_data_hub.ui_streamlit.sync_status import (
     progress_from_log,
     sync_completed_from_state,
 )
+from garmin_data_hub.ui_streamlit.chatgpt_link import render_chatgpt_link
 
 st.set_page_config(page_title="Garmin Sync", layout="wide")
+render_chatgpt_link()
 st.header("Garmin Sync  (garmin-givemydata)")
 
 

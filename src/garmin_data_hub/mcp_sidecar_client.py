@@ -112,7 +112,7 @@ async def _call_tool_async(
     )
 
     try:
-        async with anyio.fail_after(timeout_sec):
+        with anyio.fail_after(timeout_sec):
             async with stdio_client(server) as (read_stream, write_stream):
                 async with ClientSession(read_stream, write_stream) as session:
                     await session.initialize()

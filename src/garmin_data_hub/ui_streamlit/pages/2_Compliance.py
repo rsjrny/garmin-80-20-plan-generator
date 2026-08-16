@@ -10,12 +10,14 @@ from garmin_data_hub.paths import default_db_path, ensure_app_dirs
 from garmin_data_hub.db.sqlite import connect_sqlite
 from garmin_data_hub.db.migrate import apply_schema
 from garmin_data_hub.ui_streamlit.sidebar import render_sidebar
+from garmin_data_hub.ui_streamlit.chatgpt_link import render_chatgpt_link
 from garmin_data_hub.db import queries
 
 # Opt-in to new pandas behavior to silence downcasting warnings
 pd.set_option("future.no_silent_downcasting", True)
 
 st.set_page_config(page_title="Compliance", layout="wide")
+render_chatgpt_link()
 
 # Initialize session state for selections
 if "compliance_metric" not in st.session_state:

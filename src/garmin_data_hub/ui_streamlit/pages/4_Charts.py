@@ -10,9 +10,11 @@ from garmin_data_hub.paths import default_db_path, ensure_app_dirs
 from garmin_data_hub.db.sqlite import connect_sqlite
 from garmin_data_hub.db.migrate import apply_schema
 from garmin_data_hub.ui_streamlit.sidebar import render_sidebar
+from garmin_data_hub.ui_streamlit.chatgpt_link import render_chatgpt_link
 from garmin_data_hub.db import queries
 
 st.set_page_config(page_title="Charts", layout="wide")
+render_chatgpt_link()
 
 # Initialize session state for selections
 if "charts_time_range" not in st.session_state:

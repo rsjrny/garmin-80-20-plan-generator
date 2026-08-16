@@ -50,6 +50,7 @@ windows_Installer/**
 # Credentials (never commit!)
 *.env
 .env
+.streamlit/secrets.toml
 credentials.txt
 passwords.txt
 scripts/cookies/*.json

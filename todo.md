@@ -28,8 +28,10 @@
 		- [x] Added expandable documentation panel in MCP Query page
 		- [x] Added detailed help text to all tool parameter inputs (tool selector, query, health summary, activities, trends)
 		- [x] Updated README.md with dedicated MCP Query Page section (requirements, troubleshooting, examples, features)
-	- [ ] Phase 4: Validate all six MCP tools and no-sidecar behavior in manual + automated checks.
+	- [x] Phase 4: Expose all 53 garmin_mcp tools in UI + 28-test validation suite (commit f3e4b79).
 	- [ ] Ready-to-start decisions required:
-		- [ ] Decide if MCP page is always visible in sidebar or gated as advanced/feature-flagged.
-		- [ ] Decide synchronous-only calls vs queued background execution for long-running MCP operations.
-		- [ ] Decide minimal telemetry/logging needed for MCP tool success/failure tracking.
+		- [x] MCP page always visible in sidebar (tool selector is on-page, not per-tool sidebar item).
+		- [x] Background threading implemented: Run button is non-blocking, UI shows elapsed-time ticker, result persists on next rerun (commit 09f0297).
+		- [x] Rotating-file logging added to mcp_sidecar_client.py: CALL/OK/RETRY/TIMEOUT/ERROR lines written to %LOCALAPPDATA%\GarminDataHub\logs\mcp_calls.log, 5 MB rotating, 3 backups (commit 09f0297).
+
+- [ ] ***can the mcp page return results in a table not in raw and json***

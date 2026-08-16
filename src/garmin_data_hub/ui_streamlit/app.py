@@ -2,7 +2,10 @@ from __future__ import annotations
 import streamlit as st
 import streamlit.components.v1 as components
 
+from garmin_data_hub.ui_streamlit.chatgpt_link import render_chatgpt_link
+
 st.set_page_config(page_title="Garmin Data Hub", layout="wide")
+render_chatgpt_link()
 
 # Add exit button in sidebar
 with st.sidebar:
@@ -24,8 +27,7 @@ with st.sidebar:
 
 st.title("Garmin Data Hub")
 st.write(
-    "Use the pages in the left sidebar to manage your Garmin data. "
-    "**MCP Query** (advanced) provides direct access to database schemas, health trends, and raw queries."
+    "Use the pages in the left sidebar: **Garmin Sync**, **MCP Query**, **Activities**, **Build Plan**, **Charts**, **Compliance**, and **Sleep Table**."
 )
 st.info(
     "Database is stored in Windows AppData by default. You can override with env var `GARMIN_DATA_HUB_DB`."
