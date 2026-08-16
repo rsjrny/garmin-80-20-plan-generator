@@ -22,7 +22,30 @@ The project syncs Garmin data using `garmin-givemydata`, applies app-specific sc
 - Derived metrics including HR zones, TRIMP/TSS, FTP estimates, and power zones
 - Charts for training load, pace/power trends, and power profile analysis
 - Build Plan and compliance pages for planning workflows
+- Manual ChatGPT coaching-packet export and validated plan import
 - Local-first operation with SQLite storage
+
+## Manual ChatGPT Plan Exchange
+
+The **Build Plan** page supports a local, API-free round trip:
+
+1. Configure the event and training settings.
+2. Add optional schedule, injury, strength, and nutrition constraints.
+3. Download the privacy-minimized coaching packet and upload it to ChatGPT.
+4. Copy the included prompt and ask ChatGPT to return the required JSON plan.
+5. Upload that response to Build Plan for validation and a change preview.
+6. Explicitly approve the plan before it is written to SQLite.
+
+The packet includes summarized activities and bounded plan context. It excludes
+GPS routes, raw trackpoints, exact activity times, device identifiers, file
+paths, and raw Garmin JSON. Garmin Data Hub makes no ChatGPT or OpenAI API call
+and does not require an API key.
+
+Accepted plans replace only their declared future date window. The save is one
+atomic transaction: previous state is archived in `plan_import_history`, exact
+duration/distance/TSS values are written to `planned_workout`, and Plan Review's
+active snapshot is updated. A failed write is rolled back without a partial
+calendar change.
 
 ## Streamlit Pages
 
@@ -33,7 +56,7 @@ Located in `src/garmin_data_hub/ui_streamlit/pages`:
 - `2_Compliance.py` — compliance and zone analysis
 - `3_Past_Activities.py` — activity browsing and analysis
 - `4_Charts.py` — trend and power/load charts
-- `5_Build_Plan.py` — plan creation workflow
+- `5_Build_Plan.py` — deterministic planning and manual ChatGPT plan exchange
 - `6_8020_Help.py` — 80/20 training methodology guidance
 - `7_MCP_Query.py` — **Advanced:** MCP tool console for database queries and Garmin data access (requires garmin_mcp sidecar)
 

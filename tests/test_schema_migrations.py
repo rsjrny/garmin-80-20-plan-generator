@@ -115,6 +115,17 @@ def test_apply_schema_upgrades_legacy_tables(tmp_path):
         }
         assert "updated_at" in settings_cols
 
+        import_history_cols = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(plan_import_history)").fetchall()
+        }
+        assert {
+            "content_sha256",
+            "payload_json",
+            "replace_start_date",
+            "replace_end_date",
+        }.issubset(import_history_cols)
+
         ddl = conn.execute(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='activity_trackpoints'"
         ).fetchone()[0]

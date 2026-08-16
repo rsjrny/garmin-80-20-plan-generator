@@ -12,6 +12,14 @@ class DayPlan:
     flags: str
     workout: str
     notes: str
+    # Imported plans retain the normalized day-level session type without
+    # changing existing deterministic calendar callers.  Multi-session days use
+    # the highest-intensity session for ``sport``/``intensity`` and expose their
+    # full count separately.
+    sport: str | None = None
+    intensity: str | None = None
+    session_count: int | None = None
+
 
 def _week_index(start: date, d: date) -> int:
     return ((d - start).days // 7) + 1

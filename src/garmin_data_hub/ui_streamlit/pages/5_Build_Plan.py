@@ -13,6 +13,9 @@ from garmin_data_hub.db.sqlite import connect_sqlite
 from garmin_data_hub.db.migrate import apply_schema
 from garmin_data_hub.ui_streamlit.sidebar import render_sidebar
 from garmin_data_hub.ui_streamlit.chatgpt_link import render_chatgpt_link
+from garmin_data_hub.ui_streamlit.plan_exchange_panel import (
+    render_plan_exchange_panel,
+)
 from garmin_data_hub.services.athlete_metrics_service import (
     calculate_metrics_from_db_sources,
     clear_override_metrics,
@@ -220,7 +223,9 @@ try:
 
     st.divider()
     st.subheader("Plan Inputs")
-    submitted = st.button("Generate Plan / Save Workbook", type="primary")
+    submitted = st.button(
+        "Generate deterministic plan + workbook", type="primary"
+    )
     settings = get_cached_plan_settings(str(db_path), db_mtime)
     s_name = settings["plan_athlete_name"]
     s_age = settings["plan_age"]
@@ -454,8 +459,6 @@ try:
         """
         )
 
-    st.divider()
-
     # submitted = st.button("Generate Plan / Save Workbook", type="primary")
 
     # Variables to hold plan data for display
@@ -564,6 +567,20 @@ try:
             display_analysis = l_analysis  # dict
             display_day_plans = l_day_plans  # list of dicts
             display_weekly_rows = l_weekly_rows  # list of dicts
+
+    st.divider()
+    render_plan_exchange_panel(
+        db_path,
+        plan_start_date=start_date,
+        event_date=event_date,
+        age=int(age),
+        distance=distance,
+        run_days_per_week=int(run_days),
+        long_run_day=long_run_day,
+        sodium_mg_per_hour=int(sodium) if int(sodium) > 0 else None,
+        hrmax=int(eff_hrmax) if eff_hrmax is not None else None,
+        lthr=int(eff_lthr) if eff_lthr is not None else None,
+    )
 
 
 except Exception as e:

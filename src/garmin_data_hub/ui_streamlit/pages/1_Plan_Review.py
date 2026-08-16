@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -82,6 +82,33 @@ def get_val(obj, key):
     return getattr(obj, key, None)
 
 
+def intensity_label_for_rules(day_plan) -> str:
+    """Prefer validated imported intensity over workout-name guessing."""
+    typed = get_val(day_plan, "intensity")
+    if typed:
+        return {
+            "rest": "Rest",
+            "recovery": "Recovery",
+            "easy": "Easy Z2",
+            "moderate": "Tempo Z3",
+            "hard": "Hard Z4",
+            "race": "Race Pace Hard Z4",
+        }.get(str(typed).lower(), str(typed))
+    return str(get_val(day_plan, "workout") or "")
+
+
+plan_provenance = get_val(analysis, "provenance") or {}
+if (
+    isinstance(plan_provenance, dict)
+    and plan_provenance.get("source") == "chatgpt_manual_upload"
+):
+    applied_at = plan_provenance.get("applied_at", "recently")
+    st.info(
+        "This active plan was imported from a manually uploaded ChatGPT JSON "
+        f"response and validated locally (imported {applied_at})."
+    )
+
+
 # Use current settings when available; fall back to generated plan payload.
 age = int(settings.get("plan_age") or 0)
 distance = str(settings.get("plan_distance") or "")
@@ -106,11 +133,21 @@ with col_refresh:
         st.rerun()
 
 # ===== Show 80/20 metrics in header row =====
-# Get a sample week (e.g., week 1 workouts)
+# Use the first upcoming plan week; imported cache merges may retain older days.
+upcoming_for_metrics = [
+    p for p in day_plans if str(get_val(p, "iso_date") or "") >= date.today().isoformat()
+]
+sample_start = min(
+    (date.fromisoformat(str(get_val(p, "iso_date"))) for p in upcoming_for_metrics),
+    default=None,
+)
+sample_end = sample_start + timedelta(days=6) if sample_start else None
 sample_week_workouts = [
-    (p.workout if hasattr(p, "workout") else p.get("workout"))
-    for p in day_plans
-    if (p.week if hasattr(p, "week") else p.get("week")) == 1
+    intensity_label_for_rules(p)
+    for p in upcoming_for_metrics
+    if sample_start
+    <= date.fromisoformat(str(get_val(p, "iso_date")))
+    <= sample_end
 ]
 
 if sample_week_workouts:
@@ -182,26 +219,42 @@ if intensity_dist and intensity_dist.warnings:
 with tab_cal:
     today_iso = date.today().isoformat()
     future_plans = [dp for dp in day_plans if get_val(dp, "iso_date") >= today_iso]
+    has_typed_sessions = any(get_val(dp, "intensity") for dp in future_plans)
+    calendar_rows = []
+    for dp in future_plans:
+        row = {
+            "Date": get_val(dp, "iso_date"),
+            "Day": get_val(dp, "day"),
+            "Week#": get_val(dp, "week"),
+            "Phase": get_val(dp, "phase"),
+            "Flags": get_val(dp, "flags"),
+            "Workout": get_val(dp, "workout"),
+            "Notes": get_val(dp, "notes"),
+        }
+        if has_typed_sessions:
+            row.update(
+                {
+                    "Sport": get_val(dp, "sport"),
+                    "Intensity": get_val(dp, "intensity"),
+                    "Sessions": get_val(dp, "session_count"),
+                }
+            )
+        calendar_rows.append(row)
 
     st.dataframe(
-        pd.DataFrame(
-            [
-                {
-                    "Date": get_val(dp, "iso_date"),
-                    "Day": get_val(dp, "day"),
-                    "Week#": get_val(dp, "week"),
-                    "Phase": get_val(dp, "phase"),
-                    "Flags": get_val(dp, "flags"),
-                    "Workout": get_val(dp, "workout"),
-                    "Notes": get_val(dp, "notes"),
-                }
-                for dp in future_plans
-            ]
-        ),
+        pd.DataFrame(calendar_rows),
         width="stretch",
     )
 
 with tab_metrics:
+    if (
+        isinstance(plan_provenance, dict)
+        and plan_provenance.get("source") == "chatgpt_manual_upload"
+    ):
+        st.caption(
+            "Weekly summary covers the most recently imported replacement window. "
+            "Any preserved sessions outside that window remain visible in Calendar."
+        )
     if weekly_rows:
         st.dataframe(pd.DataFrame(weekly_rows), width="stretch")
     else:
@@ -256,19 +309,30 @@ with tab_validation:
 
     day_intensity_map = {}
     for dp in day_plans:
-        workout = get_val(dp, "workout") or ""
-        if "Recovery" in workout or "Z1" in workout:
-            intensity = "Recovery"
-        elif "Easy" in workout or "Z2" in workout:
-            intensity = "Easy"
-        elif "Threshold" in workout or "LTHR" in workout:
-            intensity = "Threshold"
-        elif "VO2" in workout or "VO2max" in workout:
-            intensity = "VO2max"
-        elif "Hard" in workout:
-            intensity = "Hard"
+        typed = str(get_val(dp, "intensity") or "").lower()
+        if typed:
+            intensity = {
+                "rest": "Rest",
+                "recovery": "Recovery",
+                "easy": "Easy",
+                "moderate": "Threshold",
+                "hard": "Hard",
+                "race": "Race Pace",
+            }.get(typed, "Easy")
         else:
-            intensity = "Easy"
+            workout = get_val(dp, "workout") or ""
+            if "Recovery" in workout or "Z1" in workout:
+                intensity = "Recovery"
+            elif "Easy" in workout or "Z2" in workout:
+                intensity = "Easy"
+            elif "Threshold" in workout or "LTHR" in workout:
+                intensity = "Threshold"
+            elif "VO2" in workout or "VO2max" in workout:
+                intensity = "VO2max"
+            elif "Hard" in workout:
+                intensity = "Hard"
+            else:
+                intensity = "Easy"
 
         iso_date = get_val(dp, "iso_date")
         day_intensity_map[iso_date] = intensity
@@ -279,10 +343,14 @@ with tab_validation:
     week_start_date = None
 
     for iso_date in sorted(day_intensity_map.keys()):
-        year_week = iso_date[:7]
+        parsed_date = date.fromisoformat(iso_date)
+        iso_calendar = parsed_date.isocalendar()
+        year_week = (iso_calendar.year, iso_calendar.week)
         if current_week != year_week:
             if week_days:
-                val = validate_week_structure(week_days)
+                val = validate_week_structure(
+                    ["Recovery" if value == "Rest" else value for value in week_days]
+                )
                 if not val.is_valid:
                     week_issues.append((current_week, week_start_date, val.issues))
             current_week = year_week
@@ -292,7 +360,9 @@ with tab_validation:
         week_days.append(day_intensity_map[iso_date])
 
     if week_days:
-        val = validate_week_structure(week_days)
+        val = validate_week_structure(
+            ["Recovery" if value == "Rest" else value for value in week_days]
+        )
         if not val.is_valid:
             week_issues.append((current_week, week_start_date, val.issues))
 
@@ -311,13 +381,16 @@ with tab_validation:
     hard_count = sum(
         1
         for v in day_intensity_map.values()
-        if v in ["Hard", "Threshold", "VO2max", "Anaerobic"]
+        if v in ["Hard", "Threshold", "VO2max", "Anaerobic", "Race Pace"]
     )
     easy_count = sum(1 for v in day_intensity_map.values() if v in ["Easy", "Recovery"])
 
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("Total Workouts", len(day_intensity_map))
+        st.metric(
+            "Total Workouts",
+            sum(1 for value in day_intensity_map.values() if value != "Rest"),
+        )
     with col2:
         st.metric("Hard Days", hard_count)
     with col3:
@@ -327,9 +400,11 @@ with tab_forever:
     st.markdown("### Forever Training System – Core")
 
     if isinstance(inputs, dict):
-        ath_name = inputs["athlete"]["athlete_name"]
+        ath_name = settings.get("plan_athlete_name") or inputs["athlete"][
+            "athlete_name"
+        ]
         ath_age = inputs["athlete"]["age"]
-        evt_name = inputs["event"]["event_name"]
+        evt_name = settings.get("plan_event_name") or inputs["event"]["event_name"]
         evt_date = inputs["event"]["event_date"]
     else:
         ath_name = inputs.athlete.athlete_name
@@ -343,6 +418,14 @@ with tab_forever:
         st.markdown(f"• {line}")
 
 with tab_workouts:
+    imported_strength = get_val(analysis, "strength_guidance") or []
+    if imported_strength:
+        st.markdown("### Imported strength guidance")
+        st.caption("Educational guidance retained with the accepted ChatGPT plan.")
+        for item in imported_strength:
+            st.markdown(f"- {item}")
+        st.divider()
+
     st.markdown("### Workout Library (Intervals.icu → Garmin)")
     st.write("Minimal set of reusable workouts with targets.")
 
@@ -357,6 +440,17 @@ with tab_workouts:
             st.markdown(f"• {b}")
 
 with tab_nutrition:
+    imported_nutrition = get_val(analysis, "nutrition_guidance") or []
+    if imported_nutrition:
+        st.markdown("### Imported nutrition guidance")
+        st.caption(
+            "Educational guidance retained with the accepted ChatGPT plan; "
+            "it is not medical advice."
+        )
+        for item in imported_nutrition:
+            st.markdown(f"- {item}")
+        st.divider()
+
     st.markdown("### Nutrition & Hydration")
 
     if isinstance(inputs, dict):

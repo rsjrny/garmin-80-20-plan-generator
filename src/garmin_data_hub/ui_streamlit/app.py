@@ -96,6 +96,7 @@ This application uses the **80/20 training method** developed by Dr. Stephen Sei
 - **80/20 Distribution**: Plans automatically balance 80% easy/20% hard training
 - **Masters Adjustments**: Age 50+ gets modified training loads and recovery
 - **Export Options**: Generate Excel workbooks with detailed daily plans, nutrition guides, and workout libraries
+- **Manual ChatGPT Exchange**: Download a privacy-minimized coaching packet, then validate, preview, and explicitly save a returned plan JSON without using an API key
 
 ### Activities Page Details
 - **Data Overview**: View all imported activities with key metrics

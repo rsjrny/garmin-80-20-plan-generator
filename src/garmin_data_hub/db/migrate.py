@@ -5,7 +5,7 @@ import sqlite3
 
 logger = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 
 
 def _ensure_schema_migrations_table(conn: sqlite3.Connection) -> None:
@@ -147,6 +147,30 @@ def _migration_3_upgrade_app_tables(conn: sqlite3.Connection) -> None:
         "app_settings",
         "updated_at",
         "TEXT",
+    )
+
+
+def _migration_5_add_plan_import_history(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS plan_import_history (
+          plan_import_id          INTEGER PRIMARY KEY,
+          source                  TEXT NOT NULL DEFAULT 'chatgpt_manual_upload',
+          schema_version          TEXT NOT NULL,
+          content_sha256          TEXT NOT NULL UNIQUE,
+          plan_name               TEXT NOT NULL,
+          replace_start_date      TEXT NOT NULL,
+          replace_end_date        TEXT NOT NULL,
+          workout_count           INTEGER NOT NULL,
+          payload_json            TEXT NOT NULL,
+          previous_plan_json      TEXT,
+          validation_warnings_json TEXT NOT NULL DEFAULT '[]',
+          applied_at              TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_plan_import_history_applied_at
+          ON plan_import_history(applied_at);
+        """
     )
 
 
@@ -296,6 +320,11 @@ def apply_schema(conn: sqlite3.Connection, schema_path: Path | None = None) -> N
             4,
             "fix activity_trackpoints cascade behavior",
             lambda: _fix_trackpoint_cascade(conn),
+        ),
+        (
+            5,
+            "add manual plan import history",
+            lambda: _migration_5_add_plan_import_history(conn),
         ),
     ]
 

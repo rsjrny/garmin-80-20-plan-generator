@@ -130,3 +130,26 @@ CREATE INDEX IF NOT EXISTS idx_activity_trackpoint_activity_time
 
 CREATE INDEX IF NOT EXISTS idx_activity_trackpoint_latlon
   ON activity_trackpoints(latitude, longitude);
+
+-- =========================
+--  F) MANUALLY IMPORTED PLAN HISTORY
+-- =========================
+-- Stores only plans the athlete explicitly approved in the UI. Uploading a
+-- ChatGPT response for preview does not write to this table.
+CREATE TABLE IF NOT EXISTS plan_import_history (
+  plan_import_id          INTEGER PRIMARY KEY,
+  source                  TEXT NOT NULL DEFAULT 'chatgpt_manual_upload',
+  schema_version          TEXT NOT NULL,
+  content_sha256          TEXT NOT NULL UNIQUE,
+  plan_name               TEXT NOT NULL,
+  replace_start_date      TEXT NOT NULL,
+  replace_end_date        TEXT NOT NULL,
+  workout_count           INTEGER NOT NULL,
+  payload_json            TEXT NOT NULL,
+  previous_plan_json      TEXT,
+  validation_warnings_json TEXT NOT NULL DEFAULT '[]',
+  applied_at              TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_plan_import_history_applied_at
+  ON plan_import_history(applied_at);

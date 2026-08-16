@@ -39,5 +39,3 @@ class Inputs:
     event: EventProfile
     garmin_files: List[Path]
     output_dir: Path
-    use_llm: bool
-    openai_api_key: Optional[str]
