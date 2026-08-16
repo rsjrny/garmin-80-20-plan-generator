@@ -24,10 +24,12 @@ from garmin_data_hub.services.ai_plan_import import (
 )
 from garmin_data_hub.services.plan_persistence import (
     StalePlanWriteError,
+    _parse_planned_workout_metrics,
     get_active_plan_sha256,
     get_active_plan_snapshot,
     load_generated_plan,
     load_plan_settings,
+    save_generated_plan,
     save_imported_plan,
     save_plan_setting,
 )
@@ -189,6 +191,68 @@ def test_save_plan_setting_round_trips_values(tmp_path):
     updated = load_plan_settings(db_path)
     assert updated["plan_event_name"] == "Spring Half Marathon"
     assert updated["plan_out_name"] == "casey_plan.xlsx"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_distance_m", "expected_duration_s"),
+    [
+        ("Easy run 60 min", None, 3600.0),
+        ("Easy run 45–60 min @ Z2", None, 3150.0),
+        ("Easy run 45-60 minutes", None, 3150.0),
+        ("Long run 2.3 hours", None, 8280.0),
+        ("Easy run 5 mi in 45 min", 8046.7, 2700.0),
+        ("Aerobic run 10 km, 60 minutes", 10000.0, 3600.0),
+        ("Trail run 12 kilometres, 90 mins", 12000.0, 5400.0),
+    ],
+)
+def test_planned_workout_metric_parser_uses_complete_unit_names(
+    text, expected_distance_m, expected_duration_s
+):
+    distance_m, duration_s = _parse_planned_workout_metrics(text)
+
+    if expected_distance_m is None:
+        assert distance_m is None
+    else:
+        assert distance_m == pytest.approx(expected_distance_m)
+    assert duration_s == pytest.approx(expected_duration_s)
+
+
+def test_save_generated_plan_does_not_store_minutes_as_miles(tmp_path):
+    db_path = tmp_path / "garmin.db"
+    _create_db(db_path)
+    plan = _make_imported_plan(get_active_plan_sha256(db_path))
+    day_plan = DayPlan(
+        iso_date="2026-01-03",
+        day="Saturday",
+        week=1,
+        phase="Base",
+        flags="",
+        workout="Easy Run",
+        notes="45–60 min @ Z2. Conversational pace.",
+    )
+
+    save_generated_plan(
+        db_path,
+        plan.inputs,
+        plan.analysis,
+        [day_plan],
+        [],
+    )
+
+    conn = connect_sqlite(db_path)
+    try:
+        stored = conn.execute(
+            """
+            SELECT planned_distance_m, planned_duration_s
+            FROM planned_workout
+            WHERE scheduled_date = '2026-01-03'
+            """
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert stored["planned_distance_m"] is None
+    assert stored["planned_duration_s"] == 3150.0
 
 
 def test_active_plan_hash_is_semantic_and_insertion_order_independent(tmp_path):

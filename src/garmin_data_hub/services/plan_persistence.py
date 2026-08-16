@@ -796,35 +796,8 @@ def save_generated_plan(
             if not dp.workout:
                 continue
 
-            planned_dist = None
-            planned_dur = None
             text_to_parse = (dp.workout + " " + (dp.notes or "")).lower()
-
-            try:
-                hour_match = re.search(r"(\d+(?:\.\d+)?)\s*hour", text_to_parse)
-                min_range_match = re.search(r"(\d+)-(\d+)\s*min", text_to_parse)
-                min_match = re.search(r"(\d+)\s*min", text_to_parse)
-
-                if hour_match:
-                    planned_dur = float(hour_match.group(1)) * 3600
-                elif min_range_match:
-                    avg_mins = (
-                        int(min_range_match.group(1)) + int(min_range_match.group(2))
-                    ) / 2
-                    planned_dur = avg_mins * 60
-                elif min_match:
-                    planned_dur = int(min_match.group(1)) * 60
-
-                mile_match = re.search(r"(\d+(?:\.\d+)?)\s*mi", text_to_parse)
-                km_match = re.search(r"(\d+(?:\.\d+)?)\s*km", text_to_parse)
-
-                if mile_match:
-                    planned_dist = float(mile_match.group(1)) * 1609.34
-                elif km_match:
-                    planned_dist = float(km_match.group(1)) * 1000
-
-            except (TypeError, ValueError):
-                logger.warning("Could not parse workout string for %s", dp.iso_date)
+            planned_dist, planned_dur = _parse_planned_workout_metrics(text_to_parse)
 
             db_queries.insert_planned_workout(
                 conn,
@@ -839,6 +812,57 @@ def save_generated_plan(
         conn.commit()
     finally:
         conn.close()
+
+
+def _parse_planned_workout_metrics(text: str) -> tuple[float | None, float | None]:
+    """Extract distance in metres and duration in seconds from workout text.
+
+    Unit names require a word boundary so duration strings such as ``60 min``
+    cannot be interpreted as ``60 mi``. Both ASCII and typographic range dashes
+    are supported because generated workout descriptions use both forms.
+    """
+    planned_dist: float | None = None
+    planned_dur: float | None = None
+    normalized = str(text or "").lower()
+
+    try:
+        hour_match = re.search(
+            r"(\d+(?:\.\d+)?)\s*(?:hours?|hrs?)\b", normalized
+        )
+        min_range_match = re.search(
+            r"(\d+(?:\.\d+)?)\s*[-–—]\s*(\d+(?:\.\d+)?)\s*"
+            r"(?:minutes?|mins?)\b",
+            normalized,
+        )
+        min_match = re.search(
+            r"(\d+(?:\.\d+)?)\s*(?:minutes?|mins?)\b", normalized
+        )
+
+        if hour_match:
+            planned_dur = float(hour_match.group(1)) * 3600
+        elif min_range_match:
+            avg_mins = (
+                float(min_range_match.group(1)) + float(min_range_match.group(2))
+            ) / 2
+            planned_dur = avg_mins * 60
+        elif min_match:
+            planned_dur = float(min_match.group(1)) * 60
+
+        mile_match = re.search(
+            r"(\d+(?:\.\d+)?)\s*(?:mi|miles?)\b", normalized
+        )
+        km_match = re.search(
+            r"(\d+(?:\.\d+)?)\s*(?:km|kilomet(?:er|re)s?)\b", normalized
+        )
+
+        if mile_match:
+            planned_dist = float(mile_match.group(1)) * 1609.34
+        elif km_match:
+            planned_dist = float(km_match.group(1)) * 1000
+    except (TypeError, ValueError):
+        logger.warning("Could not parse workout metrics from %r", text)
+
+    return planned_dist, planned_dur
 
 
 def load_generated_plan(db_path: Path):
