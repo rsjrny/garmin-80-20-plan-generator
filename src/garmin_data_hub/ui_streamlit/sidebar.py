@@ -56,7 +56,7 @@ def render_sidebar(conn=None):
 
         st.divider()
 
-        if st.button("🚪 Exit Application", use_container_width=True):
+        if st.button("🚪 Exit Application", width="stretch"):
             st.write("To exit, close this browser tab or press Ctrl+W")
             import streamlit.components.v1 as components
 

@@ -928,6 +928,28 @@ def load_plan_settings(db_path: Path) -> dict[str, Any]:
         conn.close()
 
 
+def load_chatgpt_exchange_settings(db_path: Path) -> dict[str, Any]:
+    """Load the persisted manual ChatGPT workspace preferences."""
+    defaults: dict[str, Any] = {
+        "chatgpt_exchange_injuries": "",
+        "chatgpt_exchange_schedule": "",
+        "chatgpt_exchange_equipment": "",
+        "chatgpt_exchange_strength_experience": "",
+        "chatgpt_exchange_diet": "",
+        "chatgpt_exchange_allergies": "",
+        "chatgpt_exchange_gi": "",
+        "chatgpt_exchange_lookback_weeks": 12,
+    }
+    conn = connect_sqlite(db_path)
+    try:
+        return {
+            key: db_queries.get_setting(conn, key, default)
+            for key, default in defaults.items()
+        }
+    finally:
+        conn.close()
+
+
 def save_plan_setting(db_path: Path, key: str, value: Any) -> None:
     """Persist a single Build Plan UI setting."""
     conn = connect_sqlite(db_path)

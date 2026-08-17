@@ -10,7 +10,7 @@ render_chatgpt_link()
 # Add exit button in sidebar
 with st.sidebar:
     st.divider()
-    if st.button("🚪 Exit Application", use_container_width=True):
+    if st.button("🚪 Exit Application", width="stretch"):
         st.write("To exit, close this browser tab or press Ctrl+W")
         components.html(
             """
@@ -27,7 +27,7 @@ with st.sidebar:
 
 st.title("Garmin Data Hub")
 st.write(
-    "Use the pages in the left sidebar: **Garmin Sync**, **MCP Query**, **Activities**, **Build Plan**, **Charts**, **Compliance**, and **Sleep Table**."
+    "Use the pages in the left sidebar: **Garmin Sync**, **Activities**, **Build Plan**, **ChatGPT Workspace**, **Charts**, **Compliance**, **Sleep Table**, and **MCP Query**."
 )
 st.info(
     "Database is stored in Windows AppData by default. You can override with env var `GARMIN_DATA_HUB_DB`."
@@ -42,6 +42,7 @@ st.markdown(
 2. **Manual Import**: If you have FIT/CSV files saved locally, use the Import page to load them into the database.
 3. **Review Activities**: Check the Activities page to see your imported workouts, with filtering and analysis options.
 4. **Create Training Plans**: Use the Build Plan page to generate periodized training schedules based on your age, goals, and preferences.
+5. **Use AI Coaching**: Open ChatGPT Workspace to export a coaching packet, work with ChatGPT in a new tab, and validate the returned JSON before saving it.
 
 ### Training Philosophy: The 80/20 Principle
 
@@ -96,7 +97,7 @@ This application uses the **80/20 training method** developed by Dr. Stephen Sei
 - **80/20 Distribution**: Plans automatically balance 80% easy/20% hard training
 - **Masters Adjustments**: Age 50+ gets modified training loads and recovery
 - **Export Options**: Generate Excel workbooks with detailed daily plans, nutrition guides, and workout libraries
-- **Manual ChatGPT Exchange**: Download a privacy-minimized coaching packet, then validate, preview, and explicitly save a returned plan JSON without using an API key
+- **ChatGPT Workspace**: Open the dedicated page to download a privacy-minimized coaching packet, launch ChatGPT, then validate, preview, and explicitly save a returned plan JSON without using an API key
 
 ### Activities Page Details
 - **Data Overview**: View all imported activities with key metrics

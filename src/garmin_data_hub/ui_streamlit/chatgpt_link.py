@@ -11,5 +11,5 @@ def render_chatgpt_link() -> None:
             "💬 Open ChatGPT",
             "https://chatgpt.com/",
             help="Open ChatGPT in a new browser tab",
-            use_container_width=True,
+            width="stretch",
         )

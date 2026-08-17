@@ -25,21 +25,24 @@ The project syncs Garmin data using `garmin-givemydata`, applies app-specific sc
 - Manual ChatGPT coaching-packet export and validated plan import
 - Local-first operation with SQLite storage
 
-## Manual ChatGPT Plan Exchange
+## ChatGPT Workspace
 
-The **Build Plan** page supports a local, API-free round trip:
+The dedicated **ChatGPT Workspace** page supports a local, API-free round trip:
 
-1. Configure the event and training settings.
+1. Configure the event and training settings on Build Plan.
 2. Add optional schedule, injury, strength, and nutrition constraints.
-3. Download the privacy-minimized coaching packet and upload it to ChatGPT.
+3. Download the privacy-minimized coaching packet and open ChatGPT in a new tab.
 4. Copy the included prompt and ask ChatGPT to return the required JSON plan.
-5. Upload that response to Build Plan for validation and a change preview.
+5. Return to the workspace and upload that response for validation and a change preview.
 6. Explicitly approve the plan before it is written to SQLite.
 
 The packet includes summarized activities and bounded plan context. It excludes
 GPS routes, raw trackpoints, exact activity times, device identifiers, file
 paths, and raw Garmin JSON. Garmin Data Hub makes no ChatGPT or OpenAI API call
 and does not require an API key.
+
+Workspace constraints and the selected training-history window are saved in the
+local SQLite settings database and restored when the application is reopened.
 
 Accepted plans replace only their declared future date window. The save is one
 atomic transaction: previous state is archived in `plan_import_history`, exact
@@ -56,9 +59,10 @@ Located in `src/garmin_data_hub/ui_streamlit/pages`:
 - `2_Compliance.py` — compliance and zone analysis
 - `3_Past_Activities.py` — activity browsing and analysis
 - `4_Charts.py` — trend and power/load charts
-- `5_Build_Plan.py` — deterministic planning and manual ChatGPT plan exchange
+- `5_Build_Plan.py` — deterministic planning and saved coaching settings
 - `6_8020_Help.py` — 80/20 training methodology guidance
 - `7_MCP_Query.py` — **Advanced:** MCP tool console for database queries and Garmin data access (requires garmin_mcp sidecar)
+- `8_ChatGPT_Workspace.py` — API-free coaching packet export, ChatGPT launch, validated response import, and database approval
 
 ### MCP Query Page (Advanced)
 

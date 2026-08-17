@@ -105,6 +105,6 @@ try:
     if sleep_df.empty:
         st.info("No sleep rows found for the selected window.")
     else:
-        st.dataframe(sleep_df, use_container_width=True, hide_index=True)
+        st.dataframe(sleep_df, width="stretch", hide_index=True)
 finally:
     conn.close()

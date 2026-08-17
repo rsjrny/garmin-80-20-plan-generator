@@ -13,9 +13,6 @@ from garmin_data_hub.db.sqlite import connect_sqlite
 from garmin_data_hub.db.migrate import apply_schema
 from garmin_data_hub.ui_streamlit.sidebar import render_sidebar
 from garmin_data_hub.ui_streamlit.chatgpt_link import render_chatgpt_link
-from garmin_data_hub.ui_streamlit.plan_exchange_panel import (
-    render_plan_exchange_panel,
-)
 from garmin_data_hub.services.athlete_metrics_service import (
     calculate_metrics_from_db_sources,
     clear_override_metrics,
@@ -569,17 +566,15 @@ try:
             display_weekly_rows = l_weekly_rows  # list of dicts
 
     st.divider()
-    render_plan_exchange_panel(
-        db_path,
-        plan_start_date=start_date,
-        event_date=event_date,
-        age=int(age),
-        distance=distance,
-        run_days_per_week=int(run_days),
-        long_run_day=long_run_day,
-        sodium_mg_per_hour=int(sodium) if int(sodium) > 0 else None,
-        hrmax=int(eff_hrmax) if eff_hrmax is not None else None,
-        lthr=int(eff_lthr) if eff_lthr is not None else None,
+    st.subheader("ChatGPT coaching")
+    st.write(
+        "Use the dedicated workspace to download a privacy-minimized coaching "
+        "packet, open ChatGPT, and review a returned plan before saving it."
+    )
+    st.page_link(
+        "pages/8_ChatGPT_Workspace.py",
+        label="Open ChatGPT Workspace",
+        icon="💬",
     )
 
 

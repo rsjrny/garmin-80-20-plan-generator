@@ -27,6 +27,7 @@ from garmin_data_hub.services.plan_persistence import (
     _parse_planned_workout_metrics,
     get_active_plan_sha256,
     get_active_plan_snapshot,
+    load_chatgpt_exchange_settings,
     load_generated_plan,
     load_plan_settings,
     save_generated_plan,
@@ -191,6 +192,24 @@ def test_save_plan_setting_round_trips_values(tmp_path):
     updated = load_plan_settings(db_path)
     assert updated["plan_event_name"] == "Spring Half Marathon"
     assert updated["plan_out_name"] == "casey_plan.xlsx"
+
+
+def test_chatgpt_exchange_settings_persist(tmp_path):
+    db_path = tmp_path / "garmin.db"
+    _create_db(db_path)
+
+    defaults = load_chatgpt_exchange_settings(db_path)
+    assert defaults["chatgpt_exchange_injuries"] == ""
+    assert defaults["chatgpt_exchange_lookback_weeks"] == 12
+
+    save_plan_setting(
+        db_path, "chatgpt_exchange_injuries", "Avoid deep knee flexion"
+    )
+    save_plan_setting(db_path, "chatgpt_exchange_lookback_weeks", 24)
+
+    restored = load_chatgpt_exchange_settings(db_path)
+    assert restored["chatgpt_exchange_injuries"] == "Avoid deep knee flexion"
+    assert restored["chatgpt_exchange_lookback_weeks"] == 24
 
 
 @pytest.mark.parametrize(

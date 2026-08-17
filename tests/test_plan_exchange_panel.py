@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -42,6 +43,32 @@ class _CacheData:
 
 class _RerunRequested(RuntimeError):
     pass
+
+
+def test_custom_prompt_round_trip_refreshes_packet_identifiers(monkeypatch, tmp_path):
+    db_path = tmp_path / "garmin.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT)")
+    conn.commit()
+    conn.close()
+
+    fake_st = _FakeStreamlit()
+    monkeypatch.setattr(panel, "st", fake_st)
+    old_request = "a" * 64
+    old_hash = "b" * 64
+    prompt = f"Custom instructions {old_request} and plan {old_hash}."
+    fake_st.session_state[panel._PROMPT_WIDGET_KEY] = prompt
+
+    panel._save_custom_prompt(db_path, old_request, old_hash)
+
+    new_request = "c" * 64
+    new_hash = "d" * 64
+    panel._load_saved_prompt(db_path, new_request, new_hash)
+    restored = fake_st.session_state[panel._PROMPT_WIDGET_KEY]
+    assert restored.startswith(
+        f"Custom instructions {new_request} and plan {new_hash}."
+    )
+    assert panel._CHANGE_SUMMARY_INSTRUCTION in restored
 
 
 class _FakeStreamlit:
@@ -96,6 +123,9 @@ class _FakeStreamlit:
     def download_button(self, *args, **kwargs):
         return False
 
+    def button(self, *args, **kwargs):
+        return False
+
     def tabs(self, labels):
         return [_Block() for _ in labels]
 
@@ -110,10 +140,10 @@ class _FakeStreamlit:
         return _Block()
 
     def text_area(self, *args, **kwargs):
-        return ""
+        return self.session_state.get(kwargs.get("key"), "")
 
     def select_slider(self, *args, **kwargs):
-        return kwargs["value"]
+        return kwargs.get("value", self.session_state.get(kwargs.get("key")))
 
     def file_uploader(self, *args, **kwargs):
         self.file_uploader_keys.append(kwargs["key"])
@@ -252,6 +282,19 @@ def test_date_diff_detects_metrics_and_structure_changes():
     assert diff[0]["Changed fields"] == "Duration, Distance, TSS, Notes"
     assert "30 min" in diff[0]["Current"]
     assert "180 min" in diff[0]["Imported"]
+
+
+def test_verified_change_count_summary_is_concise():
+    summary = panel._verified_change_count_summary(
+        [
+            {"Change": "Added"},
+            {"Change": "Changed"},
+            {"Change": "Changed"},
+            {"Change": "Removed"},
+        ]
+    )
+
+    assert summary == "Database comparison: 1 added, 2 changed, 1 removed."
 
 
 def test_date_diff_uses_database_columns_when_structure_is_absent():
@@ -413,7 +456,7 @@ def test_successful_apply_uses_compatible_tables_and_reruns(
 
     assert len(fake_st.dataframe_calls) == 3
     assert all(
-        call == {"use_container_width": True}
+        call == {"width": "stretch"}
         for call in fake_st.dataframe_calls
     )
     assert fake_st.cache_data.clear_calls == 1

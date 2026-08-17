@@ -1625,7 +1625,7 @@ else:
                 data=export_json,
                 file_name=f"activity_{activity_id}_ai_analysis.json",
                 mime="application/json",
-                use_container_width=True,
+                width="stretch",
             )
         with export_col2:
             st.info(

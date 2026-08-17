@@ -264,6 +264,7 @@ def test_packet_contains_copyable_prompt_and_explicit_output_schema(tmp_path):
         "event",
         "analysis",
         "workouts",
+        "rationale",
     } == set(output_schema["required"])
     update_item = output_schema["properties"]["workouts"]["items"]
     assert update_item["additionalProperties"] is False
@@ -286,6 +287,7 @@ def test_packet_contains_copyable_prompt_and_explicit_output_schema(tmp_path):
         f"at most {MAX_WORKOUTS_PER_DAY} distinct sessions per date"
         in chatgpt["copyable_prompt"]
     )
+    assert "short plain-language change summary" in chatgpt["copyable_prompt"]
 
     parsed = json.loads(coaching_packet_to_json(packet))
     assert parsed == packet
