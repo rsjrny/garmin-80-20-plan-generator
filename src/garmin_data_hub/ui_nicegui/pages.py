@@ -86,6 +86,22 @@ def _split_rows(rows: list[dict[str, Any]], unit_system: str) -> list[dict[str, 
     return converted
 
 
+def _show_activity_detail(
+    state: dict[str, Any],
+    selected_id: int,
+    detail_panel: Any,
+    detail_card: Any,
+    navigation: Any,
+) -> bool:
+    """Refresh and reveal a newly selected activity without element-specific scrolling."""
+    if state.get("selected_id") == selected_id:
+        return False
+    state["selected_id"] = selected_id
+    detail_panel.refresh()
+    navigation.to(detail_card)
+    return True
+
+
 def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
     from nicegui import run, ui
 
@@ -187,11 +203,13 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                         selected = payload.get("data") or {}
                         if selected.get("id") is not None:
                             selected_id = int(selected["id"])
-                            if state.get("selected_id") == selected_id:
-                                return
-                            state["selected_id"] = selected_id
-                            detail_panel.refresh()
-                            detail_card.scroll_to()
+                            _show_activity_detail(
+                                state,
+                                selected_id,
+                                detail_panel,
+                                detail_card,
+                                ui.navigate,
+                            )
 
                     # ``cellClicked`` is reliably forwarded by NiceGUI's AG Grid
                     # wrapper. Keep ``rowClicked`` as a compatibility fallback;

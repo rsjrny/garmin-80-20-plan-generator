@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -24,6 +25,7 @@ from garmin_data_hub.ui_nicegui.data import (
     save_planning_settings,
     validate_read_only_sql,
 )
+from garmin_data_hub.ui_nicegui.pages import _show_activity_detail
 
 
 def _database(tmp_path: Path) -> Path:
@@ -100,6 +102,28 @@ def test_activity_detail_returns_stored_gps_track(tmp_path):
     assert len(detail["trackpoints"]) == 2
     assert detail["trackpoints"][0]["lat_deg"] == 40.0
     assert detail["trackpoints"][1]["lon_deg"] == -74.9995
+
+
+def test_activity_selection_refreshes_and_navigates_to_detail_card():
+    state = {"selected_id": None}
+    calls = {"refresh": 0, "target": None}
+    detail_card = object()
+    detail_panel = SimpleNamespace(
+        refresh=lambda: calls.__setitem__("refresh", calls["refresh"] + 1)
+    )
+    navigation = SimpleNamespace(
+        to=lambda target: calls.__setitem__("target", target)
+    )
+
+    assert _show_activity_detail(
+        state, 123, detail_panel, detail_card, navigation
+    )
+    assert state["selected_id"] == 123
+    assert calls == {"refresh": 1, "target": detail_card}
+    assert not _show_activity_detail(
+        state, 123, detail_panel, detail_card, navigation
+    )
+    assert calls == {"refresh": 1, "target": detail_card}
 
 
 def test_plan_configuration_persists_for_codex_workspace(tmp_path):
