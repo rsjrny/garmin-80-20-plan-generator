@@ -50,7 +50,7 @@
 		- [x] Test against an isolated copied or temporary SQLite database.
 		- [ ] Complete a hands-on Codex generation in the responsive Windows-native window (native smoke launch completed 2026-08-23; no quota-consuming generation started automatically).
 		- [x] Add a source launcher and documented Windows packaging path.
-		- [x] Keep the active test suite green after removing legacy-only tests (104 passed on 2026-08-23).
+		- [x] Keep the active test suite green after removing legacy-only tests (105 passed on 2026-08-23).
 	- [x] **Phase 2 complete (2026-08-23): Activities vertical slice**
 		- [x] Add AG Grid filtering, selection, date/sport filters, and a bounded 5,000-row query.
 		- [x] Port activity overview, splits, local GPS-track visualization, metrics, and complete JSON download.

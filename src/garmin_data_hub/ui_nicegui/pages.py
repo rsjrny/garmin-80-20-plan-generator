@@ -102,6 +102,22 @@ def _show_activity_detail(
     return True
 
 
+async def _fit_leaflet_route(route_map: Any, coordinates: list[list[float]]) -> None:
+    """Fit a route without waiting for a browser-side return value.
+
+    Leaflet methods are commands in this case; their results are unused. Awaiting
+    them applies NiceGUI's short JavaScript response timeout, which can expire
+    while a map inside a newly opened tab is still being laid out.
+    """
+    await route_map.initialized()
+    route_map.run_map_method("invalidateSize")
+    route_map.run_map_method(
+        "fitBounds",
+        coordinates,
+        {"padding": [24, 24]},
+    )
+
+
 def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
     from nicegui import run, ui
 
@@ -304,12 +320,7 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                                 )
 
                                 async def fit_route() -> None:
-                                    await route_map.initialized()
-                                    await route_map.run_map_method(
-                                        "fitBounds",
-                                        coordinates,
-                                        {"padding": [24, 24]},
-                                    )
+                                    await _fit_leaflet_route(route_map, coordinates)
 
                                 ui.timer(0.05, fit_route, once=True)
                                 ui.label(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -25,7 +26,7 @@ from garmin_data_hub.ui_nicegui.data import (
     save_planning_settings,
     validate_read_only_sql,
 )
-from garmin_data_hub.ui_nicegui.pages import _show_activity_detail
+from garmin_data_hub.ui_nicegui.pages import _fit_leaflet_route, _show_activity_detail
 
 
 def _database(tmp_path: Path) -> Path:
@@ -124,6 +125,36 @@ def test_activity_selection_refreshes_and_navigates_to_detail_card():
         state, 123, detail_panel, detail_card, navigation
     )
     assert calls == {"refresh": 1, "target": detail_card}
+
+
+def test_route_fit_does_not_wait_for_javascript_response():
+    class MustNotBeAwaited:
+        def __await__(self):
+            raise AssertionError("map commands should be fire-and-forget")
+            yield
+
+    class RouteMap:
+        def __init__(self):
+            self.initialized_called = False
+            self.commands = []
+
+        async def initialized(self):
+            self.initialized_called = True
+
+        def run_map_method(self, name, *args):
+            self.commands.append((name, args))
+            return MustNotBeAwaited()
+
+    route_map = RouteMap()
+    coordinates = [[40.0, -75.0], [40.1, -74.9]]
+
+    asyncio.run(_fit_leaflet_route(route_map, coordinates))
+
+    assert route_map.initialized_called is True
+    assert route_map.commands == [
+        ("invalidateSize", ()),
+        ("fitBounds", (coordinates, {"padding": [24, 24]})),
+    ]
 
 
 def test_plan_configuration_persists_for_codex_workspace(tmp_path):
