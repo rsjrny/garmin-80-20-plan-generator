@@ -29,7 +29,7 @@ from garmin_data_hub.services.plan_persistence import (
     load_plan_settings,
     save_plan_setting,
 )
-from garmin_data_hub.ui_streamlit.sync_status import progress_from_log
+from garmin_data_hub.services.sync_status import progress_from_log
 
 
 READ_ONLY_SQL = re.compile(r"^\s*(SELECT|WITH|EXPLAIN)\b", re.IGNORECASE)

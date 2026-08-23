@@ -9,7 +9,7 @@ You are debugging and fixing a bug in Garmin Data Hub.
 
 Project context:
 - Python >= 3.10, package in src/garmin_data_hub.
-- Streamlit UI: src/garmin_data_hub/ui_streamlit
+- NiceGUI UI: src/garmin_data_hub/ui_nicegui
 - CLI sync tool: src/garmin_data_hub/cli_backup_ingest.py
 - DB/query code: src/garmin_data_hub/db
 - Ingest/trackpoints: src/garmin_data_hub/ingest
@@ -37,7 +37,7 @@ Fix principles:
 Validation options:
 - python -m garmin_data_hub.cli_backup_ingest --help
 - pytest
-- streamlit run src/garmin_data_hub/ui_streamlit/app.py
+- garmin-data-hub
 
 Output format:
 - Root cause

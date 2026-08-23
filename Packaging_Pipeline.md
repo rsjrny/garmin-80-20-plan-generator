@@ -50,7 +50,7 @@ powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 0.2.3 -A
 1. Updates `pyproject.toml` with the requested version
 2. Resolves and validates `garmin-givemydata` in `.venv` from PyPI (`-GivemydataPypiSpec`)
 2. Cleans and recreates `build/` and `release/<version>/`
-3. Builds the Streamlit app into `build/streamlit_app/dist/GarminDataHub/`
+3. Builds the NiceGUI desktop app into `build/nicegui_app/dist/GarminDataHub/`
 4. Builds the sync CLI into `build/cli_tool/dist/cli_backup_ingest/`
 5. Bundles `garmin-givemydata.exe` from `.venv\Scripts` next to the CLI and GUI artifacts
 6. Copies the final outputs to `release/<version>/`

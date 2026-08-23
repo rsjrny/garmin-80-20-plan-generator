@@ -19,15 +19,11 @@ dependencies = [
 dev = [
   "pytest>=8.0",
 ]
-streamlit = [
-  "streamlit>=1.37",
-]
 
 [project.scripts]
 garmin-sync = "garmin_data_hub.cli_backup_ingest:main"
 garmin-data-hub = "garmin_data_hub.ui_nicegui.app:main"
 garmin-nicegui-preview = "garmin_data_hub.ui_nicegui.app:main"
-garmin-streamlit-legacy = "garmin_data_hub.ui_streamlit.legacy_launcher:main"
 
 [build-system]
 requires = ["setuptools>=68"]

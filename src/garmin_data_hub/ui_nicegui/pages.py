@@ -1,4 +1,4 @@
-"""Core NiceGUI pages which replace the Streamlit navigation surface."""
+"""Core pages for the primary NiceGUI navigation surface."""
 
 from __future__ import annotations
 

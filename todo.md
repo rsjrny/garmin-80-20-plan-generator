@@ -9,7 +9,7 @@
 		- [ ] Prioritize reliability hardening (timeout, retry, sidecar-unavailable UX) before expanding features.
 		- [ ] Keep read-only SQL guardrails and define explicit argument bounds/result limits for each MCP tool.
 	- [x] **Phase 1 Complete (2026-05-15): Promote/adapt MCP page into production**
-		- [x] Moved test_pages/_1_MCP_Query.py → src/garmin_data_hub/ui_streamlit/pages/7_MCP_Query.py
+		- [x] Promoted the original experimental MCP query page into the production UI (legacy implementation subsequently removed).
 		- [x] Updated app.py guidance to reference MCP Query as available advanced page
 		- [x] Moved to Phase 2 hardening work
 	- [x] **Phase 2 Complete (2026-05-15): Add reliability controls**
@@ -50,7 +50,7 @@
 		- [x] Test against an isolated copied or temporary SQLite database.
 		- [ ] Complete a hands-on Codex generation in the responsive Windows-native window (native smoke launch completed 2026-08-23; no quota-consuming generation started automatically).
 		- [x] Add a source launcher and documented Windows packaging path.
-		- [x] Keep the full existing test suite green (136 passed on 2026-08-23).
+		- [x] Keep the active test suite green after removing legacy-only tests (103 passed on 2026-08-23).
 	- [x] **Phase 2 complete (2026-08-23): Activities vertical slice**
 		- [x] Add AG Grid filtering, selection, date/sport filters, and a bounded 5,000-row query.
 		- [x] Port activity overview, splits, local GPS-track visualization, metrics, and complete JSON download.
@@ -59,5 +59,5 @@
 		- [x] Support safe process-tree stop/cancel and completion notifications.
 	- [x] Add persistent NiceGUI interface settings for distance units and reusable activity, chart, dashboard, and sync defaults.
 	- [x] **Cutover decision**
-		- [x] Compare startup, packaging size, responsiveness, and workflow parity (initial 9-route package healthy; all 10 current source routes tested; Windows distribution 263.5 MB before the Settings addition).
-		- [x] User approved NiceGUI replacement on 2026-08-23; NiceGUI is now the default source and packaged interface, with Streamlit retained temporarily as an optional legacy fallback.
+		- [x] Compare startup, packaging size, responsiveness, and workflow parity (all 10 Streamlit-free packaged routes healthy; Windows distribution 263.5 MB).
+		- [x] User approved NiceGUI replacement on 2026-08-23; NiceGUI is the sole source and packaged interface, and the legacy implementation was removed after a rollback commit.

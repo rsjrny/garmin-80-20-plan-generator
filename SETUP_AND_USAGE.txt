@@ -12,7 +12,7 @@ Quick Start
 -----------
 Option 1: GUI (recommended)
 1. Run GarminDataHub.exe.
-2. When the browser opens, go to Garmin Sync in the sidebar.
+2. In the native window, open Garmin Sync from the navigation drawer.
 3. Click Run sync and complete Garmin login in the external browser window.
 4. Review data in Activities, Charts, Build Plan, and Compliance pages.
 
@@ -71,12 +71,12 @@ Operational Notes
 - First-time sync can take longer because historical data is downloaded.
 - Subsequent syncs are faster and process deltas.
 - MFA is handled in the browser login flow.
-- During GUI sync, live detailed logs are shown in the terminal running Streamlit.
+- During GUI sync, live detailed logs are shown on the Garmin Sync page.
 
 Troubleshooting
 ---------------
 GUI does not start:
-- Ensure no other instance is occupying the same Streamlit port.
+- Ensure no other instance is occupying the configured NiceGUI port.
 - Retry by launching GarminDataHub.exe again.
 
 Sync/login issues:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date, timedelta
 from pathlib import Path
 import time
 
@@ -142,11 +143,90 @@ def test_review_rejects_locked_context_changes(tmp_path):
     packet = workspace.build_workspace_packet(context)
     response = _response_for(packet)
     response["athlete"]["sodium_mg_per_hour"] = 900
+    response["athlete"]["primary_sport"] = "cycle"
+    response["event"]["sport"] = "cycle"
+    response["workouts"][0]["sport"] = "cycle"
 
     review = workspace.review_proposal(context, packet, json.dumps(response))
 
     assert not review.can_apply
     assert any("sodium setting" in message for message in review.errors)
+    assert any("primary sport" in message for message in review.errors)
+    assert any("event sport" in message for message in review.errors)
+
+
+def test_review_diff_detects_metric_changes_with_same_workout_name(tmp_path):
+    db_path = _database(tmp_path)
+    conn = connect_sqlite(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO planned_workout(
+                scheduled_date, workout_name, description,
+                planned_distance_m, planned_duration_s, planned_tss,
+                structure_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "2026-08-23",
+                "10K Race",
+                "Race by effort.",
+                10_000,
+                1_800,
+                100,
+                json.dumps(
+                    {
+                        "workout": {
+                            "sport": "run",
+                            "phase": "Race",
+                            "workout": "10K Race",
+                            "intensity": "race",
+                            "duration_minutes": 30,
+                            "distance_km": 10,
+                            "tss": 100,
+                            "flags": ["RACE"],
+                            "notes": "Race by effort.",
+                        }
+                    }
+                ),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    context = workspace.load_workspace_context(db_path, sandboxed=True)
+    packet = workspace.build_workspace_packet(context)
+    review = workspace.review_proposal(
+        context, packet, json.dumps(_response_for(packet))
+    )
+
+    assert len(review.changes) == 1
+    assert review.changes[0]["Change"] == "Changed"
+    assert "Duration Minutes" in review.changes[0]["Changed fields"]
+
+
+def test_future_plan_start_keeps_training_history_as_of_today(monkeypatch, tmp_path):
+    context = workspace.load_workspace_context(_database(tmp_path), sandboxed=True)
+    future_start = date.today() + timedelta(days=30)
+    future = workspace.WorkspaceContext(
+        **{
+            **context.__dict__,
+            "plan_start": future_start,
+            "event_date": future_start + timedelta(days=30),
+        }
+    )
+    captured = {}
+
+    def fake_build(*args, **kwargs):
+        captured.update(kwargs)
+        return {"packet": True}
+
+    monkeypatch.setattr(workspace, "build_coaching_packet", fake_build)
+
+    assert workspace.build_workspace_packet(future) == {"packet": True}
+    assert captured["as_of"] == date.today()
+    assert captured["plan_start"] == future_start
 
 
 def test_workspace_context_validation_catches_contract_bounds(tmp_path):

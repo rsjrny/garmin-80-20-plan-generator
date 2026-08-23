@@ -11,20 +11,20 @@ You are updating the Garmin Data Hub project.
 
 Project summary:
 - Python project: local-first Garmin analytics and sync tooling.
-- Main app: Streamlit UI.
+- Main app: NiceGUI desktop UI.
 - Main CLI: Garmin backup/sync ingest tool.
 - Data store: SQLite (default in %LOCALAPPDATA%\\GarminDataHub\\garmin.db, override via GARMIN_DATA_HUB_DB).
 - Primary package: src/garmin_data_hub.
 
 Architecture map:
 - src/garmin_data_hub/cli_backup_ingest.py: CLI sync entry point.
-- src/garmin_data_hub/ui_streamlit/app.py: Streamlit entry point.
-- src/garmin_data_hub/ui_streamlit/pages/: Streamlit pages.
+- src/garmin_data_hub/ui_nicegui/app.py: NiceGUI entry point and Codex Coach page.
+- src/garmin_data_hub/ui_nicegui/pages.py: core NiceGUI pages.
 - src/garmin_data_hub/db/: schema, migrations, SQLite helpers, queries.
 - src/garmin_data_hub/ingest/: FIT/CSV parsing, fingerprinting, trackpoint ingest, writing.
 - src/garmin_data_hub/analytics/: analytics/business logic.
 - src/garmin_data_hub/exports/: export logic.
-- packaging/build.ps1: builds Streamlit + CLI artifacts into release/<version>/.
+- packaging/build.ps1: builds NiceGUI + CLI artifacts into release/<version>/.
 
 Tech constraints:
 - Python >= 3.10.
@@ -44,7 +44,7 @@ When you work:
 
 Validation commands (pick what matches the task):
 - python -m garmin_data_hub.cli_backup_ingest --help
-- streamlit run src/garmin_data_hub/ui_streamlit/app.py
+- garmin-data-hub
 - pytest
 
 Packaging context:

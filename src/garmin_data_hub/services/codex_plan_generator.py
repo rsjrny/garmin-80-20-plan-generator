@@ -118,7 +118,7 @@ def _strict_output_schema() -> dict[str, Any]:
 def _generation_input(packet: Mapping[str, Any], prompt: str) -> str:
     # The same (large) schema is supplied to Codex through --output-schema.
     # Removing its duplicate from the packet reduces input tokens without
-    # changing the packet used by Streamlit or the strict local validation.
+    # changing the packet used by the UI or the strict local validation.
     cli_packet = copy.deepcopy(dict(packet))
     chatgpt = cli_packet.get("chatgpt")
     if isinstance(chatgpt, dict):

@@ -97,27 +97,11 @@ The primary desktop interface is implemented under `src/garmin_data_hub/ui_niceg
 - **Settings** - persistent distance units and activity, chart, dashboard, and sync defaults
 - **Guide** - the end-to-end local workflow
 
-The previous Streamlit source remains temporarily available as an optional legacy
-fallback on this migration branch, but it is no longer the default entry point or
-packaged interface.
+## Data Query Page (Advanced)
 
-## Legacy Streamlit Pages
-
-Located in `src/garmin_data_hub/ui_streamlit/pages`:
-
-- `0_Backup_Import.py` — Garmin sync, progress, and derived-refresh diagnostics
-- `1_Plan_Review.py` — plan review and training planning
-- `2_Compliance.py` — compliance and zone analysis
-- `3_Past_Activities.py` — activity browsing and analysis
-- `4_Charts.py` — trend and power/load charts
-- `5_Build_Plan.py` — planning settings and deterministic offline baseline/fallback
-- `6_8020_Help.py` — 80/20 training methodology guidance
-- `7_MCP_Query.py` — **Advanced:** MCP tool console for database queries and Garmin data access (requires garmin_mcp sidecar)
-- `8_Codex_Plan_Workspace.py` — Codex CLI generation, policy-validated preview, and database approval
-
-### MCP Query Page (Advanced)
-
-The **MCP Query** page (page 7) provides advanced database access through six Model Context Protocol (MCP) tools:
+The NiceGUI **Data Query** page provides guarded read-only SQLite access and an
+advanced Model Context Protocol (MCP) tool runner. Six common tools are offered
+initially, and any installed `garmin_mcp` tool name can be entered directly:
 
 #### Available MCP Tools
 
@@ -144,10 +128,8 @@ The **MCP Query** page (page 7) provides advanced database access through six Mo
 
 #### Features
 
-- **Dual-mode interface:** MCP tools dropdown or raw SQL mode
-- **Natural language routing:** Type a question and the UI auto-selects the best tool
-- **Result export:** Download results as CSV, view structured JSON
-- **AI summaries:** Automatic narrative interpretation of results
+- **Dual-mode interface:** MCP tool runner or raw SQL mode
+- **Extensible tools:** type any installed `garmin_mcp` tool name
 - **Error handling:** Timeouts, retries, and clear error messages
 - **Read-only enforcement:** SQL validation blocks INSERT, DELETE, DROP, and DDL
 
@@ -158,7 +140,9 @@ If MCP Query shows "sidecar unavailable":
 2. Test sidecar manually: `python -m garmin_mcp`
 3. Restart Garmin Data Hub
 
----## Quick Start (Developers)
+---
+
+## Quick Start (Developers)
 
 ```powershell
 cd Training_Planner
@@ -190,16 +174,6 @@ garmin-data-hub --browser
 explicit sandbox copy. Codex generation runs in a cancellable background worker,
 while stale-response checks, locked settings, the local training policy, exact
 database changes, and explicit acknowledgement remain mandatory.
-
-### Optional legacy Streamlit UI
-
-```powershell
-pip install -e ".[streamlit]"
-garmin-streamlit-legacy
-```
-
-This fallback is retained only while the NiceGUI replacement receives real-world
-parity testing. New interface work should target NiceGUI.
 
 ### Sync CLI
 

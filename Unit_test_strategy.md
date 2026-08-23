@@ -11,7 +11,7 @@ Active regression coverage currently lives in:
 - `tests/test_metrics_refresh.py` — derived metrics, FTP/power zones, refresh regressions
 - `tests/test_plan_persistence.py` — plan persistence behavior
 - `tests/test_schema_migrations.py` — schema evolution checks
-- `tests/test_sync_progress.py` — sync progress/completion heuristics for the Streamlit UI
+- `tests/test_sync_progress.py` — framework-neutral sync progress/completion heuristics
 
 ## 2. What to Prioritize
 

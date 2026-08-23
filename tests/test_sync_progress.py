@@ -1,4 +1,4 @@
-from garmin_data_hub.ui_streamlit.sync_status import (
+from garmin_data_hub.services.sync_status import (
     derived_refresh_summary_from_log,
     progress_from_log,
     sync_completed_from_state,

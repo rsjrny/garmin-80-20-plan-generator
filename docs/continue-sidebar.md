@@ -24,7 +24,7 @@ Summaries / explanations → Llama 3.1
 Summarize Project ( in Bing)
 
 📦 Packaging & Release
-Package Streamlit App ( in Bing)
+Package NiceGUI App ( in Bing)
 
 Package CLI Tool ( in Bing)
 
