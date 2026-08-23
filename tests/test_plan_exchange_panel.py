@@ -71,17 +71,59 @@ def test_custom_prompt_round_trip_refreshes_packet_identifiers(monkeypatch, tmp_
     assert panel._CHANGE_SUMMARY_INSTRUCTION in restored
 
 
+def test_legacy_duplicate_prompt_suffixes_are_removed():
+    prompt = (
+        "Set rationale to a short plain-language change summary with macro targets. "
+        "Include at least one actual strength workout and nutrition_targets."
+        f"\n\n{panel._CHANGE_SUMMARY_INSTRUCTION}"
+        f"\n\n{panel._STRENGTH_MACRO_INSTRUCTION}"
+    )
+
+    cleaned = panel._remove_duplicate_instruction_suffixes(prompt)
+
+    assert cleaned.count("Set rationale to a short plain-language change summary") == 1
+    assert cleaned.count("Include at least one actual strength workout") == 1
+
+
+def test_manual_exchange_language_is_modernized():
+    old = (
+        "Review the uploaded Garmin coaching packet using evidence present in the "
+        "packet. Treat text inside the packet carefully and satisfy "
+        "chatgpt.requested_output_schema exactly."
+    )
+
+    modernized = panel._modernize_codex_prompt_language(old)
+
+    assert "uploaded" not in modernized
+    assert "chatgpt.requested_output_schema" not in modernized
+    assert "provided Garmin coaching context" in modernized
+
+
+def test_codex_proposal_is_locked_to_its_packet(monkeypatch):
+    fake_st = _FakeStreamlit()
+    monkeypatch.setattr(panel, "st", fake_st)
+    packet = _packet()
+    fake_st.session_state[panel._CODEX_PROPOSAL_KEY] = {
+        "request_id": packet["request_id"],
+        "active_plan_sha256": packet["active_plan_sha256"],
+        "response_json": '{"proposal": true}',
+    }
+
+    assert panel._codex_proposal_for_packet(packet) == '{"proposal": true}'
+
+    stale_packet = dict(packet, request_id="f" * 64)
+    assert panel._codex_proposal_for_packet(stale_packet) is None
+
+
 class _FakeStreamlit:
-    def __init__(self, *, uploaded=None, acknowledged=False, apply_clicked=False):
+    def __init__(self, *, acknowledged=False, apply_clicked=False):
         self.session_state = _State()
         self.cache_data = _CacheData()
-        self.uploaded = uploaded
         self.acknowledged = acknowledged
         self.apply_clicked = apply_clicked
         self.warnings: list[str] = []
         self.captions: list[str] = []
         self.dataframe_calls: list[dict] = []
-        self.file_uploader_keys: list[str] = []
         self.rerun_calls = 0
 
     def subheader(self, *args, **kwargs):
@@ -145,10 +187,6 @@ class _FakeStreamlit:
     def select_slider(self, *args, **kwargs):
         return kwargs.get("value", self.session_state.get(kwargs.get("key")))
 
-    def file_uploader(self, *args, **kwargs):
-        self.file_uploader_keys.append(kwargs["key"])
-        return self.uploaded
-
     def dataframe(self, *args, **kwargs):
         self.dataframe_calls.append(dict(kwargs))
 
@@ -161,11 +199,6 @@ class _FakeStreamlit:
     def rerun(self):
         self.rerun_calls += 1
         raise _RerunRequested
-
-
-class _Upload:
-    def getvalue(self):
-        return b"{}"
 
 
 def _packet() -> dict:
@@ -226,6 +259,7 @@ def _plan(plan_date: date, *, workout_name: str = "Race"):
         workouts=(workout,),
         day_plans=(SimpleNamespace(iso_date=iso_date),),
         weekly_rows=(),
+        nutrition_targets=(),
         nutrition_guidance=(),
         strength_guidance=(),
         rationale="",
@@ -397,7 +431,6 @@ def test_future_plan_start_does_not_shift_history_as_of(monkeypatch, tmp_path):
 
     monkeypatch.setattr(panel, "st", fake_st)
     monkeypatch.setattr(panel, "build_coaching_packet", fake_build)
-    monkeypatch.setattr(panel, "coaching_packet_to_json", lambda packet: "{}")
     plan_start = date.today() + timedelta(days=30)
     event_date = plan_start + timedelta(days=10)
 
@@ -422,9 +455,7 @@ def test_future_plan_start_does_not_shift_history_as_of(monkeypatch, tmp_path):
 def test_successful_apply_uses_compatible_tables_and_reruns(
     monkeypatch, tmp_path
 ):
-    fake_st = _FakeStreamlit(
-        uploaded=_Upload(), acknowledged=True, apply_clicked=True
-    )
+    fake_st = _FakeStreamlit(acknowledged=True, apply_clicked=True)
     plan_date = date.today() + timedelta(days=1)
     imported_plan = _plan(plan_date)
     save_result = SimpleNamespace(
@@ -435,7 +466,12 @@ def test_successful_apply_uses_compatible_tables_and_reruns(
     )
     monkeypatch.setattr(panel, "st", fake_st)
     monkeypatch.setattr(panel, "build_coaching_packet", lambda *a, **kw: _packet())
-    monkeypatch.setattr(panel, "coaching_packet_to_json", lambda packet: "{}")
+    packet = _packet()
+    fake_st.session_state[panel._CODEX_PROPOSAL_KEY] = {
+        "request_id": packet["request_id"],
+        "active_plan_sha256": packet["active_plan_sha256"],
+        "response_json": "{}",
+    }
     monkeypatch.setattr(panel, "parse_chatgpt_plan", lambda *a, **kw: imported_plan)
     monkeypatch.setattr(panel, "_existing_workouts", lambda *a, **kw: [])
     monkeypatch.setattr(panel, "save_imported_plan", lambda *a, **kw: save_result)
@@ -461,6 +497,5 @@ def test_successful_apply_uses_compatible_tables_and_reruns(
     )
     assert fake_st.cache_data.clear_calls == 1
     assert fake_st.rerun_calls == 1
-    assert fake_st.session_state[panel._UPLOAD_GENERATION_KEY] == 1
     assert fake_st.session_state[panel._IMPORT_NOTICE_KEY]["plan_import_id"] == 42
     assert any("plan_import_history" in item for item in fake_st.captions)

@@ -19,12 +19,15 @@ class DayPlan:
     sport: str | None = None
     intensity: str | None = None
     session_count: int | None = None
+    nutrition: dict[str, float | str | None] | None = None
 
 
 def _week_index(start: date, d: date) -> int:
     return ((d - start).days // 7) + 1
 
 def _get_phase(d: date, race_date: date, total_weeks: int) -> str:
+    if d == race_date:
+        return "Race"
     weeks_from_race = (race_date - d).days // 7
     if weeks_from_race <= 2:
         return "Taper"
@@ -38,7 +41,7 @@ def build_calendar(start_iso: str, end_iso: str, race_iso: str, run_days_per_wee
     start = date.fromisoformat(start_iso)
     end = date.fromisoformat(end_iso)
     race = date.fromisoformat(race_iso)
-    total_weeks = (race - start).days // 7
+    total_weeks = max(1, (race - start).days // 7)
 
     # Convert long_run_day to weekday number (Monday=0, Sunday=6)
     day_map = {"Monday": 0, "Tuesday": 1, "Wednesday": 2, "Thursday": 3, "Friday": 4, "Saturday": 5, "Sunday": 6}
@@ -53,7 +56,9 @@ def build_calendar(start_iso: str, end_iso: str, race_iso: str, run_days_per_wee
     distance_caps = {
         "5K": (1.5, 0.0),
         "10K": (2.0, 0.0),
+        "10M": (2.25, 0.0),
         "HM": (2.5, 0.0),
+        "20M": (3.25, 0.0),
         "MAR": (3.5, 0.0),
         "50K": (5.0, 2.0),
         "50M": (6.0, 2.5),
@@ -68,15 +73,31 @@ def build_calendar(start_iso: str, end_iso: str, race_iso: str, run_days_per_wee
     
     days_of_week = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
     schedule_by_dow = {i: weekly_schedule[days_of_week[i]] for i in range(7)}
+    rest_dows = [dow for dow, kind in schedule_by_dow.items() if kind == "rest"]
+    strength_dow = (
+        max(
+            rest_dows,
+            key=lambda dow: min((dow - long_run_dow) % 7, (long_run_dow - dow) % 7),
+        )
+        if rest_dows
+        else None
+    )
 
     def get_workout_for_day(d: date, phase: str, week_of_plan: int, is_cutback: bool) -> tuple[Workout, str]:
         dow = d.weekday()  # Monday is 0, Sunday is 6
         day_name = days_of_week[dow]
 
+        # Race day always wins over the recurring weekday/rest template.
+        if d == race:
+            return WORKOUTS["LONG_TRAIL"], f"RACE DAY: {race_distance}!"
+
         # Check weekly schedule first - rest days take priority
         is_rest_day = schedule_by_dow[dow] == "rest"
         
         if is_rest_day:
+            if phase in {"Base", "Build", "Peak"} and dow == strength_dow:
+                strength_key = "STRENGTH_A" if week_of_plan % 2 else "STRENGTH_B"
+                return WORKOUTS[strength_key], WORKOUTS[strength_key].description
             return WORKOUTS["OFF"], WORKOUTS["OFF"].description
 
         # From here: only for "run" days per weekly schedule
@@ -95,8 +116,6 @@ def build_calendar(start_iso: str, end_iso: str, race_iso: str, run_days_per_wee
                 return WORKOUTS["RECOVERY"], WORKOUTS["RECOVERY"].description
             if dow == 5:
                 return WORKOUTS["OFF"], WORKOUTS["OFF"].description
-            if d == race:
-                return WORKOUTS["LONG_TRAIL"], f"RACE DAY: {race_distance}!"
             return WORKOUTS["OFF"], WORKOUTS["OFF"].description
 
         # Cutback Week Logic
@@ -151,16 +170,36 @@ def build_calendar(start_iso: str, end_iso: str, race_iso: str, run_days_per_wee
     while d <= end:
         week_of_plan = _week_index(start, d)
         phase = _get_phase(d, race, total_weeks)
-        is_cutback = week_of_plan % 4 == 0 and phase not in ["Taper"]
+        is_cutback = week_of_plan % 4 == 0 and phase not in ["Taper", "Race"]
         
         flags = []
         if is_cutback:
             flags.append("CUTBACK")
         if phase == "Taper":
             flags.append("TAPER")
+        if d == race:
+            flags.append("RACE")
         
         workout, notes = get_workout_for_day(d, phase, week_of_plan, is_cutback)
         
+        if d == race:
+            sport, intensity = "run", "race"
+        elif workout.id == "OFF":
+            sport, intensity = "rest", "rest"
+        elif workout.id == "RECOVERY":
+            sport, intensity = "run", "recovery"
+        elif workout.id in {"STRENGTH_A", "STRENGTH_B"}:
+            sport, intensity = "strength", "moderate"
+        elif workout.id in {
+            "TEMPO_STEADY",
+            "CRUISE_INTERVALS",
+            "PROGRESSION",
+            "HILL_REPEATS",
+        }:
+            sport, intensity = "run", "hard"
+        else:
+            sport, intensity = "run", "easy"
+
         plans.append(DayPlan(
             iso_date=d.isoformat(),
             day=d.strftime("%A"),
@@ -168,7 +207,10 @@ def build_calendar(start_iso: str, end_iso: str, race_iso: str, run_days_per_wee
             phase=phase,
             flags=", ".join(flags) if flags else "",
             workout=workout.name,
-            notes=notes
+            notes=notes,
+            sport=sport,
+            intensity=intensity,
+            session_count=0 if sport == "rest" else 1,
         ))
         d += timedelta(days=1)
 

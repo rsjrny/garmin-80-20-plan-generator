@@ -1,9 +1,4 @@
-"""Manual ChatGPT training-plan exchange for the Streamlit workspace.
-
-This module deliberately contains no model client.  The application prepares a
-privacy-minimized JSON packet, the athlete uploads it to ChatGPT themselves, and
-the returned JSON remains a preview until an explicit database save.
-"""
+"""Codex CLI training-plan generation and approval for Streamlit."""
 
 from __future__ import annotations
 
@@ -25,9 +20,11 @@ from garmin_data_hub.services.ai_plan_import import (
     PlanImportError,
     parse_chatgpt_plan,
 )
-from garmin_data_hub.services.coaching_packet import (
-    build_coaching_packet,
-    coaching_packet_to_json,
+from garmin_data_hub.services.coaching_packet import build_coaching_packet
+from garmin_data_hub.services.codex_plan_generator import (
+    CodexPlanGenerationError,
+    find_codex_cli,
+    generate_plan_with_codex,
 )
 from garmin_data_hub.services.plan_persistence import (
     PlanPersistenceError,
@@ -35,16 +32,18 @@ from garmin_data_hub.services.plan_persistence import (
     save_imported_plan,
     save_plan_setting,
 )
+from garmin_data_hub.services.training_policy import evaluate_training_policy
 
 
 _IMPORT_NOTICE_KEY = "chatgpt_plan_import_notice"
-_UPLOAD_GENERATION_KEY = "chatgpt_plan_response_upload_generation"
+_CODEX_PROPOSAL_KEY = "codex_training_plan_proposal"
 _LOOKBACK_OPTIONS = (4, 8, 12, 16, 24, 52)
 _PROMPT_SETTING_KEY = "chatgpt_exchange_prompt_template"
 _PROMPT_WIDGET_KEY = "chatgpt_exchange_prompt_editor"
 _PROMPT_CONTEXT_KEY = "chatgpt_exchange_prompt_context"
 _PROMPT_NOTICE_KEY = "chatgpt_exchange_prompt_notice"
 _PROMPT_SUMMARY_MIGRATION_KEY = "chatgpt_exchange_prompt_has_change_summary"
+_PROMPT_SCHEDULE_MIGRATION_KEY = "chatgpt_exchange_prompt_has_strength_macros"
 _REQUEST_ID_TOKEN = "{{CURRENT_REQUEST_ID}}"
 _PLAN_HASH_TOKEN = "{{CURRENT_ACTIVE_PLAN_SHA256}}"
 _CHANGE_SUMMARY_INSTRUCTION = (
@@ -52,6 +51,12 @@ _CHANGE_SUMMARY_INSTRUCTION = (
     "Compare the proposed plan with context.current_plan and mention the most "
     "important changes to weekly volume, intensity, long sessions, recovery, "
     "and strength work; if there are no material changes, say so explicitly."
+)
+_STRENGTH_MACRO_INSTRUCTION = (
+    "Include at least one actual strength workout in every full Base, Build, "
+    "and Peak week. Return exactly one food-agnostic nutrition_targets entry "
+    "for every plan date with carbohydrate, protein, and fat ranges in g/kg; "
+    "do not recommend specific foods."
 )
 _SESSION_FIELDS = (
     "sport",
@@ -75,6 +80,19 @@ _SESSION_FIELD_LABELS = {
     "flags": "Flags",
     "notes": "Notes",
 }
+
+
+def _codex_proposal_for_packet(packet: dict[str, Any]) -> str | None:
+    """Return the generated proposal only when it belongs to this packet."""
+    proposal = st.session_state.get(_CODEX_PROPOSAL_KEY)
+    if not isinstance(proposal, dict):
+        return None
+    if proposal.get("request_id") != packet.get("request_id"):
+        return None
+    if proposal.get("active_plan_sha256") != packet.get("active_plan_sha256"):
+        return None
+    response_json = proposal.get("response_json")
+    return response_json if isinstance(response_json, str) else None
 
 
 def _persist_exchange_widget(db_path: Path, key: str) -> None:
@@ -141,9 +159,55 @@ def _prompt_for_packet(template: str, request_id: str, plan_hash: str) -> str:
 
 
 def _with_change_summary_instruction(prompt: str) -> str:
-    if _CHANGE_SUMMARY_INSTRUCTION in prompt:
+    if "Set rationale to a short plain-language change summary" in prompt:
         return prompt
     return f"{prompt.rstrip()}\n\n{_CHANGE_SUMMARY_INSTRUCTION}"
+
+
+def _with_strength_macro_instruction(prompt: str) -> str:
+    if (
+        "Include at least one actual strength workout" in prompt
+        and "nutrition_targets" in prompt
+    ):
+        return prompt
+    return f"{prompt.rstrip()}\n\n{_STRENGTH_MACRO_INSTRUCTION}"
+
+
+def _remove_duplicate_instruction_suffixes(prompt: str) -> str:
+    """Clean suffixes appended by older prompt-migration logic."""
+    cleaned = prompt
+    instructions = (
+        (
+            _CHANGE_SUMMARY_INSTRUCTION,
+            "Set rationale to a short plain-language change summary",
+        ),
+        (
+            _STRENGTH_MACRO_INSTRUCTION,
+            "Include at least one actual strength workout",
+        ),
+    )
+    for instruction, marker in instructions:
+        if cleaned.count(marker) > 1:
+            cleaned = cleaned.replace(f"\n\n{instruction}", "")
+    return cleaned
+
+
+def _modernize_codex_prompt_language(prompt: str) -> str:
+    """Migrate saved prompts away from the retired manual exchange wording."""
+    replacements = {
+        "Review the uploaded Garmin coaching packet": (
+            "Review the provided Garmin coaching context"
+        ),
+        "evidence present in the packet": "evidence present in the coaching context",
+        "inside the packet": "inside the coaching context",
+        "satisfy chatgpt.requested_output_schema exactly": (
+            "satisfy the response schema enforced by Codex CLI"
+        ),
+    }
+    modernized = prompt
+    for old, new in replacements.items():
+        modernized = modernized.replace(old, new)
+    return modernized
 
 
 def _initialize_prompt_editor(db_path: Path, packet: dict[str, Any]) -> None:
@@ -173,6 +237,17 @@ def _initialize_prompt_editor(db_path: Path, packet: dict[str, Any]) -> None:
             str(st.session_state.get(_PROMPT_WIDGET_KEY, ""))
         )
         st.session_state[_PROMPT_SUMMARY_MIGRATION_KEY] = True
+    if not st.session_state.get(_PROMPT_SCHEDULE_MIGRATION_KEY):
+        st.session_state[_PROMPT_WIDGET_KEY] = _with_strength_macro_instruction(
+            str(st.session_state.get(_PROMPT_WIDGET_KEY, ""))
+        )
+        st.session_state[_PROMPT_SCHEDULE_MIGRATION_KEY] = True
+
+    st.session_state[_PROMPT_WIDGET_KEY] = _modernize_codex_prompt_language(
+        _remove_duplicate_instruction_suffixes(
+            str(st.session_state.get(_PROMPT_WIDGET_KEY, ""))
+        )
+    )
 
     st.session_state[_PROMPT_CONTEXT_KEY] = {
         "request_id": request_id,
@@ -181,8 +256,8 @@ def _initialize_prompt_editor(db_path: Path, packet: dict[str, Any]) -> None:
 
 
 def _load_default_prompt(default_prompt: str) -> None:
-    st.session_state[_PROMPT_WIDGET_KEY] = _with_change_summary_instruction(
-        default_prompt
+    st.session_state[_PROMPT_WIDGET_KEY] = _with_strength_macro_instruction(
+        _with_change_summary_instruction(default_prompt)
     )
     st.session_state[_PROMPT_NOTICE_KEY] = (
         "success",
@@ -198,8 +273,10 @@ def _load_saved_prompt(db_path: Path, request_id: str, plan_hash: str) -> None:
             "No saved custom prompt was found.",
         )
         return
-    st.session_state[_PROMPT_WIDGET_KEY] = _with_change_summary_instruction(
-        _prompt_for_packet(template, request_id, plan_hash)
+    st.session_state[_PROMPT_WIDGET_KEY] = _with_strength_macro_instruction(
+        _with_change_summary_instruction(
+            _prompt_for_packet(template, request_id, plan_hash)
+        )
     )
     st.session_state[_PROMPT_NOTICE_KEY] = (
         "success",
@@ -521,11 +598,11 @@ def render_plan_exchange_panel(
     hrmax: int | None,
     lthr: int | None,
 ) -> None:
-    """Render export, validation preview, and explicit atomic plan import."""
-    st.subheader("Coaching packet and plan response")
+    """Render Codex generation, validation preview, and explicit atomic save."""
+    st.subheader("Codex training-plan proposal")
     st.caption(
-        "No API key is used. Garmin Data Hub creates a local JSON file; you "
-        "choose whether to upload it to ChatGPT and whether to save the result."
+        "No API key is used. Your signed-in Codex CLI generates a proposal; "
+        "you decide whether to save it after local validation and review."
     )
 
     import_notice = st.session_state.pop(_IMPORT_NOTICE_KEY, None)
@@ -562,21 +639,21 @@ def render_plan_exchange_panel(
     horizon_days = (event_date - exchange_start).days + 1
     if horizon_days > 366:
         st.warning(
-            "The manual plan format currently supports at most 366 days. "
+            "The Codex plan format currently supports at most 366 days. "
             "Move the plan start date closer to the event."
         )
         return
 
-    export_tab, import_tab = st.tabs(
-        ["1 · Export coaching packet", "2 · Import ChatGPT plan"]
+    generate_tab, review_tab = st.tabs(
+        ["1 · Configure and generate", "2 · Review and apply"]
     )
 
-    with export_tab:
+    with generate_tab:
         _initialize_exchange_widgets(db_path)
         st.markdown(
             "Add details Garmin cannot know. Leave any field blank when it does "
             "not apply. These values are saved locally and included only in the "
-            "downloaded packet."
+            "privacy-minimized context sent to Codex."
         )
         st.caption("Workspace preferences are saved automatically on this device.")
         limits_col, strength_col, nutrition_col = st.columns(3)
@@ -674,86 +751,121 @@ def render_plan_exchange_panel(
                     "sodium_mg_per_hour": sodium_mg_per_hour,
                 },
             )
-            packet_json = coaching_packet_to_json(packet)
         except (OSError, TypeError, ValueError) as exc:
             st.error(f"Could not create the coaching packet: {exc}")
             packet = None
-            packet_json = ""
 
         if packet is not None:
             activity_count = packet["context"]["training_history"]["summary"][
                 "activities"
             ]
             st.info(
-                f"Packet ready: {activity_count} summarized activities, "
+                f"Codex context ready: {activity_count} summarized activities, "
                 f"{horizon_days} plan days, GPS and raw trackpoints excluded."
             )
-            with st.expander("Packet identity and stale-response protection"):
-                st.caption(
-                    "ChatGPT must return these exact values. If your active plan "
-                    "changes, create a fresh packet and response."
-                )
-                st.code(
-                    f"request_id: {packet['request_id']}\n"
-                    f"active_plan_sha256: {packet['active_plan_sha256']}",
-                    language=None,
-                )
-            st.download_button(
-                "Download coaching packet JSON",
-                data=packet_json,
-                file_name=f"chatgpt_coaching_packet_{exchange_start.isoformat()}.json",
-                mime="application/json",
-                type="primary",
-                width="stretch",
-            )
-            st.markdown("**Copy this prompt into the ChatGPT conversation:**")
-            st.caption(
-                "The editor wraps to your window. You can customize the prompt, "
-                "then select its text to copy it. Saving stores it only in your "
-                "local database."
-            )
             _initialize_prompt_editor(db_path, packet)
-            prompt_notice = st.session_state.pop(_PROMPT_NOTICE_KEY, None)
-            if isinstance(prompt_notice, tuple) and len(prompt_notice) == 2:
-                notice_kind, notice_text = prompt_notice
-                getattr(st, notice_kind, st.info)(notice_text)
-            st.text_area(
-                "Prompt to copy",
-                key=_PROMPT_WIDGET_KEY,
-                height=380,
-                help="Click in the editor, press Ctrl+A, then Ctrl+C to copy.",
-            )
             prompt_default = str(packet["chatgpt"]["copyable_prompt"])
             prompt_request_id = str(packet["request_id"])
             prompt_plan_hash = str(packet["active_plan_sha256"])
-            default_col, saved_col, save_col = st.columns(3)
-            with default_col:
-                st.button(
-                    "Load generated default",
-                    on_click=_load_default_prompt,
-                    args=(prompt_default,),
-                    width="stretch",
+            with st.expander("Advanced: customize Codex instructions", expanded=False):
+                st.caption(
+                    "The default instructions are ready to use. Only edit these "
+                    "when you intentionally want to change Codex's coaching task."
                 )
-            with saved_col:
-                st.button(
-                    "Load saved prompt",
-                    on_click=_load_saved_prompt,
-                    args=(db_path, prompt_request_id, prompt_plan_hash),
-                    width="stretch",
+                prompt_notice = st.session_state.pop(_PROMPT_NOTICE_KEY, None)
+                if isinstance(prompt_notice, tuple) and len(prompt_notice) == 2:
+                    notice_kind, notice_text = prompt_notice
+                    getattr(st, notice_kind, st.info)(notice_text)
+                st.text_area(
+                    "Codex instructions",
+                    key=_PROMPT_WIDGET_KEY,
+                    height=300,
+                    help="These instructions are sent directly to Codex CLI.",
                 )
-            with save_col:
-                st.button(
-                    "Save current prompt",
-                    on_click=_save_custom_prompt,
-                    args=(db_path, prompt_request_id, prompt_plan_hash),
+                default_col, saved_col, save_col = st.columns(3)
+                with default_col:
+                    st.button(
+                        "Restore default",
+                        on_click=_load_default_prompt,
+                        args=(prompt_default,),
+                        width="stretch",
+                    )
+                with saved_col:
+                    st.button(
+                        "Load saved version",
+                        on_click=_load_saved_prompt,
+                        args=(db_path, prompt_request_id, prompt_plan_hash),
+                        width="stretch",
+                    )
+                with save_col:
+                    st.button(
+                        "Save instructions",
+                        on_click=_save_custom_prompt,
+                        args=(db_path, prompt_request_id, prompt_plan_hash),
+                        type="primary",
+                        width="stretch",
+                    )
+                st.caption(
+                    "Saved instructions stay in your local database. Required "
+                    "response fields and safety checks cannot be bypassed."
+                )
+            st.divider()
+            st.markdown("**Generate the response with Codex CLI**")
+            st.caption(
+                "Uses your saved Codex account login. No API key, OpenAI SDK, "
+                "or automatic database write is used. Generation runs read-only "
+                "and the result must pass the normal preview and approval steps."
+            )
+            st.caption(
+                "Elapsed time is shown while Codex works. The run stops after "
+                "6 minutes if no proposal has been returned."
+            )
+            codex_executable = find_codex_cli()
+            if codex_executable is None:
+                st.warning(
+                    "Codex CLI was not found. Install it, run `codex login`, and "
+                    "restart Garmin Data Hub so the updated PATH is available."
+                )
+            else:
+                st.caption(f"Codex CLI detected: {codex_executable}")
+                generate_clicked = st.button(
+                    "Generate plan proposal with Codex CLI",
                     type="primary",
                     width="stretch",
+                    help=(
+                        "This can take several minutes. The proposal will not be "
+                        "saved to your training database automatically."
+                    ),
                 )
-            st.caption(
-                "Saved prompts use placeholders for request-specific identifiers; "
-                "current values are restored automatically when loaded. Changing "
-                "required output instructions can make a response fail validation."
-            )
+                if generate_clicked:
+                    current_prompt = str(
+                        st.session_state.get(_PROMPT_WIDGET_KEY, prompt_default)
+                    )
+                    try:
+                        with st.spinner(
+                            "Codex is building a schema-constrained plan proposal...",
+                            show_time=True,
+                            width="stretch",
+                        ):
+                            generated = generate_plan_with_codex(
+                                packet,
+                                prompt=current_prompt,
+                                executable=codex_executable,
+                            )
+                    except (CodexPlanGenerationError, OSError, ValueError) as exc:
+                        st.error(f"Codex could not generate the proposal: {exc}")
+                    else:
+                        st.session_state[_CODEX_PROPOSAL_KEY] = {
+                            "request_id": packet["request_id"],
+                            "active_plan_sha256": packet[
+                                "active_plan_sha256"
+                            ],
+                            "response_json": generated.response_json,
+                        }
+                        st.success(
+                            "Codex returned a proposal. Open the Review and apply "
+                            "tab to inspect every change before saving."
+                        )
             with st.expander("Review exactly what the packet contains"):
                 st.json(
                     {
@@ -763,35 +875,48 @@ def render_plan_exchange_panel(
                     expanded=False,
                 )
 
-    with import_tab:
+    with review_tab:
         st.markdown(
-            "Ask ChatGPT to save or provide its response as JSON, then upload "
-            "that response here. Uploading only creates a preview."
+            "Review the proposal generated by Codex CLI. Generation creates a "
+            "preview only and never writes the plan automatically."
         )
         if packet is None:
-            st.info("Resolve the export-packet error before importing a response.")
+            st.info("Resolve the coaching-context error before generating a proposal.")
             return
 
-        upload_generation = int(st.session_state.get(_UPLOAD_GENERATION_KEY, 0))
-        uploaded = st.file_uploader(
-            "ChatGPT plan response (.json)",
-            type=["json"],
-            key=f"chatgpt_plan_response_upload_{upload_generation}",
-        )
-        if uploaded is None:
+        codex_proposal = _codex_proposal_for_packet(packet)
+        stored_proposal = st.session_state.get(_CODEX_PROPOSAL_KEY)
+        if stored_proposal is not None and codex_proposal is None:
+            st.warning(
+                "The saved Codex proposal belongs to an older coaching packet "
+                "and cannot be reviewed. Generate a fresh proposal."
+            )
+        if codex_proposal is not None:
+            st.success(
+                "A Codex CLI proposal is ready for validation and review below."
+            )
+            if st.button("Discard Codex proposal"):
+                st.session_state.pop(_CODEX_PROPOSAL_KEY, None)
+                st.rerun()
+
+        if codex_proposal is None:
+            st.info("Generate a Codex proposal in the first tab to review it here.")
             return
+        response_payload = codex_proposal
+        st.caption("Proposal source: signed-in Codex CLI")
 
         try:
             plan = parse_chatgpt_plan(
-                uploaded.getvalue(),
+                response_payload,
                 expected_request_id=packet["request_id"],
                 expected_active_plan_sha256=packet["active_plan_sha256"],
+                minimum_strength_sessions_per_week=1,
             )
         except PlanImportError as exc:
             st.error(f"This response was not accepted: {exc}")
             st.caption(
-                "Upload the response produced from the currently displayed packet. "
-                "If inputs or the active plan changed, export a fresh packet."
+                "If inputs or the active plan changed, generate a fresh Codex "
+                "proposal from the current context."
             )
             return
 
@@ -812,12 +937,22 @@ def render_plan_exchange_panel(
             ),
             expected_event_sport=str(packet["context"]["event"]["sport"]),
         )
-        schedule_warnings = _schedule_warnings(
-            plan,
-            expected_long_run_day=packet["context"]["training_constraints"][
-                "preferred_long_session_day"
-            ],
+        policy_report = evaluate_training_policy(
+            plan.workouts,
+            start=exchange_start,
+            event_date=event_date,
+            age=int(age),
+            run_days_per_week=int(run_days_per_week),
+            preferred_long_session_day=packet["context"][
+                "training_constraints"
+            ]["preferred_long_session_day"],
+            minimum_strength_sessions_per_week=1,
         )
+        policy_warnings = [issue.message for issue in policy_report.warnings]
+        if policy_report.errors:
+            locked_input_errors.extend(
+                f"Local policy: {issue.message}" for issue in policy_report.errors
+            )
         if locked_input_errors:
             st.error("The response changed locked plan inputs and cannot be saved.")
             for message in locked_input_errors:
@@ -833,7 +968,7 @@ def render_plan_exchange_panel(
             st.info(plan.rationale)
         else:
             st.warning(
-                "ChatGPT did not provide a plain-language change summary. "
+                "Codex did not provide a plain-language change summary. "
                 "Review the verified Changes tab carefully before accepting."
             )
         st.caption(_verified_change_count_summary(diff))
@@ -845,15 +980,21 @@ def render_plan_exchange_panel(
         metric_cols[3].metric("Changed dates", len(diff))
 
         if plan.analysis.notes:
-            st.markdown("**ChatGPT analysis**")
+            st.markdown("**Codex analysis**")
             st.write(plan.analysis.notes)
         if plan.warnings:
             st.warning("\n\n".join(plan.warnings))
-        if schedule_warnings:
-            st.warning("\n\n".join(schedule_warnings))
+        if policy_warnings:
+            st.warning("Local policy review:\n\n" + "\n\n".join(policy_warnings))
 
-        preview_tab, weeks_tab, changes_tab, guidance_tab = st.tabs(
-            ["Daily plan", "Weekly summary", "Changes", "Strength & nutrition"]
+        preview_tab, weeks_tab, changes_tab, macros_tab, guidance_tab = st.tabs(
+            [
+                "Daily plan",
+                "Weekly summary",
+                "Changes",
+                "Macro schedule",
+                "Strength & nutrition",
+            ]
         )
         with preview_tab:
             st.dataframe(
@@ -866,6 +1007,22 @@ def render_plan_exchange_panel(
                 st.dataframe(pd.DataFrame(diff), width="stretch")
             else:
                 st.info("No date-level workout changes were detected.")
+        with macros_tab:
+            if plan.nutrition_targets:
+                st.dataframe(
+                    pd.DataFrame(
+                        target.to_dict() for target in plan.nutrition_targets
+                    ),
+                    width="stretch",
+                )
+                st.caption(
+                    "Educational, food-agnostic suggestions: daily macros use "
+                    "g/kg and during-training carbohydrate uses g/hour."
+                )
+            else:
+                st.warning(
+                    "This compatible legacy response has no date-linked macro targets."
+                )
         with guidance_tab:
             st.markdown("**Strength guidance**")
             if plan.strength_guidance:
@@ -916,17 +1073,17 @@ def render_plan_exchange_panel(
                     result = save_imported_plan(db_path, plan)
                 except StalePlanWriteError as exc:
                     st.error(str(exc))
-                    st.info("Export a fresh packet and ask ChatGPT for a new response.")
+                    st.info("Generate a fresh Codex proposal from the current plan.")
                 except (PlanPersistenceError, OSError) as exc:
                     st.error(
                         "The plan was not saved; the database was rolled back: "
                         f"{exc}"
                     )
                 else:
+                    st.session_state.pop(_CODEX_PROPOSAL_KEY, None)
                     st.session_state.plan_refresh_token = datetime.now(
                         timezone.utc
                     ).isoformat()
-                    st.session_state[_UPLOAD_GENERATION_KEY] = upload_generation + 1
                     st.session_state[_IMPORT_NOTICE_KEY] = {
                         "duplicate": result.duplicate,
                         "plan_import_id": result.plan_import_id,

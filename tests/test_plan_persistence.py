@@ -145,6 +145,7 @@ def _make_imported_plan(active_hash: str, *, workout_name: str = "Easy run"):
         inputs=inputs,
         analysis=analysis,
         workouts=workouts,
+        nutrition_targets=(),
         day_plans=day_plans,
         weekly_rows=(
             {
@@ -247,6 +248,9 @@ def test_save_generated_plan_does_not_store_minutes_as_miles(tmp_path):
         phase="Base",
         flags="",
         workout="Easy Run",
+        sport="run",
+        intensity="easy",
+        session_count=1,
         notes="45–60 min @ Z2. Conversational pace.",
     )
 
@@ -262,7 +266,7 @@ def test_save_generated_plan_does_not_store_minutes_as_miles(tmp_path):
     try:
         stored = conn.execute(
             """
-            SELECT planned_distance_m, planned_duration_s
+            SELECT planned_distance_m, planned_duration_s, structure_json
             FROM planned_workout
             WHERE scheduled_date = '2026-01-03'
             """
@@ -272,6 +276,10 @@ def test_save_generated_plan_does_not_store_minutes_as_miles(tmp_path):
 
     assert stored["planned_distance_m"] is None
     assert stored["planned_duration_s"] == 3150.0
+    structure = json.loads(stored["structure_json"])
+    assert structure["source"] == "rule_based_baseline"
+    assert structure["workout"]["sport"] == "run"
+    assert structure["workout"]["intensity"] == "easy"
 
 
 def test_active_plan_hash_is_semantic_and_insertion_order_independent(tmp_path):
@@ -404,12 +412,12 @@ def test_save_imported_plan_replaces_full_day_plan_window_and_updates_legacy_dat
     assert imported["planned_duration_s"] == 2550.0
     assert imported["planned_tss"] == 35.5
     structure = json.loads(imported["structure_json"])
-    assert structure["source"] == "chatgpt_manual_upload"
+    assert structure["source"] == "codex_cli"
     assert structure["request_id"] == plan.request_id
     assert structure["workout"]["duration_minutes"] == 42.5
     assert structure["workout"]["distance_km"] == 7.25
 
-    assert history["source"] == "chatgpt_manual_upload"
+    assert history["source"] == "codex_cli"
     assert history["plan_name"] == "Spring 10K"
     assert json.loads(history["payload_json"]) == plan.to_dict()
     assert json.loads(history["validation_warnings_json"]) == list(plan.warnings)

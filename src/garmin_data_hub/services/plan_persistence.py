@@ -18,7 +18,7 @@ from garmin_data_hub.db.sqlite import connect_sqlite
 logger = logging.getLogger(__name__)
 
 
-IMPORTED_PLAN_SOURCE = "chatgpt_manual_upload"
+IMPORTED_PLAN_SOURCE = "codex_cli"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _ACTIVE_PLAN_SQL = """
     SELECT scheduled_date, workout_name, description, planned_distance_m,
@@ -512,6 +512,9 @@ def _build_imported_legacy_blob(
     nutrition_guidance = _guidance_list(
         getattr(plan, "nutrition_guidance", ()), "nutrition_guidance"
     )
+    nutrition_targets = _json_compatible(
+        list(getattr(plan, "nutrition_targets", ()) or ())
+    )
     strength_guidance = _guidance_list(
         getattr(plan, "strength_guidance", ()), "strength_guidance"
     )
@@ -520,6 +523,7 @@ def _build_imported_legacy_blob(
     analysis_data.update(
         {
             "nutrition_guidance": nutrition_guidance,
+            "nutrition_targets": nutrition_targets,
             "strength_guidance": strength_guidance,
             "rationale": rationale,
             "warnings": warnings,
@@ -539,6 +543,7 @@ def _build_imported_legacy_blob(
         "analysis": analysis_data,
         "inputs": _legacy_inputs(getattr(plan, "inputs", None)),
         "nutrition_guidance": nutrition_guidance,
+        "nutrition_targets": nutrition_targets,
         "strength_guidance": strength_guidance,
         "rationale": rationale,
         "warnings": warnings,
@@ -743,10 +748,14 @@ def save_generated_plan(
             "flags": dp.flags,
             "workout": dp.workout,
             "notes": dp.notes,
+            "sport": getattr(dp, "sport", None),
+            "intensity": getattr(dp, "intensity", None),
+            "session_count": getattr(dp, "session_count", None),
         }
         for dp in day_plans
     ]
 
+    generated_at = _utc_now_iso()
     analysis_data = {
         "hrmax_observed": analysis.hrmax_observed,
         "hrmax_robust": analysis.hrmax_robust,
@@ -755,6 +764,10 @@ def save_generated_plan(
         "avg_weekly_miles": analysis.avg_weekly_miles,
         "z2_fraction": analysis.z2_fraction,
         "notes": analysis.notes,
+        "provenance": {
+            "source": "rule_based_baseline",
+            "generated_at": generated_at,
+        },
     }
 
     inputs_data = {
@@ -778,7 +791,11 @@ def save_generated_plan(
             "weekly_rows": weekly_rows,
             "analysis": analysis_data,
             "inputs": inputs_data,
-            "generated_at": _utc_now_iso(),
+            "provenance": {
+                "source": "rule_based_baseline",
+                "generated_at": generated_at,
+            },
+            "generated_at": generated_at,
         }
     )
 
@@ -798,6 +815,31 @@ def save_generated_plan(
 
             text_to_parse = (dp.workout + " " + (dp.notes or "")).lower()
             planned_dist, planned_dur = _parse_planned_workout_metrics(text_to_parse)
+            structure_json = json.dumps(
+                {
+                    "source": "rule_based_baseline",
+                    "workout": {
+                        "sport": getattr(dp, "sport", None),
+                        "phase": dp.phase,
+                        "workout": dp.workout,
+                        "intensity": getattr(dp, "intensity", None),
+                        "duration_minutes": (
+                            planned_dur / 60.0 if planned_dur is not None else None
+                        ),
+                        "distance_km": (
+                            planned_dist / 1000.0 if planned_dist is not None else None
+                        ),
+                        "tss": None,
+                        "flags": [
+                            flag.strip()
+                            for flag in str(dp.flags or "").split(",")
+                            if flag.strip()
+                        ],
+                        "notes": dp.notes,
+                    },
+                },
+                ensure_ascii=False,
+            )
 
             db_queries.insert_planned_workout(
                 conn,
@@ -807,6 +849,7 @@ def save_generated_plan(
                 planned_dist,
                 planned_dur,
                 None,
+                structure_json,
             )
 
         conn.commit()
@@ -929,7 +972,7 @@ def load_plan_settings(db_path: Path) -> dict[str, Any]:
 
 
 def load_chatgpt_exchange_settings(db_path: Path) -> dict[str, Any]:
-    """Load the persisted manual ChatGPT workspace preferences."""
+    """Load the persisted Codex workspace preferences."""
     defaults: dict[str, Any] = {
         "chatgpt_exchange_injuries": "",
         "chatgpt_exchange_schedule": "",

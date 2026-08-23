@@ -149,6 +149,44 @@ def test_parse_normalizes_for_existing_persistence_and_retains_exact_values():
     assert weekly_rows[0]["Strength Days"] == 1
 
 
+def test_parses_food_agnostic_daily_macro_targets_into_calendar_days():
+    payload = _valid_payload()
+    dates = [f"2026-09-0{day}" for day in range(1, 8)]
+    payload["nutrition_targets"] = [
+        {
+            "date": target_date,
+            "day_type": "race" if target_date == "2026-09-07" else "easy",
+            "carbohydrate_g_per_kg_min": 4.0,
+            "carbohydrate_g_per_kg_max": 6.0,
+            "protein_g_per_kg_min": 1.4,
+            "protein_g_per_kg_max": 1.8,
+            "fat_g_per_kg_min": 0.8,
+            "fat_g_per_kg_max": 1.2,
+            "during_training_carbohydrate_g_per_hour_min": (
+                30 if target_date == "2026-09-07" else None
+            ),
+            "during_training_carbohydrate_g_per_hour_max": (
+                60 if target_date == "2026-09-07" else None
+            ),
+            "notes": "Adjust within the range for training demand.",
+        }
+        for target_date in dates
+    ]
+
+    result = parse_chatgpt_plan(payload)
+
+    assert len(result.nutrition_targets) == 7
+    assert result.day_plans[0].nutrition["carbohydrate_g_per_kg_min"] == 4.0
+    assert result.day_plans[-1].nutrition["day_type"] == "race"
+    assert result.to_dict()["nutrition_targets"][0]["date"] == "2026-09-01"
+
+    invalid = deepcopy(payload)
+    invalid["nutrition_targets"][0]["protein_g_per_kg_min"] = 2.0
+    invalid["nutrition_targets"][0]["protein_g_per_kg_max"] = 1.0
+    with pytest.raises(PlanContractError, match="protein_g_per_kg_min"):
+        parse_chatgpt_plan(invalid)
+
+
 def test_normalized_payload_is_deterministic_and_keeps_guidance():
     payload = _valid_payload()
     payload["workouts"] = list(reversed(payload["workouts"]))

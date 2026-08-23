@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
-import importlib
 import pandas as pd
 
 import streamlit as st
@@ -12,7 +11,6 @@ from garmin_data_hub.paths import ensure_app_dirs, default_db_path, schema_sql_p
 from garmin_data_hub.db.sqlite import connect_sqlite
 from garmin_data_hub.db.migrate import apply_schema
 from garmin_data_hub.ui_streamlit.sidebar import render_sidebar
-from garmin_data_hub.ui_streamlit.chatgpt_link import render_chatgpt_link
 from garmin_data_hub.services.athlete_metrics_service import (
     calculate_metrics_from_db_sources,
     clear_override_metrics,
@@ -27,6 +25,7 @@ from garmin_data_hub.services.plan_persistence import (
     save_generated_plan,
     save_plan_setting,
 )
+from garmin_data_hub.services.training_policy import evaluate_training_policy
 
 # Your existing export function (already in your app)
 import garmin_data_hub.exports.master_export as master_export
@@ -81,7 +80,6 @@ def get_cached_generated_plan(db_path_str: str, db_mtime: float):
 # UI
 # ---------------------------
 st.set_page_config(page_title="Build Plan", layout="wide")
-render_chatgpt_link()
 
 # Force refresh of compliance data when page is visited
 # This ensures latest data is always displayed
@@ -104,6 +102,16 @@ unit_system = render_sidebar(conn)
 conn.close()
 
 st.header("Build Plan: Master Workbook")
+st.info(
+    "Recommended: use Codex Plan Workspace for a history-aware personalized plan. "
+    "The rule-based builder below remains available as a deterministic baseline "
+    "and offline fallback; both paths use local policy checks before saving."
+)
+st.page_link(
+    "pages/8_Codex_Plan_Workspace.py",
+    label="Open recommended Codex Plan Workspace",
+    icon="💬",
+)
 
 try:
     # Ensure athlete_metrics table exists
@@ -219,9 +227,10 @@ try:
         )
 
     st.divider()
-    st.subheader("Plan Inputs")
+    st.subheader("Rule-based baseline inputs")
     submitted = st.button(
-        "Generate deterministic plan + workbook", type="primary"
+        "Generate rule-based baseline + workbook",
+        help="Creates a predictable fallback plan without calling an AI model.",
     )
     settings = get_cached_plan_settings(str(db_path), db_mtime)
     s_name = settings["plan_athlete_name"]
@@ -311,12 +320,20 @@ try:
                 save_plan_setting(db_path, "plan_event_date", event_date.isoformat())
 
     with c3:
-        dist_opts = ["5K", "10K", "HM", "MAR", "50K", "50M", "100K", "100M"]
+        dist_opts = ["5K", "10K", "10M", "HM", "20M", "MAR", "50K", "50M", "100K", "100M"]
         try:
             dist_idx = dist_opts.index(s_distance)
-        except:
-            dist_idx = 4
-        distance = st.selectbox("Race type / distance", dist_opts, index=dist_idx)
+        except ValueError:
+            dist_idx = dist_opts.index("50K")
+        distance = st.selectbox(
+            "Race type / distance",
+            dist_opts,
+            index=dist_idx,
+            format_func=lambda value: {
+                "10M": "10M (10 miler)",
+                "20M": "20M (20 miler)",
+            }.get(value, value),
+        )
         if distance != s_distance:
             save_plan_setting(db_path, "plan_distance", distance)
 
@@ -470,28 +487,7 @@ try:
         # The garmin_files list is now always empty as the UI has been removed.
         garmin_files = []
 
-        p = generate_master_workbook(
-            out_path=out_path,
-            athlete_name=athlete_name.strip() or "Runner",
-            age=int(age),
-            lthr=int(eff_lthr) if eff_lthr is not None else None,
-            hrmax=int(eff_hrmax) if eff_hrmax is not None else None,
-            sodium_mg_per_hr_hot=int(sodium) if int(sodium) > 0 else None,
-            event_name=event_name.strip() or f"{distance} Training Plan",
-            distance=distance,
-            start_date_iso=start_date.isoformat(),
-            event_date_iso=event_date.isoformat(),
-            run_days_per_week=int(run_days),
-            long_run_day=long_run_day,
-            garmin_files=garmin_files,
-        )
-
-        st.success(f"Saved: {p}")
-
-        # Force reload to pick up new function if needed
-        importlib.reload(master_export)
-
-        # Generate data for display and persistence
+        # Generate and validate before writing a workbook or changing SQLite.
         inputs, analysis, day_plans, weekly_rows = master_export.generate_plan_data(
             athlete_name=athlete_name.strip() or "Runner",
             age=int(age),
@@ -508,8 +504,44 @@ try:
             out_dir=out_path.parent,
         )
 
+        policy_report = evaluate_training_policy(
+            day_plans,
+            start=start_date,
+            event_date=event_date,
+            age=int(age),
+            run_days_per_week=int(run_days),
+            preferred_long_session_day=long_run_day,
+            minimum_strength_sessions_per_week=1,
+        )
+        if policy_report.errors:
+            st.error("The baseline failed local training-policy validation:")
+            for issue in policy_report.errors:
+                st.write(f"- {issue.message}")
+            st.stop()
+        if policy_report.warnings:
+            st.warning("Review these baseline policy warnings:")
+            for issue in policy_report.warnings:
+                st.write(f"- {issue.message}")
+
+        p = generate_master_workbook(
+            out_path=out_path,
+            athlete_name=athlete_name.strip() or "Runner",
+            age=int(age),
+            lthr=int(eff_lthr) if eff_lthr is not None else None,
+            hrmax=int(eff_hrmax) if eff_hrmax is not None else None,
+            sodium_mg_per_hr_hot=int(sodium) if int(sodium) > 0 else None,
+            event_name=event_name.strip() or f"{distance} Training Plan",
+            distance=distance,
+            start_date_iso=start_date.isoformat(),
+            event_date_iso=event_date.isoformat(),
+            run_days_per_week=int(run_days),
+            long_run_day=long_run_day,
+            garmin_files=garmin_files,
+        )
+
         # Save to DB for persistence
         save_generated_plan(db_path, inputs, analysis, day_plans, weekly_rows)
+        st.success(f"Validated baseline saved to SQLite and workbook: {p}")
 
         # Set for display
         display_inputs = inputs
@@ -566,14 +598,14 @@ try:
             display_weekly_rows = l_weekly_rows  # list of dicts
 
     st.divider()
-    st.subheader("ChatGPT coaching")
+    st.subheader("Personalize this baseline with Codex")
     st.write(
-        "Use the dedicated workspace to download a privacy-minimized coaching "
-        "packet, open ChatGPT, and review a returned plan before saving it."
+        "Use the dedicated workspace to generate a proposal from a privacy-minimized "
+        "coaching context and review it before saving."
     )
     st.page_link(
-        "pages/8_ChatGPT_Workspace.py",
-        label="Open ChatGPT Workspace",
+        "pages/8_Codex_Plan_Workspace.py",
+        label="Open Codex Plan Workspace",
         icon="💬",
     )
 

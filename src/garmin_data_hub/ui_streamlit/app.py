@@ -2,10 +2,7 @@ from __future__ import annotations
 import streamlit as st
 import streamlit.components.v1 as components
 
-from garmin_data_hub.ui_streamlit.chatgpt_link import render_chatgpt_link
-
 st.set_page_config(page_title="Garmin Data Hub", layout="wide")
-render_chatgpt_link()
 
 # Add exit button in sidebar
 with st.sidebar:
@@ -27,7 +24,7 @@ with st.sidebar:
 
 st.title("Garmin Data Hub")
 st.write(
-    "Use the pages in the left sidebar: **Garmin Sync**, **Activities**, **Build Plan**, **ChatGPT Workspace**, **Charts**, **Compliance**, **Sleep Table**, and **MCP Query**."
+    "Use the pages in the left sidebar: **Garmin Sync**, **Activities**, **Build Plan**, **Codex Plan Workspace**, **Charts**, **Compliance**, **Sleep Table**, and **MCP Query**."
 )
 st.info(
     "Database is stored in Windows AppData by default. You can override with env var `GARMIN_DATA_HUB_DB`."
@@ -41,8 +38,8 @@ st.markdown(
 1. **Download from Garmin** (Recommended): Use Garmin Backup to directly download activities from Garmin Connect - files are automatically imported into the database.
 2. **Manual Import**: If you have FIT/CSV files saved locally, use the Import page to load them into the database.
 3. **Review Activities**: Check the Activities page to see your imported workouts, with filtering and analysis options.
-4. **Create Training Plans**: Use the Build Plan page to generate periodized training schedules based on your age, goals, and preferences.
-5. **Use AI Coaching**: Open ChatGPT Workspace to export a coaching packet, work with ChatGPT in a new tab, and validate the returned JSON before saving it.
+4. **Configure Planning**: Use Build Plan to save your event, schedule, and athlete settings or create an offline rule-based baseline.
+5. **Create a Personalized Plan**: Use Codex Plan Workspace to generate a history-aware proposal with your signed-in Codex CLI, validate it locally, and explicitly approve it before saving.
 
 ### Training Philosophy: The 80/20 Principle
 
@@ -80,6 +77,7 @@ This application uses the **80/20 training method** developed by Dr. Stephen Sei
 - **Error Handling**: Failed files are logged but don't stop the import process
 
 ### Build Plan Page Details
+- **Purpose**: Configure planning inputs and create a deterministic offline baseline/fallback
 - **Athlete Info**: Enter your name, age, and physiological data (LTHR, HRMax)
 - **HR Zone Calculation**: Automatic calculation from your activity data
   - **HRmax**: 99.5th percentile of all recorded heart rates (avoids spikes)
@@ -97,7 +95,8 @@ This application uses the **80/20 training method** developed by Dr. Stephen Sei
 - **80/20 Distribution**: Plans automatically balance 80% easy/20% hard training
 - **Masters Adjustments**: Age 50+ gets modified training loads and recovery
 - **Export Options**: Generate Excel workbooks with detailed daily plans, nutrition guides, and workout libraries
-- **ChatGPT Workspace**: Open the dedicated page to download a privacy-minimized coaching packet, launch ChatGPT, then validate, preview, and explicitly save a returned plan JSON without using an API key
+- **Shared Safety Policy**: Baseline plans must pass the same local run-day, hard-session, progression, race-day, and workload checks used for AI plans
+- **Codex Plan Workspace**: Generate a proposal from privacy-minimized coaching context with your signed-in Codex CLI, then validate, preview, and explicitly save it without using an API key
 
 ### Activities Page Details
 - **Data Overview**: View all imported activities with key metrics

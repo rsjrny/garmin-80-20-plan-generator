@@ -27,7 +27,7 @@ def _setting_int(value: object, fallback: int) -> int:
         return fallback
 
 
-st.set_page_config(page_title="ChatGPT Workspace", layout="wide")
+st.set_page_config(page_title="Codex Plan Workspace", layout="wide")
 
 ensure_app_dirs()
 db_path = default_db_path()
@@ -49,17 +49,21 @@ sodium = _setting_int(settings.get("plan_sodium"), 0)
 hrmax = metrics.get("hrmax_effective")
 lthr = metrics.get("lthr_effective")
 
-st.header("ChatGPT Workspace")
+st.header("Codex Plan Workspace")
+st.success(
+    "Recommended personalized-plan workflow: Codex proposes the schedule, "
+    "then Garmin Data Hub applies deterministic policy checks before you can save it."
+)
 st.caption(
-    "Create and import an AI-assisted training plan without an API key. "
-    "Your Garmin database stays local; only the coaching packet you download "
-    "and choose to upload leaves the app."
+    "Create an AI-assisted training plan without an API key. Codex CLI "
+    "uses your saved account login; your Garmin database remains local and only "
+    "the privacy-minimized coaching packet is sent for generation."
 )
 
 step_one, step_two, step_three = st.columns(3)
-step_one.markdown("**1. Prepare**  \nReview the saved Build Plan settings.")
-step_two.markdown("**2. Ask ChatGPT**  \nDownload the packet and open ChatGPT.")
-step_three.markdown("**3. Approve**  \nUpload, review, and save the response.")
+step_one.markdown("**1. Prepare**  \nReview settings and your current baseline.")
+step_two.markdown("**2. Generate**  \nCreate the proposal with Codex CLI.")
+step_three.markdown("**3. Approve**  \nReview every change, then choose whether to save.")
 
 st.subheader("Current request context")
 context_cols = st.columns(4)
@@ -74,25 +78,10 @@ st.caption(
     f"Sodium: {sodium if sodium > 0 else 'not set'} mg/hour"
 )
 
-action_left, action_right = st.columns(2)
-with action_left:
-    st.page_link(
-        "pages/5_Build_Plan.py",
-        label="Review or change Build Plan settings",
-        icon="🛠️",
-    )
-with action_right:
-    st.link_button(
-        "Open ChatGPT in a new tab",
-        "https://chatgpt.com/",
-        help="Keep this workspace open while you work in ChatGPT.",
-        type="primary",
-        width="stretch",
-    )
-
-st.info(
-    "Keep this page open. Download the packet below, upload it to ChatGPT, "
-    "paste the supplied prompt, then return here with ChatGPT's JSON response."
+st.page_link(
+    "pages/5_Build_Plan.py",
+    label="Review or change Build Plan settings",
+    icon="🛠️",
 )
 
 render_plan_exchange_panel(

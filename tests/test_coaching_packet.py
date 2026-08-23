@@ -199,6 +199,17 @@ def test_build_packet_is_deterministic_and_privacy_minimized(tmp_path):
         context["training_constraints"]["max_heart_rate_source"]
         == "athlete_override"
     )
+    assert context["training_constraints"]["local_acceptance_policy"] == {
+        "max_sessions_per_day": 3,
+        "max_run_days_per_week": 5,
+        "max_hard_or_race_sessions_per_week": 2,
+        "max_strength_sessions_per_week": 3,
+        "min_strength_sessions_per_full_base_build_week": 1,
+        "max_weekly_run_distance_increase_fraction": 0.1,
+        "target_easy_endurance_duration_fraction": 0.8,
+        "consecutive_hard_days_allowed": False,
+        "rest_and_active_sessions_same_day_allowed": False,
+    }
     assert context["event"]["start_date"] == "2026-08-16"
     assert context["event"]["event_date"] == "2026-08-29"
     assert context["training_history"]["summary"]["activities"] == 2
@@ -246,6 +257,8 @@ def test_packet_contains_copyable_prompt_and_explicit_output_schema(tmp_path):
     assert packet["request_id"] in chatgpt["copyable_prompt"]
     assert packet["active_plan_sha256"] in chatgpt["copyable_prompt"]
     assert "Return only one JSON object" in chatgpt["copyable_prompt"]
+    assert "uploaded Garmin coaching packet" not in chatgpt["copyable_prompt"]
+    assert "chatgpt.requested_output_schema" not in chatgpt["copyable_prompt"]
     assert output_schema["additionalProperties"] is False
     assert (
         output_schema["properties"]["contract"]["const"]
@@ -264,6 +277,7 @@ def test_packet_contains_copyable_prompt_and_explicit_output_schema(tmp_path):
         "event",
         "analysis",
         "workouts",
+        "nutrition_targets",
         "rationale",
     } == set(output_schema["required"])
     update_item = output_schema["properties"]["workouts"]["items"]
@@ -282,6 +296,8 @@ def test_packet_contains_copyable_prompt_and_explicit_output_schema(tmp_path):
     } == set(update_item["required"])
     assert output_schema["properties"]["strength_guidance"]["type"] == "array"
     assert output_schema["properties"]["nutrition_guidance"]["type"] == "array"
+    assert output_schema["properties"]["nutrition_targets"]["type"] == "array"
+    assert "food-agnostic" in chatgpt["copyable_prompt"]
     assert output_schema["properties"]["workouts"]["maxItems"] == MAX_WORKOUTS
     assert (
         f"at most {MAX_WORKOUTS_PER_DAY} distinct sessions per date"
@@ -525,6 +541,21 @@ def test_schema_conforming_response_is_accepted_by_importer(tmp_path):
                 "duration_minutes": 30,
                 "distance_km": 5,
                 "tss": None,
+            }
+        ],
+        "nutrition_targets": [
+            {
+                "date": "2026-08-16",
+                "day_type": "race",
+                "carbohydrate_g_per_kg_min": 5.0,
+                "carbohydrate_g_per_kg_max": 7.0,
+                "protein_g_per_kg_min": 1.4,
+                "protein_g_per_kg_max": 1.8,
+                "fat_g_per_kg_min": 0.8,
+                "fat_g_per_kg_max": 1.2,
+                "during_training_carbohydrate_g_per_hour_min": 30,
+                "during_training_carbohydrate_g_per_hour_max": 60,
+                "notes": "Educational range only.",
             }
         ],
         "nutrition_guidance": ["General education only; use familiar foods."],

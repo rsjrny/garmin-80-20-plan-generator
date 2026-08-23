@@ -21,25 +21,28 @@ The project syncs Garmin data using `garmin-givemydata`, applies app-specific sc
 - Activity analysis with map and detail views
 - Derived metrics including HR zones, TRIMP/TSS, FTP estimates, and power zones
 - Charts for training load, pace/power trends, and power profile analysis
-- Build Plan and compliance pages for planning workflows
-- Manual ChatGPT coaching-packet export and validated plan import
+- AI-first planning with a deterministic rule-based baseline/fallback
+- Account-authenticated Codex CLI plan generation
+- Shared local training-policy validation across baseline and AI plans
 - Local-first operation with SQLite storage
 
-## ChatGPT Workspace
+## AI Coaching Workspace
 
-The dedicated **ChatGPT Workspace** page supports a local, API-free round trip:
+The dedicated **Codex Plan Workspace** is the recommended personalized-plan path
+and supports an API-key-free, account-authenticated Codex CLI round trip:
 
 1. Configure the event and training settings on Build Plan.
 2. Add optional schedule, injury, strength, and nutrition constraints.
-3. Download the privacy-minimized coaching packet and open ChatGPT in a new tab.
-4. Copy the included prompt and ask ChatGPT to return the required JSON plan.
-5. Return to the workspace and upload that response for validation and a change preview.
-6. Explicitly approve the plan before it is written to SQLite.
+3. Generate a structured proposal through the locally installed, signed-in Codex CLI.
+4. Review the plain-language summary, policy results, macros, and exact database changes.
+5. Explicitly approve the plan before it is written to SQLite.
 
 The packet includes summarized activities and bounded plan context. It excludes
 GPS routes, raw trackpoints, exact activity times, device identifiers, file
-paths, and raw Garmin JSON. Garmin Data Hub makes no ChatGPT or OpenAI API call
-and does not require an API key.
+paths, and raw Garmin JSON. The automated path starts `codex exec` in a read-only,
+ephemeral, isolated directory and reuses the user's saved Codex/ChatGPT CLI login.
+Garmin Data Hub does not use the OpenAI SDK, make a direct API call, read an API
+key, or save authentication in SQLite.
 
 Workspace constraints and the selected training-history window are saved in the
 local SQLite settings database and restored when the application is reopened.
@@ -50,6 +53,35 @@ duration/distance/TSS values are written to `planned_workout`, and Plan Review's
 active snapshot is updated. A failed write is rolled back without a partial
 calendar change.
 
+## Planning Architecture
+
+The application uses an **AI-first, rules-governed** planning model:
+
+1. Garmin history, the active plan, event settings, and athlete preferences are
+   assembled into a privacy-minimized coaching packet.
+2. Codex CLI proposes and explains a
+   structured plan.
+3. A local deterministic policy engine checks the proposal before it can be
+   saved. Checks include race-day correctness, daily and weekly session limits,
+   age-based hard-session limits, hard-day separation, run-volume progression,
+   workload caps, strength frequency, long-session placement, and known-duration
+   80/20 distribution.
+4. The athlete reviews a plain-language summary and exact database differences.
+5. An approved plan is saved atomically with provenance and a recovery snapshot.
+
+The Build Plan page retains a deterministic rule-based generator as an offline
+baseline and fallback. Baselines pass through the same policy engine and are
+clearly identified in Plan Review. The policy code remains authoritative; AI
+cannot bypass it.
+
+AI plans include actual scheduled strength sessions in full Base, Build, and
+Peak weeks. They also include one food-agnostic macro target for every plan date:
+carbohydrate, protein, and fat ranges in g/kg plus optional during-training
+carbohydrate in g/hour. These educational suggestions are validated, displayed
+with the calendar, and stored with the accepted plan; they do not prescribe
+specific foods or medical nutrition treatment. The offline baseline schedules
+alternating strength sessions but does not invent individualized macro targets.
+
 ## Streamlit Pages
 
 Located in `src/garmin_data_hub/ui_streamlit/pages`:
@@ -59,10 +91,10 @@ Located in `src/garmin_data_hub/ui_streamlit/pages`:
 - `2_Compliance.py` — compliance and zone analysis
 - `3_Past_Activities.py` — activity browsing and analysis
 - `4_Charts.py` — trend and power/load charts
-- `5_Build_Plan.py` — deterministic planning and saved coaching settings
+- `5_Build_Plan.py` — planning settings and deterministic offline baseline/fallback
 - `6_8020_Help.py` — 80/20 training methodology guidance
 - `7_MCP_Query.py` — **Advanced:** MCP tool console for database queries and Garmin data access (requires garmin_mcp sidecar)
-- `8_ChatGPT_Workspace.py` — API-free coaching packet export, ChatGPT launch, validated response import, and database approval
+- `8_Codex_Plan_Workspace.py` — Codex CLI generation, policy-validated preview, and database approval
 
 ### MCP Query Page (Advanced)
 

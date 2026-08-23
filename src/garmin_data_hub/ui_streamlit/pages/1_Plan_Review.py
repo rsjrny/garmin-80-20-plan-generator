@@ -11,7 +11,6 @@ from garmin_data_hub.paths import ensure_app_dirs, default_db_path, schema_sql_p
 from garmin_data_hub.db.sqlite import connect_sqlite
 from garmin_data_hub.db.migrate import apply_schema
 from garmin_data_hub.ui_streamlit.sidebar import render_sidebar
-from garmin_data_hub.ui_streamlit.chatgpt_link import render_chatgpt_link
 from garmin_data_hub.services.plan_persistence import (
     load_generated_plan,
     load_plan_settings,
@@ -46,7 +45,6 @@ def get_cached_generated_plan(db_path_str: str, db_mtime: float, refresh_token: 
 
 
 st.set_page_config(page_title="Plan Review", layout="wide")
-render_chatgpt_link()
 
 ensure_app_dirs()
 db_path = default_db_path()
@@ -100,12 +98,27 @@ def intensity_label_for_rules(day_plan) -> str:
 plan_provenance = get_val(analysis, "provenance") or {}
 if (
     isinstance(plan_provenance, dict)
-    and plan_provenance.get("source") == "chatgpt_manual_upload"
+    and plan_provenance.get("source") in {"codex_cli", "chatgpt_manual_upload"}
 ):
     applied_at = plan_provenance.get("applied_at", "recently")
+    source_label = (
+        "Codex CLI"
+        if plan_provenance.get("source") == "codex_cli"
+        else "the legacy manual ChatGPT workflow"
+    )
     st.info(
-        "This active plan was imported from a manually uploaded ChatGPT JSON "
-        f"response and validated locally (imported {applied_at})."
+        f"This active plan was generated through {source_label} and validated "
+        f"locally (saved {applied_at})."
+    )
+elif (
+    isinstance(plan_provenance, dict)
+    and plan_provenance.get("source") == "rule_based_baseline"
+):
+    generated_at = plan_provenance.get("generated_at", "recently")
+    st.info(
+        "This is a deterministic rule-based baseline validated by the local "
+        f"training-policy engine (generated {generated_at}). Use Codex Plan Workspace "
+        "for history-aware personalization."
     )
 
 
@@ -141,6 +154,7 @@ sample_start = min(
     (date.fromisoformat(str(get_val(p, "iso_date"))) for p in upcoming_for_metrics),
     default=None,
 )
+from garmin_data_hub.services.training_policy import evaluate_training_policy
 sample_end = sample_start + timedelta(days=6) if sample_start else None
 sample_week_workouts = [
     intensity_label_for_rules(p)
@@ -220,6 +234,17 @@ with tab_cal:
     today_iso = date.today().isoformat()
     future_plans = [dp for dp in day_plans if get_val(dp, "iso_date") >= today_iso]
     has_typed_sessions = any(get_val(dp, "intensity") for dp in future_plans)
+    has_macro_targets = any(get_val(dp, "nutrition") for dp in future_plans)
+
+    def macro_range(target, prefix, unit):
+        if not isinstance(target, dict):
+            return ""
+        minimum = target.get(f"{prefix}_min")
+        maximum = target.get(f"{prefix}_max")
+        if minimum is None or maximum is None:
+            return ""
+        return f"{minimum:g}–{maximum:g} {unit}"
+
     calendar_rows = []
     for dp in future_plans:
         row = {
@@ -239,6 +264,26 @@ with tab_cal:
                     "Sessions": get_val(dp, "session_count"),
                 }
             )
+        if has_macro_targets:
+            nutrition = get_val(dp, "nutrition")
+            row.update(
+                {
+                    "Day Type": get_val(nutrition, "day_type") or "",
+                    "Carbohydrate": macro_range(
+                        nutrition, "carbohydrate_g_per_kg", "g/kg"
+                    ),
+                    "Protein": macro_range(
+                        nutrition, "protein_g_per_kg", "g/kg"
+                    ),
+                    "Fat": macro_range(nutrition, "fat_g_per_kg", "g/kg"),
+                    "During Training Carbohydrate": macro_range(
+                        nutrition,
+                        "during_training_carbohydrate_g_per_hour",
+                        "g/h",
+                    ),
+                    "Macro Notes": get_val(nutrition, "notes") or "",
+                }
+            )
         calendar_rows.append(row)
 
     st.dataframe(
@@ -249,7 +294,7 @@ with tab_cal:
 with tab_metrics:
     if (
         isinstance(plan_provenance, dict)
-        and plan_provenance.get("source") == "chatgpt_manual_upload"
+        and plan_provenance.get("source") in {"codex_cli", "chatgpt_manual_upload"}
     ):
         st.caption(
             "Weekly summary covers the most recently imported replacement window. "
@@ -304,6 +349,50 @@ with tab_analysis:
     st.table(data)
 
 with tab_validation:
+    st.markdown("### Shared Local Training Policy")
+    st.caption(
+        "The same deterministic policy engine checks rule-based baselines and "
+        "Codex-generated plans. AI never bypasses these constraints."
+    )
+    policy_dates = [
+        date.fromisoformat(str(get_val(item, "iso_date"))) for item in day_plans
+    ]
+    try:
+        policy_start = date.fromisoformat(str(settings.get("plan_start_date")))
+    except (TypeError, ValueError):
+        policy_start = min(policy_dates)
+    try:
+        policy_event = date.fromisoformat(str(settings.get("plan_event_date")))
+    except (TypeError, ValueError):
+        policy_event = max(policy_dates)
+    policy_report = evaluate_training_policy(
+        day_plans,
+        start=policy_start,
+        event_date=policy_event,
+        age=age,
+        run_days_per_week=int(settings.get("plan_run_days") or 5),
+        preferred_long_session_day=str(
+            settings.get("plan_long_run_day") or "Saturday"
+        ),
+    )
+    if policy_report.errors:
+        st.error("This saved plan has local policy errors:")
+        for issue in policy_report.errors:
+            st.write(f"- {issue.message}")
+    else:
+        st.success("No blocking local training-policy errors detected.")
+    if policy_report.warnings:
+        st.warning("Policy review warnings:")
+        for issue in policy_report.warnings:
+            st.write(f"- {issue.message}")
+    if policy_report.easy_fraction is not None:
+        st.metric(
+            "Known easy endurance duration",
+            f"{policy_report.easy_fraction:.0%}",
+            help="Calculated only from sessions with parseable duration data.",
+        )
+
+    st.divider()
     st.markdown("### Plan Structure Validation")
     st.markdown("Checks hard/easy separation and recovery principles.")
 
@@ -421,7 +510,7 @@ with tab_workouts:
     imported_strength = get_val(analysis, "strength_guidance") or []
     if imported_strength:
         st.markdown("### Imported strength guidance")
-        st.caption("Educational guidance retained with the accepted ChatGPT plan.")
+        st.caption("Educational guidance retained with the accepted Codex plan.")
         for item in imported_strength:
             st.markdown(f"- {item}")
         st.divider()
@@ -441,10 +530,19 @@ with tab_workouts:
 
 with tab_nutrition:
     imported_nutrition = get_val(analysis, "nutrition_guidance") or []
+    imported_targets = get_val(analysis, "nutrition_targets") or []
+    if imported_targets:
+        st.markdown("### Date-linked macro suggestions")
+        st.caption(
+            "Food-agnostic educational ranges from the accepted Codex plan. "
+            "Daily macros use g/kg; during-training carbohydrate uses g/hour."
+        )
+        st.dataframe(pd.DataFrame(imported_targets), width="stretch")
+        st.divider()
     if imported_nutrition:
         st.markdown("### Imported nutrition guidance")
         st.caption(
-            "Educational guidance retained with the accepted ChatGPT plan; "
+            "Educational guidance retained with the accepted Codex plan; "
             "it is not medical advice."
         )
         for item in imported_nutrition:

@@ -23,7 +23,7 @@ from garmin_data_hub.exports.forever.models import (
     EventProfile,
     Inputs,
 )
-from garmin_data_hub.exports.forever.training_rules import get_intensity_cap
+from garmin_data_hub.services.training_policy import evaluate_training_policy
 
 
 CHATGPT_PLAN_CONTRACT = "garmin-data-hub.chatgpt-plan"
@@ -51,6 +51,9 @@ PHASES = frozenset(
     {"Base", "Build", "Peak", "Taper", "Race", "Recovery", "Maintenance"}
 )
 FLAGS = frozenset({"CUTBACK", "TAPER", "RACE", "RECOVERY"})
+NUTRITION_DAY_TYPES = frozenset(
+    {"rest", "easy", "moderate", "hard", "long", "race"}
+)
 
 _TOP_REQUIRED = frozenset(
     {
@@ -65,7 +68,13 @@ _TOP_REQUIRED = frozenset(
     }
 )
 _TOP_OPTIONAL = frozenset(
-    {"nutrition_guidance", "strength_guidance", "rationale", "warnings"}
+    {
+        "nutrition_guidance",
+        "nutrition_targets",
+        "strength_guidance",
+        "rationale",
+        "warnings",
+    }
 )
 _ATHLETE_KEYS = frozenset(
     {
@@ -105,6 +114,21 @@ _WORKOUT_KEYS = frozenset(
         "duration_minutes",
         "distance_km",
         "tss",
+    }
+)
+_NUTRITION_TARGET_KEYS = frozenset(
+    {
+        "date",
+        "day_type",
+        "carbohydrate_g_per_kg_min",
+        "carbohydrate_g_per_kg_max",
+        "protein_g_per_kg_min",
+        "protein_g_per_kg_max",
+        "fat_g_per_kg_min",
+        "fat_g_per_kg_max",
+        "during_training_carbohydrate_g_per_hour_min",
+        "during_training_carbohydrate_g_per_hour_max",
+        "notes",
     }
 )
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -163,6 +187,38 @@ class ImportedWorkout:
 
 
 @dataclass(frozen=True)
+class ImportedNutritionTarget:
+    """One food-agnostic, date-linked macro suggestion."""
+
+    iso_date: str
+    day_type: str
+    carbohydrate_g_per_kg_min: float
+    carbohydrate_g_per_kg_max: float
+    protein_g_per_kg_min: float
+    protein_g_per_kg_max: float
+    fat_g_per_kg_min: float
+    fat_g_per_kg_max: float
+    during_training_carbohydrate_g_per_hour_min: float | None
+    during_training_carbohydrate_g_per_hour_max: float | None
+    notes: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "date": self.iso_date,
+            "day_type": self.day_type,
+            "carbohydrate_g_per_kg_min": self.carbohydrate_g_per_kg_min,
+            "carbohydrate_g_per_kg_max": self.carbohydrate_g_per_kg_max,
+            "protein_g_per_kg_min": self.protein_g_per_kg_min,
+            "protein_g_per_kg_max": self.protein_g_per_kg_max,
+            "fat_g_per_kg_min": self.fat_g_per_kg_min,
+            "fat_g_per_kg_max": self.fat_g_per_kg_max,
+            "during_training_carbohydrate_g_per_hour_min": self.during_training_carbohydrate_g_per_hour_min,
+            "during_training_carbohydrate_g_per_hour_max": self.during_training_carbohydrate_g_per_hour_max,
+            "notes": self.notes,
+        }
+
+
+@dataclass(frozen=True)
 class ImportedTrainingPlan:
     """Validated response plus adapters for current and future persistence."""
 
@@ -175,6 +231,7 @@ class ImportedTrainingPlan:
     inputs: Inputs
     analysis: AnalysisSummary
     workouts: tuple[ImportedWorkout, ...]
+    nutrition_targets: tuple[ImportedNutritionTarget, ...]
     day_plans: tuple[DayPlan, ...]
     weekly_rows: tuple[dict[str, Any], ...]
     nutrition_guidance: tuple[str, ...]
@@ -230,6 +287,9 @@ class ImportedTrainingPlan:
                 "notes": self.analysis.notes,
             },
             "workouts": [workout.to_dict() for workout in self.workouts],
+            "nutrition_targets": [
+                target.to_dict() for target in self.nutrition_targets
+            ],
             "nutrition_guidance": list(self.nutrition_guidance),
             "strength_guidance": list(self.strength_guidance),
             "rationale": self.rationale,
@@ -254,6 +314,7 @@ def parse_chatgpt_plan(
     *,
     expected_request_id: str | None = None,
     expected_active_plan_sha256: str | None = None,
+    minimum_strength_sessions_per_week: int = 0,
 ) -> ImportedTrainingPlan:
     """Parse, strictly validate, and normalize a ChatGPT plan response.
 
@@ -262,6 +323,8 @@ def parse_chatgpt_plan(
     """
 
     document = _load_document(payload)
+    if type(minimum_strength_sessions_per_week) is not int or not 0 <= minimum_strength_sessions_per_week <= 3:
+        raise ValueError("minimum_strength_sessions_per_week must be between 0 and 3")
     _require_keys(document, "$", _TOP_REQUIRED, _TOP_OPTIONAL)
 
     contract = _text(document["contract"], "$.contract", max_length=80)
@@ -299,7 +362,19 @@ def parse_chatgpt_plan(
         event_date=event_date,
         event_sport=event_sport,
     )
-    _validate_schedule(workouts, athlete.age, event.run_days_per_week, start)
+    nutrition_targets = _parse_nutrition_targets(
+        document.get("nutrition_targets", []),
+        start=start,
+        event_date=event_date,
+    )
+    _validate_schedule(
+        workouts,
+        athlete.age,
+        event.run_days_per_week,
+        start,
+        event_date,
+        minimum_strength_sessions_per_week,
+    )
 
     nutrition_guidance = _guidance(
         document.get("nutrition_guidance", []), "$.nutrition_guidance"
@@ -315,7 +390,12 @@ def parse_chatgpt_plan(
     )
     warnings = _guidance(document.get("warnings", []), "$.warnings")
 
-    day_plans = _build_day_plans(workouts, start, event_date)
+    day_plans = _build_day_plans(
+        workouts,
+        nutrition_targets,
+        start,
+        event_date,
+    )
     weekly_rows = _build_weekly_rows(workouts, day_plans, start)
     inputs = Inputs(
         athlete=athlete,
@@ -334,6 +414,7 @@ def parse_chatgpt_plan(
         inputs=inputs,
         analysis=analysis,
         workouts=workouts,
+        nutrition_targets=nutrition_targets,
         day_plans=day_plans,
         weekly_rows=weekly_rows,
         nutrition_guidance=nutrition_guidance,
@@ -620,6 +701,131 @@ def _parse_analysis(data: dict[str, Any]) -> AnalysisSummary:
     )
 
 
+def _required_number(
+    value: Any, path: str, *, minimum: float, maximum: float
+) -> float:
+    number = _optional_number(value, path, minimum=minimum, maximum=maximum)
+    if number is None:
+        raise PlanContractError(f"{path} must be a finite number.")
+    return number
+
+
+def _parse_nutrition_targets(
+    value: Any,
+    *,
+    start: date,
+    event_date: date,
+) -> tuple[ImportedNutritionTarget, ...]:
+    """Validate optional v1 date-linked macro targets for every plan day."""
+    if type(value) is not list:
+        raise PlanContractError("$.nutrition_targets must be an array.")
+    if not value:
+        return ()
+    plan_days = (event_date - start).days + 1
+    if len(value) != plan_days:
+        raise PlanContractError(
+            "$.nutrition_targets must contain exactly one entry for every plan date."
+        )
+
+    targets: list[ImportedNutritionTarget] = []
+    seen: set[date] = set()
+    for index, raw in enumerate(value):
+        path = f"$.nutrition_targets[{index}]"
+        data = _object(raw, path, _NUTRITION_TARGET_KEYS)
+        target_date = _iso_date(data["date"], f"{path}.date")
+        if not start <= target_date <= event_date:
+            raise PlanContractError(f"{path}.date is outside the plan window.")
+        if target_date in seen:
+            raise PlanContractError(f"{path}.date duplicates another nutrition date.")
+        seen.add(target_date)
+
+        carbohydrate_min = _required_number(
+            data["carbohydrate_g_per_kg_min"],
+            f"{path}.carbohydrate_g_per_kg_min",
+            minimum=0,
+            maximum=15,
+        )
+        carbohydrate_max = _required_number(
+            data["carbohydrate_g_per_kg_max"],
+            f"{path}.carbohydrate_g_per_kg_max",
+            minimum=0,
+            maximum=15,
+        )
+        protein_min = _required_number(
+            data["protein_g_per_kg_min"],
+            f"{path}.protein_g_per_kg_min",
+            minimum=0,
+            maximum=4,
+        )
+        protein_max = _required_number(
+            data["protein_g_per_kg_max"],
+            f"{path}.protein_g_per_kg_max",
+            minimum=0,
+            maximum=4,
+        )
+        fat_min = _required_number(
+            data["fat_g_per_kg_min"],
+            f"{path}.fat_g_per_kg_min",
+            minimum=0,
+            maximum=4,
+        )
+        fat_max = _required_number(
+            data["fat_g_per_kg_max"],
+            f"{path}.fat_g_per_kg_max",
+            minimum=0,
+            maximum=4,
+        )
+        during_min = _optional_number(
+            data["during_training_carbohydrate_g_per_hour_min"],
+            f"{path}.during_training_carbohydrate_g_per_hour_min",
+            minimum=0,
+            maximum=150,
+        )
+        during_max = _optional_number(
+            data["during_training_carbohydrate_g_per_hour_max"],
+            f"{path}.during_training_carbohydrate_g_per_hour_max",
+            minimum=0,
+            maximum=150,
+        )
+        for minimum_value, maximum_value, label in (
+            (carbohydrate_min, carbohydrate_max, "carbohydrate_g_per_kg"),
+            (protein_min, protein_max, "protein_g_per_kg"),
+            (fat_min, fat_max, "fat_g_per_kg"),
+        ):
+            if minimum_value > maximum_value:
+                raise PlanContractError(f"{path}.{label}_min must not exceed max.")
+        if (during_min is None) != (during_max is None):
+            raise PlanContractError(
+                f"{path} during-training carbohydrate min and max must both be null or numbers."
+            )
+        if during_min is not None and during_max is not None and during_min > during_max:
+            raise PlanContractError(
+                f"{path}.during_training_carbohydrate_g_per_hour_min must not exceed max."
+            )
+
+        targets.append(
+            ImportedNutritionTarget(
+                iso_date=target_date.isoformat(),
+                day_type=_enum(
+                    data["day_type"], f"{path}.day_type", NUTRITION_DAY_TYPES
+                ),
+                carbohydrate_g_per_kg_min=carbohydrate_min,
+                carbohydrate_g_per_kg_max=carbohydrate_max,
+                protein_g_per_kg_min=protein_min,
+                protein_g_per_kg_max=protein_max,
+                fat_g_per_kg_min=fat_min,
+                fat_g_per_kg_max=fat_max,
+                during_training_carbohydrate_g_per_hour_min=during_min,
+                during_training_carbohydrate_g_per_hour_max=during_max,
+                notes=_text(
+                    data["notes"], f"{path}.notes", allow_empty=True, max_length=500
+                ),
+            )
+        )
+
+    return tuple(sorted(targets, key=lambda target: target.iso_date))
+
+
 def _parse_workouts(
     value: Any,
     *,
@@ -786,66 +992,19 @@ def _validate_schedule(
     age: int,
     run_days_per_week: int,
     start: date,
+    event_date: date,
+    minimum_strength_sessions_per_week: int,
 ) -> None:
-    by_week: dict[int, list[ImportedWorkout]] = {}
-    for workout in workouts:
-        workout_date = date.fromisoformat(workout.iso_date)
-        week = ((workout_date - start).days // 7) + 1
-        by_week.setdefault(week, []).append(workout)
-
-    hard_cap = get_intensity_cap(age)
-    hard_dates: list[date] = []
-    baseline_run_km: float | None = None
-    for week in sorted(by_week):
-        entries = by_week[week]
-        run_entries = [
-            w for w in entries if w.sport == "run" and w.intensity != "rest"
-        ]
-        run_dates = {w.iso_date for w in run_entries}
-        if len(run_dates) > run_days_per_week:
-            raise PlanSafetyError(
-                f"Week {week} has {len(run_dates)} run days; configured maximum is "
-                f"{run_days_per_week}."
-            )
-        hard_entries = [w for w in entries if w.intensity in {"hard", "race"}]
-        if len(hard_entries) > hard_cap:
-            raise PlanSafetyError(
-                f"Week {week} has {len(hard_entries)} hard/race sessions; age-based "
-                f"maximum is {hard_cap}."
-            )
-        if len([w for w in entries if w.sport == "strength"]) > 3:
-            raise PlanSafetyError(f"Week {week} has more than 3 strength sessions.")
-
-        total_duration = sum(w.duration_minutes or 0 for w in entries if w.intensity != "race")
-        if total_duration > 2_400:
-            raise PlanSafetyError(f"Week {week} exceeds the 40-hour training cap.")
-        total_tss = sum(w.tss or 0 for w in entries if w.intensity != "race")
-        if total_tss > 1_500:
-            raise PlanSafetyError(f"Week {week} exceeds the 1,500 TSS training cap.")
-
-        hard_dates.extend(date.fromisoformat(w.iso_date) for w in hard_entries)
-        has_cutback = any("CUTBACK" in w.flags for w in entries)
-        has_taper_or_race = any(w.phase in {"Taper", "Race", "Recovery"} for w in entries)
-        has_all_run_distances = bool(run_entries) and all(
-            w.distance_km not in (None, 0.0) for w in run_entries
-        )
-        if has_all_run_distances and not has_cutback and not has_taper_or_race:
-            run_km = sum(w.distance_km or 0 for w in run_entries)
-            if baseline_run_km is not None and baseline_run_km >= 10:
-                if run_km > baseline_run_km * 1.10 + 1e-9:
-                    increase = ((run_km / baseline_run_km) - 1) * 100
-                    raise PlanSafetyError(
-                        f"Week {week} run distance increases {increase:.1f}%; maximum is 10%."
-                    )
-            baseline_run_km = run_km
-
-    hard_dates.sort()
-    for previous, current in zip(hard_dates, hard_dates[1:]):
-        if (current - previous).days == 1:
-            raise PlanSafetyError(
-                f"Hard/race sessions on {previous.isoformat()} and {current.isoformat()} "
-                "are consecutive."
-            )
+    report = evaluate_training_policy(
+        workouts,
+        start=start,
+        event_date=event_date,
+        age=age,
+        run_days_per_week=run_days_per_week,
+        minimum_strength_sessions_per_week=minimum_strength_sessions_per_week,
+    )
+    if report.errors:
+        raise PlanSafetyError(report.errors[0].message)
 
 
 def _guidance(value: Any, path: str) -> tuple[str, ...]:
@@ -858,11 +1017,18 @@ def _guidance(value: Any, path: str) -> tuple[str, ...]:
 
 
 def _build_day_plans(
-    workouts: tuple[ImportedWorkout, ...], start: date, event_date: date
+    workouts: tuple[ImportedWorkout, ...],
+    nutrition_targets: tuple[ImportedNutritionTarget, ...],
+    start: date,
+    event_date: date,
 ) -> tuple[DayPlan, ...]:
     by_date: dict[date, list[ImportedWorkout]] = {}
     for workout in workouts:
         by_date.setdefault(date.fromisoformat(workout.iso_date), []).append(workout)
+    nutrition_by_date = {
+        date.fromisoformat(target.iso_date): target.to_dict()
+        for target in nutrition_targets
+    }
     total_weeks = max(1, (event_date - start).days // 7)
     result: list[DayPlan] = []
     current = start
@@ -884,6 +1050,7 @@ def _build_day_plans(
                     sport="rest",
                     intensity="rest",
                     session_count=0,
+                    nutrition=nutrition_by_date.get(current),
                 )
             )
         else:
@@ -903,6 +1070,7 @@ def _build_day_plans(
                     sport=dominant.sport,
                     intensity=dominant.intensity,
                     session_count=len(date_workouts),
+                    nutrition=nutrition_by_date.get(current),
                 )
             )
         current += timedelta(days=1)

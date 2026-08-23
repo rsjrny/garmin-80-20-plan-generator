@@ -944,14 +944,15 @@ def insert_planned_workout(
     planned_distance_m,
     planned_duration_s,
     planned_tss,
+    structure_json=None,
 ) -> None:
     try:
         conn.execute(
             """
             INSERT INTO planned_workout(
                 scheduled_date, workout_name, description, 
-                planned_distance_m, planned_duration_s, planned_tss
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                planned_distance_m, planned_duration_s, planned_tss, structure_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 scheduled_date,
@@ -960,6 +961,7 @@ def insert_planned_workout(
                 planned_distance_m,
                 planned_duration_s,
                 planned_tss,
+                structure_json,
             ),
         )
         conn.commit()
