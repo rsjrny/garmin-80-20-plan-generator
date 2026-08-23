@@ -74,6 +74,12 @@ BACKOFF_FACTOR = 2.0
 INITIAL_BACKOFF_SEC = 1.0
 
 
+def _sidecar_command() -> tuple[str, list[str]]:
+    if getattr(sys, "frozen", False):
+        return sys.executable, ["--mcp-sidecar"]
+    return sys.executable, ["-m", "garmin_mcp"]
+
+
 def _extract_text_payload(call_result: Any) -> str:
     parts: list[str] = []
     for item in getattr(call_result, "content", []) or []:
@@ -105,9 +111,10 @@ async def _call_tool_async(
         **os.environ,
         "GARMIN_DATA_DIR": str(db_path.parent),
     }
+    server_command, server_args = _sidecar_command()
     server = StdioServerParameters(
-        command=sys.executable,
-        args=["-m", "garmin_mcp"],
+        command=server_command,
+        args=server_args,
         env=env,
     )
 

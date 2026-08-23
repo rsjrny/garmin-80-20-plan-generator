@@ -243,6 +243,16 @@ class TestToolParamsCompleteness:
 
 class TestSidecarClientResilience:
 
+    def test_frozen_app_reuses_its_executable_for_mcp_sidecar(self, monkeypatch):
+        from garmin_data_hub import mcp_sidecar_client
+
+        monkeypatch.setattr(mcp_sidecar_client.sys, "frozen", True, raising=False)
+
+        assert mcp_sidecar_client._sidecar_command() == (
+            mcp_sidecar_client.sys.executable,
+            ["--mcp-sidecar"],
+        )
+
     def test_check_sidecar_available_returns_false_on_exception(self, tmp_path):
         """check_sidecar_available must return (False, error_str) on any exception."""
         from garmin_data_hub.mcp_sidecar_client import check_sidecar_available

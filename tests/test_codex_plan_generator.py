@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -175,4 +176,22 @@ def test_codex_generation_reports_timeout(monkeypatch):
             prompt="Build the plan",
             executable="codex-test",
             timeout_seconds=60,
+        )
+
+
+def test_codex_generation_can_be_cancelled_before_launch(monkeypatch):
+    cancel_event = threading.Event()
+    cancel_event.set()
+    monkeypatch.setattr(
+        generator.subprocess,
+        "Popen",
+        lambda *args, **kwargs: pytest.fail("cancelled job must not launch Codex"),
+    )
+
+    with pytest.raises(generator.CodexCliCancelledError, match="cancelled"):
+        generator.generate_plan_with_codex(
+            _packet(),
+            prompt="Build the plan",
+            executable="codex-test",
+            cancel_event=cancel_event,
         )

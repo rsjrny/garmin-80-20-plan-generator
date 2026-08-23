@@ -35,3 +35,29 @@
 		- [x] Rotating-file logging added to mcp_sidecar_client.py: CALL/OK/RETRY/TIMEOUT/ERROR lines written to %LOCALAPPDATA%\GarminDataHub\logs\mcp_calls.log, 5 MB rotating, 3 backups (commit 09f0297).
 
 - [ ] ***can the mcp page return results in a table not in raw and json***
+
+- [x] **NiceGUI interface migration (branch: `test_other_interfaces`).**
+	- [x] Investigation complete: NiceGUI selected for the first vertical slice.
+	- [x] **Phase 1 implementation complete (2026-08-23): Codex Plan Workspace prototype**
+		- [x] Add an initially separate NiceGUI entry point for safe evaluation.
+		- [x] Reuse SQLite, coaching packet, parser, training policy, and atomic persistence services.
+		- [x] Run Codex generation as a background task with elapsed time and cancellation.
+		- [x] Preview rationale, warnings, policy results, workouts, macros, and exact database changes.
+		- [x] Require explicit acknowledgement before applying a proposal.
+	- [ ] **Phase 1 acceptance gates**
+		- [x] Never write a proposal automatically.
+		- [x] Reject stale context/plan hashes and locked-input changes.
+		- [x] Test against an isolated copied or temporary SQLite database.
+		- [ ] Complete a hands-on Codex generation in the responsive Windows-native window (native smoke launch completed 2026-08-23; no quota-consuming generation started automatically).
+		- [x] Add a source launcher and documented Windows packaging path.
+		- [x] Keep the full existing test suite green (136 passed on 2026-08-23).
+	- [x] **Phase 2 complete (2026-08-23): Activities vertical slice**
+		- [x] Add AG Grid filtering, selection, date/sport filters, and a bounded 5,000-row query.
+		- [x] Port activity overview, splits, local GPS-track visualization, metrics, and complete JSON download.
+	- [x] **Phase 3 complete (2026-08-23): Garmin Sync vertical slice**
+		- [x] Stream logs and progress without blocking navigation.
+		- [x] Support safe process-tree stop/cancel and completion notifications.
+	- [x] Add persistent NiceGUI interface settings for distance units and reusable activity, chart, dashboard, and sync defaults.
+	- [x] **Cutover decision**
+		- [x] Compare startup, packaging size, responsiveness, and workflow parity (initial 9-route package healthy; all 10 current source routes tested; Windows distribution 263.5 MB before the Settings addition).
+		- [x] User approved NiceGUI replacement on 2026-08-23; NiceGUI is now the default source and packaged interface, with Streamlit retained temporarily as an optional legacy fallback.

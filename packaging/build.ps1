@@ -1,5 +1,5 @@
 # Complete Build Pipeline for GarminDataHub
-# Builds both the Streamlit application and the CLI tool, then organizes them into a release directory.
+# Builds both the NiceGUI desktop application and the CLI tool, then organizes them into a release directory.
 
 param(
     [string]$Version = "0.0.0", # Default version if not specified
@@ -22,9 +22,9 @@ $LauncherFile = Join-Path $ScriptDir "launcher.py"
 # Build and release paths
 $BuildDir = Join-Path $ProjectRoot "build"
 $ReleaseDir = Join-Path $ProjectRoot "release\$Version"
-$StreamlitBuildDir = Join-Path $BuildDir "streamlit_app"
+$GuiBuildDir = Join-Path $BuildDir "nicegui_app"
 $CliBuildDir = Join-Path $BuildDir "cli_tool"
-$StreamlitDistDir = Join-Path $StreamlitBuildDir "dist"
+$GuiDistDir = Join-Path $GuiBuildDir "dist"
 $CliDistDir = Join-Path $CliBuildDir "dist"
 $PyProjectPath = Join-Path $ProjectRoot "pyproject.toml"
 $VenvPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
@@ -145,38 +145,41 @@ if (Test-Path $ReleaseDir) {
     Remove-Item $ReleaseDir -Recurse -Force
 }
 New-Item -ItemType Directory -Path $ReleaseDir -Force | Out-Null
-New-Item -ItemType Directory -Path $StreamlitBuildDir -Force | Out-Null
+New-Item -ItemType Directory -Path $GuiBuildDir -Force | Out-Null
 New-Item -ItemType Directory -Path $CliBuildDir -Force | Out-Null
 
-# --- BUILD STREAMLIT APP ---
+# --- BUILD NICEGUI APP ---
 Write-Host ""
 Write-Host "---------------------------------------------------" -ForegroundColor Cyan
-Write-Host "Step 1: Building Streamlit Application (as a directory)" -ForegroundColor Cyan
+Write-Host "Step 1: Building NiceGUI Desktop Application (as a directory)" -ForegroundColor Cyan
 Write-Host "---------------------------------------------------"
 Push-Location $ProjectRoot
 
-$StreamlitAppName = "GarminDataHub"
-$pyinstallerArgsStreamlit = @(
-    "--console",
-    "--name", $StreamlitAppName,
-    "--distpath", $StreamlitDistDir,
-    "--workpath", (Join-Path $StreamlitBuildDir "build"),
-    "--specpath", $StreamlitBuildDir,
-    "--add-data", ((Join-Path $ProjectRoot 'src\garmin_data_hub') + ";garmin_data_hub"),
-    "--collect-all", "streamlit",
+$GuiAppName = "GarminDataHub"
+$pyinstallerArgsGui = @(
+    "--windowed",
+    "--name", $GuiAppName,
+    "--distpath", $GuiDistDir,
+    "--workpath", (Join-Path $GuiBuildDir "build"),
+    "--specpath", $GuiBuildDir,
+    "--add-data", ((Join-Path $ProjectRoot 'src\garmin_data_hub\db\schema.sql') + ";garmin_data_hub/db"),
+    "--collect-all", "nicegui",
+    "--collect-all", "webview",
+    "--collect-all", "garmin_mcp",
+    "--hidden-import", "webview.platforms.edgechromium",
     "--hidden-import", "pandas",
     "--hidden-import", "plotly",
     $LauncherFile
 )
 
 try {
-    Write-Host "Running PyInstaller for Streamlit app..."
-    & $VenvPython -m PyInstaller @pyinstallerArgsStreamlit
-    if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed for Streamlit app." }
-    Write-Host "[SUCCESS] Streamlit app built." -ForegroundColor Green
+    Write-Host "Running PyInstaller for NiceGUI app..."
+    & $VenvPython -m PyInstaller @pyinstallerArgsGui
+    if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed for NiceGUI app." }
+    Write-Host "[SUCCESS] NiceGUI app built." -ForegroundColor Green
 }
 catch {
-    Write-Host "[ERROR] Failed to build Streamlit application." -ForegroundColor Red
+    Write-Host "[ERROR] Failed to build NiceGUI application." -ForegroundColor Red
     Write-Host $_.Exception.Message -ForegroundColor Red
     exit 1
 }
@@ -244,20 +247,20 @@ Write-Host "Step 3: Organizing Release Artifacts" -ForegroundColor Cyan
 Write-Host "---------------------------------------------------"
 
 $DestinationCliDir = Join-Path $ReleaseDir $CliAppName
-$DestinationAppDir = Join-Path $ReleaseDir $StreamlitAppName
+$DestinationAppDir = Join-Path $ReleaseDir $GuiAppName
 
-# Copy Streamlit app directory
-$StreamlitAppDir = Join-Path $StreamlitDistDir $StreamlitAppName
-if (Test-Path $StreamlitAppDir) {
-    Copy-Item -Path $StreamlitAppDir -Destination $ReleaseDir -Recurse -Force
-    Write-Host "  Copied: $StreamlitAppName (directory)" -ForegroundColor Green
+# Copy NiceGUI app directory
+$GuiAppDir = Join-Path $GuiDistDir $GuiAppName
+if (Test-Path $GuiAppDir) {
+    Copy-Item -Path $GuiAppDir -Destination $ReleaseDir -Recurse -Force
+    Write-Host "  Copied: $GuiAppName (directory)" -ForegroundColor Green
 }
 else {
-    Write-Host "  [ERROR] Streamlit application directory not found at $StreamlitAppDir" -ForegroundColor Red
+    Write-Host "  [ERROR] NiceGUI application directory not found at $GuiAppDir" -ForegroundColor Red
 }
 
-# Also drop garmin-givemydata into the Streamlit app folder for convenience
-$DestinationAppDir = Join-Path $ReleaseDir $StreamlitAppName
+# Also drop garmin-givemydata into the NiceGUI app folder for convenience
+$DestinationAppDir = Join-Path $ReleaseDir $GuiAppName
 $GarminSyncExePath = Join-Path $CliDir $GarminSyncExeName
 if (Test-Path $GarminSyncExePath) {
     Copy-Item -Path $GarminSyncExePath -Destination $DestinationAppDir -Force
@@ -274,7 +277,7 @@ else {
 }
 
 # Validate expected release executables exist at final locations
-$ExpectedGuiExePath = Join-Path (Join-Path $ReleaseDir $StreamlitAppName) "$StreamlitAppName.exe"
+$ExpectedGuiExePath = Join-Path (Join-Path $ReleaseDir $GuiAppName) "$GuiAppName.exe"
 $ExpectedCliExePath = Join-Path (Join-Path $ReleaseDir $CliAppName) "$CliAppName.exe"
 
 if (-not (Test-Path $ExpectedGuiExePath)) {
@@ -303,8 +306,8 @@ Get-ChildItem $ReleaseDir | ForEach-Object {
 }
 Write-Host ""
 Write-Host "To run the application:"
-Write-Host "1. Open the '$($ReleaseDir)\$StreamlitAppName' directory."
-Write-Host "2. Run '$StreamlitAppName.exe'."
+Write-Host "1. Open the '$($ReleaseDir)\$GuiAppName' directory."
+Write-Host "2. Run '$GuiAppName.exe'."
 Write-Host ""
 Write-Host "To run the CLI tool:"
 Write-Host "  '$($ReleaseDir)\$CliAppName\$CliAppName.exe'"

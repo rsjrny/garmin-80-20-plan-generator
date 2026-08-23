@@ -1,10 +1,12 @@
 [project]
 name = "garmin-data-hub"
 version = "0.2.8"
-description = "Garmin FIT/CSV ingestion + analytics + exports (SQLite + Streamlit)"
+description = "Garmin FIT/CSV ingestion + analytics + AI planning (SQLite + NiceGUI)"
 requires-python = ">=3.10"
 dependencies = [
-  "streamlit>=1.37",
+  "nicegui>=3.0,<4",
+  "pywebview>=5.0",
+  "plotly>=6.0",
   "pandas>=2.2",
   "numpy>=2.0",
   "openpyxl>=3.1.5",
@@ -17,9 +19,15 @@ dependencies = [
 dev = [
   "pytest>=8.0",
 ]
+streamlit = [
+  "streamlit>=1.37",
+]
 
 [project.scripts]
 garmin-sync = "garmin_data_hub.cli_backup_ingest:main"
+garmin-data-hub = "garmin_data_hub.ui_nicegui.app:main"
+garmin-nicegui-preview = "garmin_data_hub.ui_nicegui.app:main"
+garmin-streamlit-legacy = "garmin_data_hub.ui_streamlit.legacy_launcher:main"
 
 [build-system]
 requires = ["setuptools>=68"]

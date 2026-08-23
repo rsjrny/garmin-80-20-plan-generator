@@ -14,9 +14,11 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from garmin_data_hub.services.coaching_packet import TRAINING_PLAN_UPDATE_SCHEMA
 
@@ -44,6 +46,10 @@ class CodexCliNotFoundError(CodexPlanGenerationError):
 
 class CodexCliTimeoutError(CodexPlanGenerationError):
     """The Codex generation exceeded its local timeout."""
+
+
+class CodexCliCancelledError(CodexPlanGenerationError):
+    """The user cancelled the local Codex generation."""
 
 
 @dataclass(frozen=True)
@@ -148,12 +154,99 @@ def _failure_detail(stderr: str, stdout: str) -> str:
     return detail[-1500:] if len(detail) > 1500 else detail
 
 
+def _stop_child_process(process: subprocess.Popen[str]) -> tuple[str, str]:
+    """Stop the exact child process tree started for this generation run."""
+    if process.poll() is not None:
+        return process.communicate()
+    if os.name == "nt":
+        # The installed Codex launcher is commonly a .cmd wrapper around Node.
+        # Stopping only that wrapper can leave its child running, so terminate
+        # the tree rooted at the PID we created. No unrelated PID is targeted.
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                capture_output=True,
+                check=False,
+                timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            process.terminate()
+    else:
+        process.terminate()
+    try:
+        return process.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        return process.communicate()
+
+
+def _run_cancellable(
+    command: list[str],
+    *,
+    input_text: str,
+    cwd: Path,
+    environment: Mapping[str, str],
+    timeout_seconds: int,
+    cancel_event: threading.Event,
+    progress_callback: Callable[[float], None] | None,
+) -> subprocess.CompletedProcess[str]:
+    """Run Codex while polling for cancellation and elapsed-time updates."""
+    if cancel_event.is_set():
+        raise CodexCliCancelledError("Codex generation was cancelled.")
+    try:
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=cwd,
+            env=dict(environment),
+            shell=False,
+        )
+    except OSError as exc:
+        raise CodexPlanGenerationError(f"Could not start Codex CLI: {exc}") from exc
+
+    started = time.monotonic()
+    first_communicate = True
+    while True:
+        try:
+            stdout, stderr = process.communicate(
+                input=input_text if first_communicate else None,
+                timeout=0.25,
+            )
+            return subprocess.CompletedProcess(
+                command,
+                process.returncode,
+                stdout=stdout,
+                stderr=stderr,
+            )
+        except subprocess.TimeoutExpired:
+            first_communicate = False
+            elapsed = time.monotonic() - started
+            if progress_callback is not None:
+                progress_callback(elapsed)
+            if cancel_event.is_set():
+                _stop_child_process(process)
+                raise CodexCliCancelledError("Codex generation was cancelled.")
+            if elapsed >= timeout_seconds:
+                _stop_child_process(process)
+                raise CodexCliTimeoutError(
+                    f"Codex did not finish within "
+                    f"{timeout_seconds // 60 or 1} minute(s)."
+                )
+
+
 def generate_plan_with_codex(
     packet: Mapping[str, Any],
     *,
     prompt: str,
     timeout_seconds: int = DEFAULT_CODEX_TIMEOUT_SECONDS,
     executable: str | None = None,
+    cancel_event: threading.Event | None = None,
+    progress_callback: Callable[[float], None] | None = None,
 ) -> CodexPlanGenerationResult:
     """Run ``codex exec`` with saved account auth and return its final JSON.
 
@@ -205,26 +298,40 @@ def generate_plan_with_codex(
             str(final_response_path),
             "-",
         ]
-        try:
-            completed = subprocess.run(
+        if cancel_event is not None:
+            completed = _run_cancellable(
                 command,
-                input=_generation_input(packet, prompt),
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                capture_output=True,
+                input_text=_generation_input(packet, prompt),
                 cwd=temp_path,
-                env=child_environment,
-                timeout=timeout_seconds,
-                check=False,
-                shell=False,
+                environment=child_environment,
+                timeout_seconds=timeout_seconds,
+                cancel_event=cancel_event,
+                progress_callback=progress_callback,
             )
-        except subprocess.TimeoutExpired as exc:
-            raise CodexCliTimeoutError(
-                f"Codex did not finish within {timeout_seconds // 60 or 1} minute(s)."
-            ) from exc
-        except OSError as exc:
-            raise CodexPlanGenerationError(f"Could not start Codex CLI: {exc}") from exc
+        else:
+            try:
+                completed = subprocess.run(
+                    command,
+                    input=_generation_input(packet, prompt),
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    capture_output=True,
+                    cwd=temp_path,
+                    env=child_environment,
+                    timeout=timeout_seconds,
+                    check=False,
+                    shell=False,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise CodexCliTimeoutError(
+                    f"Codex did not finish within "
+                    f"{timeout_seconds // 60 or 1} minute(s)."
+                ) from exc
+            except OSError as exc:
+                raise CodexPlanGenerationError(
+                    f"Could not start Codex CLI: {exc}"
+                ) from exc
 
         if completed.returncode != 0:
             detail = _failure_detail(completed.stderr, completed.stdout)

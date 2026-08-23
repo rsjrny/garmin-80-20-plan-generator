@@ -1,6 +1,6 @@
 # Garmin Data Hub
 
-A local Garmin analytics app built on **SQLite + Streamlit**.
+A local Garmin analytics desktop app built on **SQLite + NiceGUI**.
 
 The project syncs Garmin data using `garmin-givemydata`, applies app-specific schema extensions, ingests FIT trackpoints, and refreshes cached derived metrics used across the UI.
 
@@ -82,7 +82,26 @@ with the calendar, and stored with the accepted plan; they do not prescribe
 specific foods or medical nutrition treatment. The offline baseline schedules
 alternating strength sessions but does not invent individualized macro targets.
 
-## Streamlit Pages
+## NiceGUI Pages
+
+The primary desktop interface is implemented under `src/garmin_data_hub/ui_nicegui`:
+
+- **Dashboard** - Garmin history, threshold, metrics-health, and upcoming-plan overview
+- **Garmin Sync** - non-blocking sync, cancellation, logs, and derived-metric repair
+- **Activities** - filters, splits, local GPS-track inspection, and complete JSON export
+- **Charts** - volume, heart-rate, speed, distribution, and training-load trends
+- **Plan** - event/schedule settings, HR thresholds, and active calendar review
+- **Codex Coach** - account-authenticated generation, deterministic validation, exact diff, and explicit approval
+- **Compliance** - planned-versus-completed distance and duration
+- **Data Query** - guarded read-only SQL and advanced garmin_mcp calls
+- **Settings** - persistent distance units and activity, chart, dashboard, and sync defaults
+- **Guide** - the end-to-end local workflow
+
+The previous Streamlit source remains temporarily available as an optional legacy
+fallback on this migration branch, but it is no longer the default entry point or
+packaged interface.
+
+## Legacy Streamlit Pages
 
 Located in `src/garmin_data_hub/ui_streamlit/pages`:
 
@@ -137,7 +156,7 @@ The **MCP Query** page (page 7) provides advanced database access through six Mo
 If MCP Query shows "sidecar unavailable":
 1. Verify garmin_mcp is installed: `pip list | grep garmin-mcp`
 2. Test sidecar manually: `python -m garmin_mcp`
-3. Restart the Streamlit app
+3. Restart Garmin Data Hub
 
 ---## Quick Start (Developers)
 
@@ -147,16 +166,40 @@ python -m venv .venv
 .\.venv\Scripts\activate
 pip install -U pip
 pip install -e .[dev]
-streamlit run src/garmin_data_hub/ui_streamlit/app.py
+garmin-data-hub
 ```
 
 ## Launch Options
 
-### Streamlit UI
+### Primary NiceGUI desktop UI
 
 ```powershell
-streamlit run src/garmin_data_hub/ui_streamlit/app.py
+garmin-data-hub
 ```
+
+NiceGUI opens in a native Windows window and uses the active database by default.
+Use `--browser` for a normal browser window or `--sandbox` to copy the active
+database to `%LOCALAPPDATA%\GarminDataHub\nicegui-preview\garmin-preview.db`.
+
+```powershell
+garmin-data-hub --sandbox
+garmin-data-hub --browser
+```
+
+`--source-db` selects an explicit live SQLite path; `--preview-db` selects an
+explicit sandbox copy. Codex generation runs in a cancellable background worker,
+while stale-response checks, locked settings, the local training policy, exact
+database changes, and explicit acknowledgement remain mandatory.
+
+### Optional legacy Streamlit UI
+
+```powershell
+pip install -e ".[streamlit]"
+garmin-streamlit-legacy
+```
+
+This fallback is retained only while the NiceGUI replacement receives real-world
+parity testing. New interface work should target NiceGUI.
 
 ### Sync CLI
 
@@ -216,7 +259,7 @@ powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 0.1.0 -G
 
 It will:
 
-- build the Streamlit app directory (`GarminDataHub`)
+- build the NiceGUI desktop app directory (`GarminDataHub`)
 - build the CLI directory (`cli_backup_ingest`)
 - bundle `garmin-givemydata.exe` from project `.venv` with the release artifacts
 - copy outputs under `release/<version>/`
@@ -229,7 +272,9 @@ It will:
 
 Core dependencies are defined in `pyproject.toml`, including:
 
-- `streamlit`
+- `nicegui`
+- `pywebview`
+- `plotly`
 - `pandas`
 - `numpy`
 - `fitparse`
