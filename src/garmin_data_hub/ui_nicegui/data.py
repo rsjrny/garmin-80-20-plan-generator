@@ -23,13 +23,27 @@ from garmin_data_hub.db import queries
 from garmin_data_hub.db.migrate import apply_schema
 from garmin_data_hub.db.sqlite import connect_sqlite
 from garmin_data_hub.paths import schema_sql_path
+from garmin_data_hub.services.garmin_auth_session import (
+    BrowserSessionResetResult,
+    reset_garmin_browser_session,
+)
 from garmin_data_hub.services.athlete_metrics_service import get_athlete_metrics
+from garmin_data_hub.services.garmin_credentials import (
+    GarminCredentials,
+    build_sync_environment,
+)
 from garmin_data_hub.services.plan_persistence import (
     load_generated_plan,
     load_plan_settings,
     save_plan_setting,
 )
 from garmin_data_hub.services.sync_status import progress_from_log
+from garmin_data_hub.ui_nicegui.process_tree import (
+    ProcessTree,
+    attach_process_tree,
+    fallback_process_tree,
+    popen_process_tree_kwargs,
+)
 
 
 READ_ONLY_SQL = re.compile(r"^\s*(SELECT|WITH|EXPLAIN)\b", re.IGNORECASE)
@@ -555,13 +569,21 @@ class SyncSnapshot:
 class SyncJob:
     """One cancellable Garmin sync process with persisted local logging."""
 
+    _ACTIVE_STATES = frozenset({"running", "cancelling"})
+    _STOP_TIMEOUT_SECONDS = 8.0
+
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path)
         self.log_path = self.db_path.parent / "logs" / "garmin_sync_latest.log"
         self._lock = threading.Lock()
         self._process: subprocess.Popen[str] | None = None
+        self._process_tree: ProcessTree | None = None
+        self._monitor_thread: threading.Thread | None = None
+        self._cancel_thread: threading.Thread | None = None
+        self._maintenance_state: str | None = None
         self._state = "idle"
         self._started: float | None = None
+        self._finished: float | None = None
         self._return_code: int | None = None
         self._error: str | None = None
 
@@ -588,89 +610,371 @@ class SyncJob:
         command.extend(["--db", str(self.db_path)])
         if days > 0:
             command.extend(["--days", str(days)])
-        command.extend(["--visible", "--chrome"])
+        command.append("--visible")
         return command
 
-    def start(self, *, days: int = 0) -> None:
+    def start(
+        self,
+        *,
+        days: int = 0,
+        credentials: GarminCredentials | None = None,
+    ) -> None:
         days = int(days)
         if not 0 <= days <= 3650:
             raise ValueError("Sync days must be between 0 and 3,650")
         with self._lock:
-            if self._state == "running":
+            self._refresh_process_locked()
+            if self._maintenance_state is not None:
+                raise RuntimeError("Garmin browser login is being reset")
+            process = self._process
+            process_is_live = process is not None and process.poll() is None
+            monitor_is_finishing = (
+                self._monitor_thread is not None
+                and self._monitor_thread.is_alive()
+            )
+            if (
+                self._state in self._ACTIVE_STATES
+                or process_is_live
+                or monitor_is_finishing
+            ):
                 raise RuntimeError("Garmin sync is already running")
             command = self._command(days)
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
             self.log_path.write_text(
                 "Started: " + " ".join(command) + "\n", encoding="utf-8"
             )
-            environment = os.environ.copy()
+            environment = (
+                build_sync_environment(credentials)
+                if credentials is not None
+                else os.environ.copy()
+            )
             environment["PYTHONUNBUFFERED"] = "1"
-            try:
-                log_file = self.log_path.open("a", encoding="utf-8")
-                process = subprocess.Popen(
-                    command,
-                    stdout=log_file,
-                    stderr=subprocess.STDOUT,
-                    env=environment,
-                    text=True,
-                    shell=False,
-                )
-                log_file.close()
-            except OSError as exc:
-                self._state = "failed"
-                self._error = str(exc)
-                raise
-            self._process = process
-            self._state = "running"
             self._started = time.monotonic()
+            self._finished = None
             self._return_code = None
             self._error = None
+            try:
+                with self.log_path.open("a", encoding="utf-8") as log_file:
+                    process = subprocess.Popen(
+                        command,
+                        stdin=subprocess.DEVNULL,
+                        stdout=log_file,
+                        stderr=subprocess.STDOUT,
+                        env=environment,
+                        text=True,
+                        shell=False,
+                        **popen_process_tree_kwargs(),
+                    )
+            except OSError as exc:
+                self._state = "failed"
+                self._finished = time.monotonic()
+                self._error = str(exc)
+                raise
+            try:
+                process_tree = attach_process_tree(process)
+            except Exception as attach_error:
+                process_tree = fallback_process_tree(process)
+                self._process = process
+                self._process_tree = process_tree
+                attachment_message = (
+                    "Could not start Garmin sync with safe descendant cleanup: "
+                    f"{attach_error}"
+                )
+                try:
+                    code = process_tree.terminate(
+                        process,
+                        timeout=self._STOP_TIMEOUT_SECONDS,
+                    )
+                    process_tree.close_after_exit()
+                except Exception as stop_error:
+                    self._state = "running"
+                    self._error = f"{attachment_message}. Emergency stop failed: {stop_error}"
+                    self._start_monitor_locked(process, process_tree)
+                else:
+                    self._state = "failed"
+                    self._finished = time.monotonic()
+                    self._return_code = int(code)
+                    self._error = attachment_message
+                raise RuntimeError(self._error) from attach_error
+            self._process = process
+            self._process_tree = process_tree
+            self._state = "running"
+            if process_tree.warning:
+                try:
+                    with self.log_path.open("a", encoding="utf-8") as log_file:
+                        log_file.write(f"Warning: {process_tree.warning}\n")
+                except OSError:
+                    pass
+            self._start_monitor_locked(process, process_tree)
 
-    def cancel(self) -> bool:
+    def reset_browser_session(self) -> BrowserSessionResetResult:
+        """Exclusively reset persisted Garmin browser authentication state."""
         with self._lock:
+            self._refresh_process_locked()
             process = self._process
-            if self._state != "running" or process is None:
-                return False
-            if os.name == "nt":
-                subprocess.run(
-                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                    capture_output=True,
-                    check=False,
-                    timeout=5,
+            process_is_live = process is not None and process.poll() is None
+            monitor_is_finishing = (
+                self._monitor_thread is not None
+                and self._monitor_thread.is_alive()
+            )
+            if self._maintenance_state is not None:
+                raise RuntimeError("Garmin browser login is already being reset")
+            if (
+                self._state in self._ACTIVE_STATES
+                or process_is_live
+                or monitor_is_finishing
+            ):
+                raise RuntimeError(
+                    "Stop Garmin sync before resetting its browser login"
+                )
+            self._maintenance_state = "resetting_login"
+        try:
+            return reset_garmin_browser_session(self.db_path.parent)
+        finally:
+            with self._lock:
+                self._maintenance_state = None
+
+    def _start_monitor_locked(
+        self,
+        process: subprocess.Popen[str],
+        process_tree: ProcessTree,
+    ) -> None:
+        monitor = threading.Thread(
+            target=self._monitor_process,
+            args=(process, process_tree),
+            name=f"garmin-sync-monitor-{process.pid}",
+            daemon=True,
+        )
+        self._monitor_thread = monitor
+        try:
+            monitor.start()
+        except RuntimeError as thread_error:
+            self._monitor_thread = None
+            try:
+                code = process_tree.terminate(
+                    process,
+                    timeout=self._STOP_TIMEOUT_SECONDS,
+                )
+                process_tree.close_after_exit()
+            except Exception as stop_error:
+                self._state = "running"
+                self._error = (
+                    f"Could not start the sync monitor ({thread_error}); "
+                    f"emergency stop failed: {stop_error}"
                 )
             else:
-                process.terminate()
+                self._return_code = int(code)
+                self._finished = self._finished or time.monotonic()
+                self._state = "failed"
+                self._error = f"Could not start the sync monitor: {thread_error}"
+            raise RuntimeError(self._error) from thread_error
+
+    def cancel(self, *, wait: bool = False) -> bool:
+        existing_cancel: threading.Thread | None = None
+        process_tree: ProcessTree | None = None
+        already_cancelling = False
+        with self._lock:
+            self._refresh_process_locked()
+            process = self._process
+            if process is None or process.poll() is not None:
+                return False
+            if self._state == "cancelling":
+                already_cancelling = True
+                existing_cancel = self._cancel_thread
+            else:
+                process_tree = self._process_tree
+                if process_tree is None:
+                    raise RuntimeError("Sync process tree controller is unavailable")
+                self._state = "cancelling"
+                self._error = None
+                if not wait:
+                    cancel_thread = threading.Thread(
+                        target=self._finish_cancel,
+                        args=(process, process_tree),
+                        name=f"garmin-sync-cancel-{process.pid}",
+                        daemon=True,
+                    )
+                    self._cancel_thread = cancel_thread
+                    try:
+                        cancel_thread.start()
+                    except RuntimeError:
+                        self._cancel_thread = None
+                        wait = True
+
+        if already_cancelling:
+            if wait:
+                if existing_cancel is not None:
+                    existing_cancel.join(self._STOP_TIMEOUT_SECONDS + 2.0)
+            return False
+        if process_tree is None:
+            return False
+        if wait:
+            self._finish_cancel(process, process_tree)
+        return True
+
+    def _finish_cancel(
+        self,
+        process: subprocess.Popen[str],
+        process_tree: ProcessTree,
+    ) -> None:
+        try:
+            code = process_tree.terminate(
+                process,
+                timeout=self._STOP_TIMEOUT_SECONDS,
+            )
+            process_tree.close_after_exit()
+        except Exception as exc:
+            code = process.poll()
+            with self._lock:
+                if self._process is process:
+                    if code is None:
+                        self._state = "running"
+                        self._error = f"Could not stop Garmin sync: {exc}"
+                    else:
+                        if self._state == "cancelling":
+                            self._return_code = int(code)
+                            self._finished = self._finished or time.monotonic()
+                            self._state = "failed"
+                            self._error = (
+                                "Sync stopped, but descendant cleanup could not be "
+                                f"confirmed: {exc}"
+                            )
+                    if self._cancel_thread is threading.current_thread():
+                        self._cancel_thread = None
+            return
+        with self._lock:
+            if self._process is process:
+                self._return_code = int(code)
+                self._finished = self._finished or time.monotonic()
+                if self._state == "cancelling":
+                    self._state = "cancelled"
+                    self._error = None
+                elif self._state == "cancelled":
+                    self._error = None
+                if self._cancel_thread is threading.current_thread():
+                    self._cancel_thread = None
+
+    def _monitor_process(
+        self,
+        process: subprocess.Popen[str],
+        process_tree: ProcessTree,
+    ) -> None:
+        while True:
+            try:
+                code = int(process.wait())
+                break
+            except Exception as exc:
+                polled_code = process.poll()
+                if polled_code is not None:
+                    code = int(polled_code)
+                    break
+                with self._lock:
+                    if self._process is process:
+                        self._error = f"Could not monitor Garmin sync: {exc}"
+                time.sleep(0.25)
+
+        cleanup_error: Exception | None = None
+        try:
+            process_tree.close_after_exit()
+        except Exception as exc:
+            cleanup_error = exc
+
+        with self._lock:
+            if self._process is process:
+                self._finalize_exit_locked(process, code)
+                if cleanup_error is not None:
+                    self._state = "failed"
+                    self._error = (
+                        "Sync exited, but descendant cleanup failed: "
+                        f"{cleanup_error}"
+                    )
+
+    def _finalize_exit_locked(
+        self,
+        process: subprocess.Popen[str],
+        code: int,
+    ) -> None:
+        if self._process is not process:
+            return
+        self._return_code = int(code)
+        self._finished = self._finished or time.monotonic()
+        if self._state == "cancelling":
             self._state = "cancelled"
-            self._return_code = process.poll()
-            return True
+            self._error = None
+        elif self._state == "running":
+            self._state = "completed" if code == 0 else "failed"
+            self._error = None
+
+    def _refresh_process_locked(self) -> None:
+        process = self._process
+        if self._state in self._ACTIVE_STATES and process is not None:
+            code = process.poll()
+            monitor_is_cleaning_up = (
+                self._monitor_thread is not None
+                and self._monitor_thread.is_alive()
+            )
+            if code is not None and not monitor_is_cleaning_up:
+                cleanup_error: Exception | None = None
+                if self._process_tree is not None:
+                    try:
+                        self._process_tree.close_after_exit()
+                    except Exception as exc:
+                        cleanup_error = exc
+                self._finalize_exit_locked(process, int(code))
+                if cleanup_error is not None:
+                    self._state = "failed"
+                    self._error = (
+                        "Sync exited, but descendant cleanup failed: "
+                        f"{cleanup_error}"
+                    )
+
+    def shutdown(self) -> None:
+        """Synchronously stop an active tree during application shutdown."""
+        self.cancel(wait=True)
+        with self._lock:
+            monitor = self._monitor_thread
+        if monitor is not None and monitor.is_alive():
+            monitor.join(self._STOP_TIMEOUT_SECONDS + 2.0)
+        with self._lock:
+            process = self._process
+            process_tree = self._process_tree
+            retry = process is not None and process.poll() is None
+            if retry:
+                self._state = "cancelling"
+                self._error = None
+        if retry and process is not None and process_tree is not None:
+            self._finish_cancel(process, process_tree)
 
     def clear_log(self) -> None:
         with self._lock:
-            if self._state == "running":
+            self._refresh_process_locked()
+            process = self._process
+            if (
+                self._state in self._ACTIVE_STATES
+                or (process is not None and process.poll() is None)
+            ):
                 raise RuntimeError("Cannot clear the log while sync is running")
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
             self.log_path.write_text("", encoding="utf-8")
 
     def snapshot(self) -> SyncSnapshot:
         with self._lock:
-            process = self._process
-            if self._state == "running" and process is not None:
-                code = process.poll()
-                if code is not None:
-                    self._return_code = code
-                    self._state = "completed" if code == 0 else "failed"
+            self._refresh_process_locked()
             try:
                 log = self.log_path.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 log = ""
             log = log[-30000:]
+            elapsed_until = self._finished or time.monotonic()
             elapsed = (
-                time.monotonic() - self._started if self._started is not None else 0.0
+                elapsed_until - self._started
+                if self._started is not None
+                else 0.0
             )
             return SyncSnapshot(
-                state=self._state,
+                state=self._maintenance_state or self._state,
                 progress=progress_from_log(log),
-                elapsed_seconds=elapsed,
+                elapsed_seconds=max(0.0, elapsed),
                 return_code=self._return_code,
                 log=log,
                 error=self._error,
@@ -688,3 +992,11 @@ def get_sync_job(db_path: Path) -> SyncJob:
         if key not in _SYNC_JOBS:
             _SYNC_JOBS[key] = SyncJob(key)
         return _SYNC_JOBS[key]
+
+
+def cancel_all_sync_jobs() -> None:
+    """Bounded shutdown cleanup for every database-scoped sync process."""
+    with _SYNC_JOBS_LOCK:
+        jobs = tuple(_SYNC_JOBS.values())
+    for job in jobs:
+        job.shutdown()

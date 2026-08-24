@@ -21,6 +21,8 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+_BUNDLED_GIVEMYDATA_FLAG = "--_run-bundled-givemydata"
+
 from garmin_data_hub.paths import default_db_path, ensure_app_dirs
 
 
@@ -48,21 +50,16 @@ def _clear_stale_chrome_profile_locks(profile_dir: Path) -> None:
 
 
 def _find_givemydata_cmd() -> list[str] | None:
-    """Locate the garmin-givemydata executable."""
+    """Return a runnable garmin-givemydata command for this environment.
+
+    A frozen build reuses this executable with an internal dispatch flag.  Pip's
+    Windows console launcher cannot be copied into a release because it embeds
+    the absolute path to the build virtual environment.
+    """
     import shutil
 
-    exe_dir = None
     if getattr(sys, "frozen", False):
-        exe_dir = Path(sys.executable).parent
-
-    # Prefer bundled binaries first when present.
-    if exe_dir:
-        for candidate in [
-            exe_dir / "garmin-givemydata.exe",
-            exe_dir / "_internal" / "garmin-givemydata.exe",
-        ]:
-            if candidate.exists():
-                return [str(candidate)]
+        return [sys.executable, _BUNDLED_GIVEMYDATA_FLAG]
 
     found = shutil.which("garmin-givemydata")
     if found:
@@ -70,9 +67,43 @@ def _find_givemydata_cmd() -> list[str] | None:
 
     print("[ERROR] 'garmin-givemydata' not found.")
     print("[INFO]  Install it: pip install garmin-givemydata")
-    if exe_dir:
-        print(f"[INFO]  Or bundle 'garmin-givemydata.exe' alongside: {exe_dir}")
     return None
+
+
+def _run_bundled_givemydata(args: list[str]) -> int:
+    """Run the packaged garmin-givemydata entry point with isolated arguments."""
+    original_argv = sys.argv
+    sys.argv = ["garmin-givemydata", *args]
+    try:
+        for stream in (sys.stdout, sys.stderr):
+            reconfigure = getattr(stream, "reconfigure", None)
+            if callable(reconfigure):
+                reconfigure(errors="replace")
+
+        data_dir = Path(os.environ.get("GARMIN_DATA_DIR", default_db_path().parent))
+        driver_dir = data_dir / "drivers"
+        driver_dir.mkdir(parents=True, exist_ok=True)
+
+        # SeleniumBase otherwise downloads Chrome drivers into its installed
+        # package directory, which is read-only under Program Files.
+        from seleniumbase.core import browser_launcher
+
+        browser_launcher.override_driver_dir(str(driver_dir))
+
+        from garmin_givemydata import main as givemydata_main
+
+        result = givemydata_main()
+    except SystemExit as exc:
+        if exc.code is None:
+            return 0
+        if isinstance(exc.code, int):
+            return exc.code
+        print(exc.code, file=sys.stderr)
+        return 1
+    finally:
+        sys.argv = original_argv
+
+    return int(result) if isinstance(result, int) else 0
 
 
 def run_sync(
@@ -208,6 +239,9 @@ def run_sync(
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == _BUNDLED_GIVEMYDATA_FLAG:
+        raise SystemExit(_run_bundled_givemydata(sys.argv[2:]))
+
     if getattr(sys, "frozen", False) and "pyi_splash" in sys.modules:
         return
 

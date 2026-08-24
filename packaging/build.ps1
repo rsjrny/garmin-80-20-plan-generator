@@ -2,9 +2,11 @@
 # Builds both the NiceGUI desktop application and the CLI tool, then organizes them into a release directory.
 
 param(
-    [string]$Version = "0.0.0", # Default version if not specified
-    [bool]$AutoUpdateGivemydata = $true,
-    [string]$GivemydataPypiSpec = "garmin-givemydata>=0.1.10"
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$')]
+    [string]$Version,
+    [switch]$SkipGivemydataUpdate,
+    [string]$GivemydataPypiSpec = "garmin-givemydata==0.1.12"
 )
 
 # Set error action preference to stop on errors
@@ -21,15 +23,17 @@ $LauncherFile = Join-Path $ScriptDir "launcher.py"
 
 # Build and release paths
 $BuildDir = Join-Path $ProjectRoot "build"
-$ReleaseDir = Join-Path $ProjectRoot "release\$Version"
+$ReleaseRoot = Join-Path $ProjectRoot "release"
+$ReleaseDir = Join-Path $ReleaseRoot $Version
 $GuiBuildDir = Join-Path $BuildDir "nicegui_app"
 $CliBuildDir = Join-Path $BuildDir "cli_tool"
 $GuiDistDir = Join-Path $GuiBuildDir "dist"
 $CliDistDir = Join-Path $CliBuildDir "dist"
 $PyProjectPath = Join-Path $ProjectRoot "pyproject.toml"
 $VenvPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
-$VenvScriptsDir = Join-Path $ProjectRoot ".venv\Scripts"
-$VenvGivemydataExe = Join-Path $VenvScriptsDir "garmin-givemydata.exe"
+$IssScriptFile = Join-Path $ScriptDir "installer\GarminDataHub.iss"
+$LicenseFile = Join-Path $ProjectRoot "LICENSE"
+$ThirdPartyNoticesFile = Join-Path $ProjectRoot "THIRD_PARTY_NOTICES.md"
 
 function Update-PyProjectVersion {
     param(
@@ -95,7 +99,7 @@ function Ensure-GivemydataFromPypi {
 
     if ($TryAutoUpdate) {
         Write-Host "[INFO] Ensuring PyPI package is installed in .venv: $PackageSpec" -ForegroundColor Cyan
-        & $PythonExe -m pip install --upgrade --no-deps "$PackageSpec"
+        & $PythonExe -m pip install --upgrade "$PackageSpec"
         if ($LASTEXITCODE -ne 0) {
             Write-Host "[ERROR] Failed to install/upgrade '$PackageSpec' in .venv." -ForegroundColor Red
             exit 1
@@ -114,7 +118,7 @@ except Exception as e:
 
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[ERROR] Could not import garmin_givemydata from .venv." -ForegroundColor Red
-        Write-Host "        Install it with: $PythonExe -m pip install --upgrade --no-deps `"$PackageSpec`"" -ForegroundColor Yellow
+        Write-Host "        Install it with: $PythonExe -m pip install --upgrade `"$PackageSpec`"" -ForegroundColor Yellow
         exit 1
     }
 
@@ -125,6 +129,104 @@ except Exception as e:
     Write-Host "[OK] Using PyPI garmin-givemydata $version from: $moduleFile" -ForegroundColor Green
 }
 
+function New-PyInstallerVersionFile {
+    param(
+        [string]$FilePath,
+        [string]$ReleaseVersion,
+        [string]$Description,
+        [string]$InternalName,
+        [string]$OriginalFilename
+    )
+
+    $numericVersion = ($ReleaseVersion -split '[-+]')[0]
+    $parts = @($numericVersion.Split('.') | ForEach-Object { [int]$_ })
+    if ($parts.Count -ne 3) {
+        throw "PyInstaller VersionInfo requires a three-part numeric version: $ReleaseVersion"
+    }
+    $versionTuple = "$($parts[0]), $($parts[1]), $($parts[2]), 0"
+    $contents = @"
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=($versionTuple),
+    prodvers=($versionTuple),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable(
+        u'040904B0',
+        [
+          StringStruct(u'CompanyName', u'Garmin Data Hub'),
+          StringStruct(u'FileDescription', u'$Description'),
+          StringStruct(u'FileVersion', u'$ReleaseVersion'),
+          StringStruct(u'InternalName', u'$InternalName'),
+          StringStruct(u'LegalCopyright', u'Copyright (c) 2024 Garmin Data Hub'),
+          StringStruct(u'OriginalFilename', u'$OriginalFilename'),
+          StringStruct(u'ProductName', u'GarminDataHub'),
+          StringStruct(u'ProductVersion', u'$ReleaseVersion')
+        ]
+      )
+    ]),
+    VarFileInfo([VarStruct(u'Translation', [1033, 1200])])
+  ]
+)
+"@
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($FilePath, $contents, $utf8NoBom)
+}
+
+function Assert-PackagingEnvironment {
+    param([string]$PythonExe)
+
+    Write-Host "[INFO] Validating packaging dependencies..." -ForegroundColor Cyan
+    & $PythonExe -c "from importlib.metadata import version
+from packaging.version import Version
+import PyInstaller, garmin_client, garmin_givemydata, garmin_mcp, nicegui, seleniumbase, webview
+hooks_version = Version(version('pyinstaller-hooks-contrib'))
+if hooks_version < Version('2026.3'):
+    raise SystemExit(f'pyinstaller-hooks-contrib >= 2026.3 is required for charset-normalizer 3.4.5+; found {hooks_version}')
+"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Packaging dependencies are incomplete or incompatible. Run: .venv\Scripts\python.exe -m pip install -e '.[dev]'"
+    }
+    if (-not (Test-Path -LiteralPath $IssScriptFile -PathType Leaf)) {
+        throw "Inno Setup script not found: $IssScriptFile"
+    }
+    if (-not (Test-Path -LiteralPath $LicenseFile -PathType Leaf)) {
+        throw "License file not found: $LicenseFile"
+    }
+    if (-not (Test-Path -LiteralPath $ThirdPartyNoticesFile -PathType Leaf)) {
+        throw "Third-party notices file not found: $ThirdPartyNoticesFile"
+    }
+}
+
+function Invoke-PackagedSmokeTest {
+    param(
+        [string]$Executable,
+        [string[]]$Arguments
+    )
+
+    # Native stderr is represented as a PowerShell error record. Judge the
+    # smoke test by the process exit code while keeping its output quiet.
+    $previousErrorAction = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "SilentlyContinue"
+        & $Executable @Arguments *> $null
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorAction
+    }
+    if ($exitCode -ne 0) {
+        throw "Packaged smoke test failed with exit code $exitCode`: $Executable $($Arguments -join ' ')"
+    }
+}
+
 # --- SETUP ---
 Write-Host "###################################################" -ForegroundColor Magenta
 Write-Host "# GarminDataHub Build Pipeline                    #" -ForegroundColor Magenta
@@ -133,7 +235,8 @@ Write-Host ""
 Write-Host "Building version: $Version" -ForegroundColor Cyan
 Write-Host "garmin-givemydata package spec: $GivemydataPypiSpec" -ForegroundColor Cyan
 Update-PyProjectVersion -FilePath $PyProjectPath -NewVersion $Version
-Ensure-GivemydataFromPypi -PythonExe $VenvPython -PackageSpec $GivemydataPypiSpec -TryAutoUpdate:$AutoUpdateGivemydata
+Ensure-GivemydataFromPypi -PythonExe $VenvPython -PackageSpec $GivemydataPypiSpec -TryAutoUpdate:(-not $SkipGivemydataUpdate)
+Assert-PackagingEnvironment -PythonExe $VenvPython
 
 # Clean and create directories
 if (Test-Path $BuildDir) {
@@ -148,6 +251,13 @@ New-Item -ItemType Directory -Path $ReleaseDir -Force | Out-Null
 New-Item -ItemType Directory -Path $GuiBuildDir -Force | Out-Null
 New-Item -ItemType Directory -Path $CliBuildDir -Force | Out-Null
 
+$GuiVersionFile = Join-Path $GuiBuildDir "version_info.txt"
+$CliVersionFile = Join-Path $CliBuildDir "version_info.txt"
+New-PyInstallerVersionFile -FilePath $GuiVersionFile -ReleaseVersion $Version -Description "Garmin Data Hub desktop application" -InternalName "GarminDataHub" -OriginalFilename "GarminDataHub.exe"
+New-PyInstallerVersionFile -FilePath $CliVersionFile -ReleaseVersion $Version -Description "Garmin Data Hub sync command-line tool" -InternalName "cli_backup_ingest" -OriginalFilename "cli_backup_ingest.exe"
+$numericVersion = ($Version -split '[-+]')[0]
+$InstallerNumericVersion = "$numericVersion.0"
+
 # --- BUILD NICEGUI APP ---
 Write-Host ""
 Write-Host "---------------------------------------------------" -ForegroundColor Cyan
@@ -159,6 +269,7 @@ $GuiAppName = "GarminDataHub"
 $pyinstallerArgsGui = @(
     "--windowed",
     "--name", $GuiAppName,
+    "--version-file", $GuiVersionFile,
     "--distpath", $GuiDistDir,
     "--workpath", (Join-Path $GuiBuildDir "build"),
     "--specpath", $GuiBuildDir,
@@ -194,18 +305,22 @@ Write-Host "---------------------------------------------------"
 Push-Location $ProjectRoot
 
 $CliAppName = "cli_backup_ingest"
-$GarminSyncExeName = "garmin-givemydata.exe"
 
-# Build orchestrator cli_backup_ingest.exe (one-dir)
+# Build the orchestrator and its internally dispatched garmin-givemydata worker (one-dir)
 $pyinstallerArgsCli = @(
     "--clean",
     "--console",
     "--name", $CliAppName,
+    "--version-file", $CliVersionFile,
     "--distpath", $CliDistDir,
     "--contents-directory", ".",
     "--workpath", (Join-Path $CliBuildDir "build"),
     "--specpath", $CliBuildDir,
     "--add-data", ((Join-Path $ProjectRoot 'src\garmin_data_hub\db\schema.sql') + ";garmin_data_hub/db"),
+    "--hidden-import", "garmin_givemydata",
+    "--collect-all", "garmin_client",
+    "--collect-all", "garmin_mcp",
+    "--collect-all", "seleniumbase",
     $CliBackupFile
 )
 
@@ -221,22 +336,11 @@ catch {
     exit 1
 }
 
-# Inject standalone helper tools into cli_backup_ingest directory
 $CliDir = Join-Path $CliDistDir $CliAppName
 if (-not (Test-Path $CliDir)) {
     Write-Host "[ERROR] CLI output directory not found at $CliDir" -ForegroundColor Red
     exit 1
 }
-
-# Bundle garmin-givemydata executable next to cli_backup_ingest.exe
-$srcGivemydata = $VenvGivemydataExe
-if (-not (Test-Path $srcGivemydata)) {
-    Write-Host "[ERROR] 'garmin-givemydata.exe' not found in venv at: $srcGivemydata" -ForegroundColor Red
-    Write-Host "        Fix with: $VenvPython -m pip install --upgrade --no-deps `"$GivemydataPypiSpec`"" -ForegroundColor Red
-    exit 1
-}
-Copy-Item -Path $srcGivemydata -Destination (Join-Path $CliDir $GarminSyncExeName) -Force
-Write-Host "  Copied standalone tool: $GarminSyncExeName -> $CliDir" -ForegroundColor Green
 
 Pop-Location
 
@@ -259,15 +363,7 @@ else {
     Write-Host "  [ERROR] NiceGUI application directory not found at $GuiAppDir" -ForegroundColor Red
 }
 
-# Also drop garmin-givemydata into the NiceGUI app folder for convenience
-$DestinationAppDir = Join-Path $ReleaseDir $GuiAppName
-$GarminSyncExePath = Join-Path $CliDir $GarminSyncExeName
-if (Test-Path $GarminSyncExePath) {
-    Copy-Item -Path $GarminSyncExePath -Destination $DestinationAppDir -Force
-    Write-Host "  Copied: $GarminSyncExeName into $DestinationAppDir" -ForegroundColor Green
-}
-
-# Copy CLI executable and its _internal directory
+# Copy the complete CLI directory; the GUI resolves it as a sibling in portable releases.
 if (Test-Path $CliDir) {
     Copy-Item -Path $CliDir -Destination $DestinationCliDir -Recurse -Force
     Write-Host "  Copied: $CliAppName (directory)" -ForegroundColor Green
@@ -293,25 +389,82 @@ if (-not (Test-Path $ExpectedCliExePath)) {
 Write-Host "  Verified release executable: $ExpectedGuiExePath" -ForegroundColor Green
 Write-Host "  Verified release executable: $ExpectedCliExePath" -ForegroundColor Green
 
-# --- SUMMARY ---
-Write-Host ""
-Write-Host "###################################################" -ForegroundColor Green
-Write-Host "# Build Pipeline Completed!                       #" -ForegroundColor Green
-Write-Host "###################################################"
-Write-Host ""
-Write-Host "garmin-givemydata package: $GivemydataPypiSpec" -ForegroundColor Cyan
-Write-Host "Release artifacts are in: $ReleaseDir" -ForegroundColor Cyan
-Get-ChildItem $ReleaseDir | ForEach-Object {
-    Write-Host "  - $($_.Name)"
+$ReleaseLicenseFile = Join-Path $ReleaseDir "LICENSE.txt"
+Copy-Item -LiteralPath $LicenseFile -Destination $ReleaseLicenseFile -Force
+Write-Host "  Copied: LICENSE.txt" -ForegroundColor Green
+
+$ReleaseNoticesFile = Join-Path $ReleaseDir "THIRD-PARTY-NOTICES.txt"
+Copy-Item -LiteralPath $ThirdPartyNoticesFile -Destination $ReleaseNoticesFile -Force
+Write-Host "  Copied: THIRD-PARTY-NOTICES.txt" -ForegroundColor Green
+
+$givemydataMetadataLines = & $VenvPython -c "import json
+from importlib.metadata import distribution
+d = distribution('garmin-givemydata')
+license_file = next(f for f in d.files if str(f).replace('\\', '/').endswith('licenses/LICENSE'))
+print(json.dumps({'version': d.version, 'license_file': str(d.locate_file(license_file))}))
+"
+if ($LASTEXITCODE -ne 0) {
+    throw "Could not locate the installed garmin-givemydata license."
 }
-Write-Host ""
-Write-Host "To run the application:"
-Write-Host "1. Open the '$($ReleaseDir)\$GuiAppName' directory."
-Write-Host "2. Run '$GuiAppName.exe'."
-Write-Host ""
-Write-Host "To run the CLI tool:"
-Write-Host "  '$($ReleaseDir)\$CliAppName\$CliAppName.exe'"
-Write-Host ""
+$givemydataMetadata = ($givemydataMetadataLines | Select-Object -Last 1) | ConvertFrom-Json
+if ([string]$givemydataMetadata.version -ne "0.1.12") {
+    throw "THIRD_PARTY_NOTICES.md is pinned to garmin-givemydata 0.1.12, but the build environment contains $($givemydataMetadata.version)."
+}
+$GivemydataLicenseFile = Join-Path $ReleaseDir "LICENSE-garmin-givemydata-AGPL-3.0.txt"
+Copy-Item -LiteralPath ([string]$givemydataMetadata.license_file) -Destination $GivemydataLicenseFile -Force
+Write-Host "  Copied: LICENSE-garmin-givemydata-AGPL-3.0.txt" -ForegroundColor Green
+
+Write-Host "  Creating corresponding-source archives..." -ForegroundColor Cyan
+$ReleaseSourceDir = Join-Path $ReleaseDir "source"
+New-Item -ItemType Directory -Path $ReleaseSourceDir -Force | Out-Null
+& $VenvPython -m pip download --no-deps "--no-binary=:all:" --dest $ReleaseSourceDir $GivemydataPypiSpec
+if ($LASTEXITCODE -ne 0) {
+    throw "Could not download the garmin-givemydata source distribution."
+}
+
+$SourceStageRoot = Join-Path $BuildDir "source_stage"
+$SourceSnapshotRoot = Join-Path $SourceStageRoot "GarminDataHub-$Version"
+New-Item -ItemType Directory -Path $SourceSnapshotRoot -Force | Out-Null
+$sourceFiles = & git -C $ProjectRoot ls-files --cached --others --exclude-standard
+if ($LASTEXITCODE -ne 0) {
+    throw "Could not enumerate the project source tree with git."
+}
+foreach ($relativePath in $sourceFiles) {
+    $sourcePath = Join-Path $ProjectRoot $relativePath
+    if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+        continue
+    }
+    $destinationPath = Join-Path $SourceSnapshotRoot $relativePath
+    $destinationParent = Split-Path -Parent $destinationPath
+    New-Item -ItemType Directory -Path $destinationParent -Force | Out-Null
+    Copy-Item -LiteralPath $sourcePath -Destination $destinationPath -Force
+}
+
+$sourceCommit = (& git -C $ProjectRoot rev-parse HEAD).Trim()
+$worktreeDirty = if ((& git -C $ProjectRoot status --short --untracked-files=all | Select-Object -First 1)) { "true" } else { "false" }
+$sourceInfoLines = @(
+    "Version: $Version",
+    "Commit: $sourceCommit",
+    "Worktree-Dirty-At-Build: $worktreeDirty",
+    "Generated-UTC: $([DateTime]::UtcNow.ToString('o'))"
+)
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+$SourceInfoFile = Join-Path $ReleaseDir "SOURCE-COMMIT.txt"
+[System.IO.File]::WriteAllLines($SourceInfoFile, $sourceInfoLines, $utf8NoBom)
+[System.IO.File]::WriteAllLines((Join-Path $SourceSnapshotRoot "SOURCE-COMMIT.txt"), $sourceInfoLines, $utf8NoBom)
+
+$SourceArchive = Join-Path $ReleaseDir "GarminDataHub-$Version-source.zip"
+Compress-Archive -Path $SourceSnapshotRoot -DestinationPath $SourceArchive -CompressionLevel Optimal -Force
+Write-Host "  Project source archive: $SourceArchive" -ForegroundColor Green
+
+Write-Host "  Smoke-testing packaged CLI entry points..." -ForegroundColor Cyan
+Invoke-PackagedSmokeTest -Executable $ExpectedCliExePath -Arguments @("--help")
+Invoke-PackagedSmokeTest -Executable $ExpectedCliExePath -Arguments @("--_run-bundled-givemydata", "--help")
+Write-Host "  Packaged CLI smoke tests passed." -ForegroundColor Green
+
+$PortableArchive = Join-Path $ReleaseDir "GarminDataHub-$Version-portable.zip"
+Compress-Archive -Path $DestinationAppDir, $DestinationCliDir, $ReleaseLicenseFile, $ReleaseNoticesFile, $GivemydataLicenseFile, $ReleaseSourceDir, $SourceArchive, $SourceInfoFile -DestinationPath $PortableArchive -CompressionLevel Optimal -Force
+Write-Host "  Portable archive: $PortableArchive" -ForegroundColor Green
 
 # --- BUILD INSTALLER ---
 Write-Host ""
@@ -319,42 +472,70 @@ Write-Host "---------------------------------------------------" -ForegroundColo
 Write-Host "Step 4: Building Installer" -ForegroundColor Cyan
 Write-Host "---------------------------------------------------"
 
-(Get-Content "packaging/installer/GarminDataHub.iss") -replace '#define MyAppVersion \".*\"', "#define MyAppVersion `"$version`"" | Set-Content "packaging/installer/GarminDataHub.iss"
-$IssScriptFile = Join-Path $ScriptDir "installer\GarminDataHub.iss"
-if (-not (Test-Path $IssScriptFile)) {
-    Write-Host "[WARNING] Inno Setup script not found at $IssScriptFile. Skipping installer build." -ForegroundColor Yellow
+$InstallerFile = $null
+$iscc = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+if ($null -eq $iscc) {
+    Write-Host "[WARNING] Inno Setup Compiler (ISCC.exe) not found in PATH; installer build skipped." -ForegroundColor Yellow
 }
 else {
-    $iscc = Get-Command ISCC.exe -ErrorAction SilentlyContinue
-    if ($null -eq $iscc) {
-        Write-Host "[WARNING] Inno Setup Compiler (ISCC.exe) not found in your PATH." -ForegroundColor Yellow
-        Write-Host "          Please install Inno Setup from https://jrsoftware.org and add it to your PATH to build the installer." -ForegroundColor Yellow
-        Write-Host "          Skipping installer build." -ForegroundColor Yellow
-    }
-    else {
-        Write-Host "Found Inno Setup Compiler: $($iscc.Source)"
-        Write-Host "Compiling installer..."
-        
-        # Define the source path for the installer files
-        $InstallerSourcePath = $ReleaseDir
-        
-        # Arguments for the Inno Setup compiler
-        $isccArgs = @(
-            "/Q", # Quiet mode
-            "/DSourcePath=`"$InstallerSourcePath`"",
-            $IssScriptFile
-        )
-        
-        try {
-            & $iscc.Source @isccArgs
-            if ($LASTEXITCODE -ne 0) { throw "Inno Setup compiler failed." }
-            Write-Host "[SUCCESS] Installer built successfully." -ForegroundColor Green
-            $InstallerFile = Join-Path $ReleaseDir "GarminDataHub-$Version-installer.exe"
-            Write-Host "Installer located at: $InstallerFile" -ForegroundColor Cyan
+    Write-Host "Found Inno Setup Compiler: $($iscc.Source)"
+    Write-Host "Compiling installer..."
+
+    $isccArgs = @(
+        "/Q",
+        "/DMyAppVersion=$Version",
+        "/DMyAppVersionNumeric=$InstallerNumericVersion",
+        "/DSourcePath=`"$ReleaseDir`"",
+        "/O`"$ReleaseDir`"",
+        $IssScriptFile
+    )
+
+    try {
+        & $iscc.Source @isccArgs
+        if ($LASTEXITCODE -ne 0) { throw "Inno Setup compiler failed." }
+        $InstallerFile = Join-Path $ReleaseDir "GarminDataHub-$Version-installer.exe"
+        if (-not (Test-Path -LiteralPath $InstallerFile -PathType Leaf)) {
+            throw "Expected installer was not created: $InstallerFile"
         }
-        catch {
-            Write-Host "[ERROR] Failed to build the installer." -ForegroundColor Red
-            Write-Host $_.Exception.Message -ForegroundColor Red
+        Write-Host "[SUCCESS] Installer built: $InstallerFile" -ForegroundColor Green
+
+        $signature = Get-AuthenticodeSignature -LiteralPath $InstallerFile
+        if ($signature.Status -ne "Valid") {
+            Write-Host "[WARNING] Installer is not Authenticode-signed; Windows SmartScreen may warn recipients." -ForegroundColor Yellow
         }
     }
+    catch {
+        Write-Host "[ERROR] Failed to build the installer." -ForegroundColor Red
+        throw
+    }
+}
+
+# --- CHECKSUMS AND SUMMARY ---
+$ChecksumTargets = @($PortableArchive, $SourceArchive)
+if ($null -ne $InstallerFile) {
+    $ChecksumTargets += $InstallerFile
+}
+$ChecksumTargets = $ChecksumTargets | Sort-Object { Split-Path -Leaf $_ }
+$ChecksumLines = foreach ($item in $ChecksumTargets) {
+    $hash = Get-FileHash -LiteralPath $item -Algorithm SHA256
+    "$($hash.Hash.ToLowerInvariant()) *$(Split-Path -Leaf $item)"
+}
+$ChecksumFile = Join-Path $ReleaseDir "SHA256SUMS.txt"
+[System.IO.File]::WriteAllLines($ChecksumFile, $ChecksumLines, $utf8NoBom)
+
+Write-Host ""
+Write-Host "###################################################" -ForegroundColor Green
+Write-Host "# Build Pipeline Completed!                       #" -ForegroundColor Green
+Write-Host "###################################################"
+Write-Host ""
+Write-Host "garmin-givemydata package: $GivemydataPypiSpec" -ForegroundColor Cyan
+Write-Host "Release artifacts are in: $ReleaseDir" -ForegroundColor Cyan
+Get-ChildItem -LiteralPath $ReleaseDir | ForEach-Object {
+    Write-Host "  - $($_.Name)"
+}
+Write-Host "SHA-256 checksums: $ChecksumFile" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "Portable app: extract the complete archive and run '$GuiAppName\$GuiAppName.exe'."
+if ($null -ne $InstallerFile) {
+    Write-Host "Installer: '$InstallerFile'"
 }

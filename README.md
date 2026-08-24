@@ -4,7 +4,7 @@ A local Garmin analytics desktop app built on **SQLite + NiceGUI**.
 
 The project syncs Garmin data using `garmin-givemydata`, applies app-specific schema extensions, ingests FIT trackpoints, and refreshes cached derived metrics used across the UI.
 
-> Garmin Connect download support in this project is powered by the open-source [`garmin-givemydata`](https://github.com/pe-st/garmin-givemydata) project. Garmin is not affiliated with or endorsing this application.
+> Garmin Connect download support in this project is powered by the open-source [`garmin-givemydata`](https://github.com/nrvim/garmin-givemydata) project. Garmin is not affiliated with or endorsing this application.
 
 ## Current Architecture
 
@@ -16,7 +16,8 @@ The project syncs Garmin data using `garmin-givemydata`, applies app-specific sc
 
 ## Main Capabilities
 
-- Garmin Connect sync via visible browser login flow
+- Garmin Connect login on the Sync page, optional Windows Credential Manager
+  storage, and visible-browser MFA
 - Incremental FIT trackpoint ingestion into `activity_trackpoint`
 - Activity analysis with map and detail views
 - Derived metrics including HR zones, TRIMP/TSS, FTP estimates, and power zones
@@ -164,6 +165,8 @@ garmin-data-hub
 NiceGUI opens in a native Windows window and uses the active database by default.
 Use `--browser` for a normal browser window or `--sandbox` to copy the active
 database to `%LOCALAPPDATA%\GarminDataHub\nicegui-preview\garmin-preview.db`.
+Browser mode remains bound to `127.0.0.1`; this desktop app is not exposed as a
+remote web service.
 
 ```powershell
 garmin-data-hub --sandbox
@@ -178,19 +181,46 @@ database changes, and explicit acknowledgement remain mandatory.
 ### Sync CLI
 
 ```powershell
-garmin-sync --visible --chrome
+garmin-sync --visible
 ```
 
 or:
 
 ```powershell
-python -m garmin_data_hub.cli_backup_ingest --visible --chrome
+python -m garmin_data_hub.cli_backup_ingest --visible
 ```
 
 Helpful sync options:
 
 - `--days <N>` — limit sync window
 - `--db <path>` — use a custom SQLite path
+
+### Garmin Login and MFA
+
+The Garmin Sync page accepts a Garmin Connect email and password. With
+**Remember on this Windows account** selected, the app saves the login in
+Windows Credential Manager for the current Windows user. A saved password is
+resolved locally by the application and is never filled back into the page. **Save
+login** stores the entered values without starting a sync; **Run sync** also
+saves a newly entered login when Remember is selected.
+
+Click **Run sync** to launch the existing visible Chrome login flow. If Garmin
+requests MFA, enter the code in that Chrome window; the sync continues after
+Garmin accepts it. Garmin Data Hub does not collect or save the MFA code.
+
+Choose **Forget saved login** to remove the saved email/password credential.
+This does not remove the separate Garmin browser profile or revoke an already
+active Garmin session. It also does not delete a legacy plaintext
+`%LOCALAPPDATA%\GarminDataHub\.env` created by direct CLI use. Credentials are
+passed to the sync helper through its process environment, not through
+command-line arguments or sync logs.
+
+Clearing **Remember on this Windows account** means the password is not saved
+in Windows Credential Manager; Garmin's own browser session can still persist.
+An existing Garmin session can take precedence over newly entered credentials.
+Use the confirmed **Reset browser login** action to remove the local browser
+profile and session-cookie backup before a fresh sign-in. Use a separate
+database when changing Garmin accounts so activity data is not mixed.
 
 ## Tests
 
@@ -210,10 +240,12 @@ python -m pytest tests/test_sync_progress.py tests/test_metrics_refresh.py
 
 The Windows packaging pipeline lives in `packaging/build.ps1`.
 
+Install its pinned build toolchain with `.venv\Scripts\python.exe -m pip install -e ".[dev]"`.
+
 Example build command:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 0.1.0
+powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 1.0.0
 ```
 
 `garmin-givemydata` packaging behavior:
@@ -224,20 +256,26 @@ powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 0.1.0
 Examples:
 
 ```powershell
-# Default (upgrades PyPI package in .venv)
-powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 0.1.0
+# Reproducible release build
+powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 1.0.0 -GivemydataPypiSpec "garmin-givemydata==0.1.12"
 
-# PyPI with explicit version
-powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 0.1.0 -GivemydataPypiSpec "garmin-givemydata==0.1.10"
+# Validate the already-installed upstream version without updating it
+powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 1.0.0 -SkipGivemydataUpdate
 ```
 
 It will:
 
 - build the NiceGUI desktop app directory (`GarminDataHub`)
 - build the CLI directory (`cli_backup_ingest`)
-- bundle `garmin-givemydata.exe` from project `.venv` with the release artifacts
+- bundle the `garmin-givemydata` runtime inside the frozen sync CLI
 - copy outputs under `release/<version>/`
+- build a complete portable ZIP, corresponding-source archives, and SHA-256 checksums
 - optionally build the installer via Inno Setup when available
+
+Distribute `GarminDataHub-<version>-installer.exe` or the complete portable ZIP,
+not an individual executable. Public binary releases include AGPL-covered
+`garmin-givemydata` code; retain the bundled license, notices, and corresponding
+source files.
 
 ## Project Requirements
 

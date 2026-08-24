@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import date, timedelta
 from pathlib import Path
-import time
 
 import pytest
 
@@ -13,6 +13,9 @@ from garmin_data_hub.paths import schema_sql_path
 from garmin_data_hub.services.codex_plan_generator import CodexCliCancelledError
 from garmin_data_hub.services.plan_persistence import save_plan_setting
 from garmin_data_hub.ui_nicegui import workspace
+
+
+TEST_PLAN_DATE = date.today().isoformat()
 
 
 def _database(tmp_path: Path, *, name: str = "source.db") -> Path:
@@ -30,8 +33,8 @@ def _database(tmp_path: Path, *, name: str = "source.db") -> Path:
         "plan_run_days": 4,
         "plan_long_run_day": "Saturday",
         "plan_sodium": 700,
-        "plan_start_date": "2026-08-23",
-        "plan_event_date": "2026-08-23",
+        "plan_start_date": TEST_PLAN_DATE,
+        "plan_event_date": TEST_PLAN_DATE,
     }.items():
         save_plan_setting(db_path, key, value)
     return db_path
@@ -168,7 +171,7 @@ def test_review_diff_detects_metric_changes_with_same_workout_name(tmp_path):
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                "2026-08-23",
+                TEST_PLAN_DATE,
                 "10K Race",
                 "Race by effort.",
                 10_000,

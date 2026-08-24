@@ -6,7 +6,7 @@ from garmin_data_hub.services.sync_status import (
 
 
 SAMPLE_RUNNING_LOG = """
-Started: python cli_backup_ingest.py --db garmin.db --visible --chrome
+Started: python cli_backup_ingest.py --db garmin.db --visible
 ============================================================
 Garmin Data Sync  (garmin-givemydata)
 ============================================================

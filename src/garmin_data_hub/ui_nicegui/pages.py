@@ -14,12 +14,22 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 from garmin_data_hub.mcp_sidecar_client import call_tool_via_sidecar
+from garmin_data_hub.services.garmin_auth_session import BrowserSessionResetError
 from garmin_data_hub.services.athlete_metrics_service import (
     calculate_metrics_from_db_sources,
     clear_override_metrics,
     get_athlete_metrics,
     set_calculated_metrics,
     set_override_metrics,
+)
+from garmin_data_hub.services.garmin_credentials import (
+    CredentialStoreError,
+    CredentialStoreUnavailable,
+    GarminCredentials,
+    credential_status,
+    delete_credentials,
+    load_credentials,
+    save_credentials,
 )
 from garmin_data_hub.ui_nicegui.data import (
     INTERFACE_SETTING_DEFAULTS,
@@ -54,6 +64,48 @@ def _notify_error(message: object) -> None:
     from nicegui import ui
 
     ui.notify(str(message), type="negative", multi_line=True, close_button=True)
+
+
+def _sync_controls_for_state(state: str) -> tuple[bool, bool, bool]:
+    """Return enabled states for Run, Stop, and Clear sync controls."""
+    if state == "running":
+        return False, True, False
+    if state in {"cancelling", "resetting_login"}:
+        return False, False, False
+    return True, False, True
+
+
+def _resolve_sync_credentials(
+    email: object,
+    password: object,
+    saved: GarminCredentials | None,
+) -> tuple[GarminCredentials, bool]:
+    """Resolve entered or saved credentials without exposing the saved password."""
+    entered_email = str(email or "").strip()
+    entered_password = str(password or "")
+    if entered_password:
+        return GarminCredentials(entered_email, entered_password), True
+    if saved is None:
+        if entered_email:
+            raise ValueError("Enter your Garmin Connect password")
+        raise ValueError("Enter your Garmin Connect email and password")
+    if entered_email and entered_email.casefold() != saved.email.casefold():
+        raise ValueError("Enter the password for the Garmin Connect email shown")
+    return saved, False
+
+
+def _sync_waiting_for_mfa(log: str) -> bool:
+    """Return whether the latest login event is an unresolved MFA prompt."""
+    normalized = str(log or "").casefold()
+    mfa_marker = max(
+        normalized.rfind("mfa required"),
+        normalized.rfind("still waiting for mfa"),
+    )
+    login_result = max(
+        normalized.rfind("login successful"),
+        normalized.rfind("login failed"),
+    )
+    return mfa_marker >= 0 and mfa_marker > login_result
 
 
 def _distance_rows(
@@ -544,9 +596,115 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
         render_shell("Garmin Sync", db_path, sandboxed=sandboxed)
         job = get_sync_job(db_path)
         preferences = interface_settings(db_path)
-        state = {"handled": "idle"}
+        credential_store_available = True
+        credential_problem: str | None = None
+        try:
+            saved_status = credential_status()
+        except CredentialStoreUnavailable as exc:
+            credential_store_available = False
+            credential_problem = str(exc)
+            saved_email = None
+            credential_backend = "Windows Credential Manager"
+        except CredentialStoreError as exc:
+            credential_problem = str(exc)
+            saved_email = None
+            credential_backend = "Windows Credential Manager"
+        else:
+            saved_email = saved_status.email
+            credential_backend = saved_status.backend_name
+        legacy_env_path = db_path.parent / ".env"
+        state = {
+            "handled": "idle",
+            "handled_error": None,
+            "saved_email": saved_email,
+            "credential_problem": credential_problem,
+            "credential_may_exist": bool(saved_email)
+            or bool(credential_problem and credential_store_available),
+            "resetting_browser": False,
+        }
         with ui.column().classes("gdh-page"):
-            page_heading("Garmin Sync", "Run garmin-givemydata without blocking navigation and monitor its local log.")
+            page_heading(
+                "Garmin Sync",
+                "Sign in securely, complete Garmin MFA in Chrome when requested, and monitor the local sync log.",
+            )
+            with ui.card().classes("gdh-card w-full"):
+                ui.label("Garmin Connect login").classes("text-lg font-semibold")
+                ui.label(
+                    "A saved password is never filled back into this page or added "
+                    "to the sync command or log."
+                ).classes("text-grey-7")
+                with ui.row().classes("w-full items-end gap-3 flex-wrap"):
+                    email = (
+                        ui.input(
+                            "Garmin Connect email",
+                            value=str(saved_email or ""),
+                        )
+                        .props("outlined")
+                        .classes("w-80 max-w-full")
+                    )
+                    password = (
+                        ui.input(
+                            "Garmin Connect password",
+                            password=True,
+                            password_toggle_button=True,
+                        )
+                        .props("outlined")
+                        .classes("w-80 max-w-full")
+                    )
+                with ui.row().classes("w-full items-center gap-3 flex-wrap"):
+                    remember = ui.checkbox(
+                        "Remember on this Windows account",
+                        value=credential_store_available,
+                    )
+                    save_login_button = ui.button(
+                        "Save login",
+                        icon="key",
+                    ).props("outline")
+                    forget_login_button = ui.button(
+                        "Forget saved login",
+                        icon="delete_outline",
+                    ).props("outline color=negative")
+                    reset_browser_button = ui.button(
+                        "Reset browser login",
+                        icon="restart_alt",
+                    ).props("outline")
+                credential_label = ui.label().classes("font-medium")
+                ui.label(
+                    "Clearing Remember prevents password storage in Windows "
+                    "Credential Manager, but Garmin's browser session can still persist."
+                ).classes("text-grey-7")
+                ui.label(
+                    "When Garmin requests MFA, enter the code in the Chrome window that opens. Sync resumes automatically."
+                ).classes("text-grey-7")
+                ui.label(
+                    "An existing Garmin browser session can take precedence over "
+                    "new credentials. Reset browser login to force a fresh sign-in; "
+                    "use a separate database when changing Garmin accounts."
+                ).classes("text-amber-9")
+                if legacy_env_path.is_file():
+                    ui.label(
+                        f"Legacy plaintext credentials were found in {legacy_env_path}. "
+                        "Credential Manager values take precedence for GUI syncs; remove the .env file after confirming the saved login works."
+                    ).classes("text-amber-9")
+                with ui.dialog() as reset_browser_dialog, ui.card():
+                    ui.label("Reset Garmin browser login?").classes(
+                        "text-lg font-semibold"
+                    )
+                    ui.label(
+                        "This removes Garmin's local browser profile and session "
+                        "cookie backup. It keeps your Windows credential and Garmin "
+                        "database. The next sync will perform a fresh sign-in; Garmin "
+                        "may request MFA. Use a separate database for another account."
+                    ).classes("max-w-lg")
+                    with ui.row().classes("w-full justify-end gap-2"):
+                        ui.button(
+                            "Cancel",
+                            on_click=lambda: reset_browser_dialog.submit(False),
+                        ).props("flat")
+                        ui.button(
+                            "Reset browser login",
+                            on_click=lambda: reset_browser_dialog.submit(True),
+                        ).props("color=negative")
             data = dashboard_data(db_path)
             diagnostics = data["diagnostics"]
             with ui.row().classes("w-full gap-3 flex-wrap"):
@@ -565,22 +723,175 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                 progress = ui.linear_progress(value=0).classes("w-full")
                 log = ui.textarea("Sync log", value="").props("outlined readonly").classes("w-full").style("height: 28rem")
 
-            def start_sync() -> None:
+            def refresh_credential_controls(*, enabled: bool = True) -> None:
+                enabled = enabled and not bool(state["resetting_browser"])
+                email.set_enabled(enabled)
+                password.set_enabled(enabled)
+                remember.set_enabled(enabled and credential_store_available)
+                save_login_button.set_enabled(
+                    enabled and credential_store_available
+                )
+                forget_login_button.set_enabled(
+                    enabled
+                    and credential_store_available
+                    and bool(state["credential_may_exist"])
+                )
+                reset_browser_button.set_enabled(enabled)
+
+            def refresh_credential_label() -> None:
+                if state["saved_email"]:
+                    credential_label.text = (
+                        f"Saved securely in {credential_backend} for "
+                        f"{state['saved_email']}."
+                    )
+                elif state["credential_problem"]:
+                    if credential_store_available:
+                        credential_label.text = (
+                            "Could not read the saved Garmin login: "
+                            f"{state['credential_problem']}. Enter a complete login "
+                            "to replace it or choose Forget saved login."
+                        )
+                    else:
+                        credential_label.text = (
+                            f"Secure storage unavailable: {state['credential_problem']}. "
+                            "Credentials can still be used once without being saved."
+                        )
+                else:
+                    credential_label.text = (
+                        f"No Garmin login is saved in {credential_backend}."
+                    )
+
+            def save_login() -> None:
+                if not credential_store_available:
+                    _notify_error(
+                        state["credential_problem"]
+                        or "Windows Credential Manager is unavailable"
+                    )
+                    return
                 try:
-                    job.start(days=int(days.value or 0))
-                except (OSError, RuntimeError, ValueError) as exc:
+                    credentials = save_credentials(
+                        str(email.value or ""),
+                        str(password.value or ""),
+                    )
+                except (CredentialStoreError, ValueError) as exc:
                     _notify_error(exc)
                     return
+                state["saved_email"] = credentials.email
+                state["credential_problem"] = None
+                state["credential_may_exist"] = True
+                email.value = credentials.email
+                password.value = ""
+                refresh_credential_label()
+                refresh_credential_controls()
+                ui.notify(
+                    "Garmin login saved securely for this Windows account.",
+                    type="positive",
+                )
+
+            def forget_login() -> None:
+                try:
+                    removed = delete_credentials()
+                except CredentialStoreError as exc:
+                    _notify_error(exc)
+                    return
+                state["saved_email"] = None
+                state["credential_problem"] = None
+                state["credential_may_exist"] = False
+                password.value = ""
+                refresh_credential_label()
+                refresh_credential_controls()
+                message = (
+                    "Saved Garmin login removed. Browser session data was left unchanged."
+                    if removed
+                    else "No saved Garmin login was found."
+                )
+                ui.notify(message, type="info")
+
+            async def reset_browser_login() -> None:
+                if job.snapshot().state in {"running", "cancelling"}:
+                    _notify_error("Stop Garmin sync before resetting its browser login")
+                    return
+                if not await reset_browser_dialog:
+                    return
+                if job.snapshot().state in {"running", "cancelling"}:
+                    _notify_error("Garmin sync started; stop it before resetting login")
+                    return
+                state["resetting_browser"] = True
+                start_button.disable()
+                refresh_credential_controls(enabled=False)
+                try:
+                    result = await run.io_bound(
+                        job.reset_browser_session,
+                    )
+                except (BrowserSessionResetError, RuntimeError) as exc:
+                    _notify_error(exc)
+                else:
+                    message = (
+                        "Garmin browser login reset. The next sync will perform a fresh sign-in."
+                        if result.removed_anything
+                        else "No saved Garmin browser login was found."
+                    )
+                    ui.notify(message, type="positive")
+                finally:
+                    state["resetting_browser"] = False
+                    poll_sync()
+
+            def start_sync() -> None:
+                saved_credentials = None
+                try:
+                    if not str(password.value or "") and credential_store_available:
+                        saved_credentials = load_credentials()
+                    credentials, entered = _resolve_sync_credentials(
+                        email.value,
+                        password.value,
+                        saved_credentials,
+                    )
+                    if entered and bool(remember.value):
+                        if not credential_store_available:
+                            raise CredentialStoreUnavailable(
+                                "Windows Credential Manager is unavailable; "
+                                "clear Remember to use these credentials once"
+                            )
+                        credentials = save_credentials(
+                            credentials.email,
+                            credentials.password,
+                        )
+                        state["saved_email"] = credentials.email
+                        state["credential_problem"] = None
+                        state["credential_may_exist"] = True
+                        email.value = credentials.email
+                        refresh_credential_label()
+                    job.start(
+                        days=int(days.value or 0),
+                        credentials=credentials,
+                    )
+                except (
+                    CredentialStoreError,
+                    OSError,
+                    RuntimeError,
+                    ValueError,
+                ) as exc:
+                    _notify_error(exc)
+                    return
+                password.value = ""
                 state["handled"] = "running"
+                state["handled_error"] = None
                 start_button.disable()
                 stop_button.enable()
                 clear_button.disable()
+                refresh_credential_controls(enabled=False)
+                ui.notify(
+                    "Garmin login window is opening. Complete MFA there if requested.",
+                    type="info",
+                )
 
             def stop_sync() -> None:
                 try:
                     if job.cancel():
-                        status.text = "Sync cancelled."
-                except (OSError, subprocess.SubprocessError) as exc:
+                        state["handled_error"] = None
+                        status.text = "Cancelling sync..."
+                        stop_button.disable()
+                except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
                     _notify_error(exc)
 
             def clear_sync_log() -> None:
@@ -606,27 +917,63 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
             stop_button.on("click", stop_sync)
             clear_button.on("click", clear_sync_log)
             repair_button.on("click", repair)
+            save_login_button.on("click", save_login)
+            forget_login_button.on("click", forget_login)
+            reset_browser_button.on("click", reset_browser_login)
 
             def poll_sync() -> None:
                 snapshot = job.snapshot()
                 progress.value = snapshot.progress
                 minutes, seconds = divmod(int(snapshot.elapsed_seconds), 60)
-                status.text = f"{snapshot.state.title()} - {minutes}:{seconds:02d}"
+                if snapshot.state == "resetting_login":
+                    status.text = "Resetting browser login..."
+                elif snapshot.state == "running" and _sync_waiting_for_mfa(
+                    snapshot.log
+                ):
+                    status.text = "Waiting for Garmin MFA in Chrome..."
+                else:
+                    status.text = (
+                        f"{snapshot.state.title()} - {minutes}:{seconds:02d}"
+                    )
+                start_enabled, stop_enabled, clear_enabled = (
+                    _sync_controls_for_state(snapshot.state)
+                )
+                start_button.set_enabled(
+                    start_enabled and not bool(state["resetting_browser"])
+                )
+                stop_button.set_enabled(stop_enabled)
+                clear_button.set_enabled(clear_enabled)
+                refresh_credential_controls(
+                    enabled=snapshot.state
+                    not in {"running", "cancelling", "resetting_login"}
+                )
                 if log.value != snapshot.log:
                     log.value = snapshot.log
-                if snapshot.state == "running":
+                if (
+                    snapshot.state == "running"
+                    and snapshot.error
+                    and state["handled_error"] != snapshot.error
+                ):
+                    state["handled_error"] = snapshot.error
+                    _notify_error(snapshot.error)
+                if snapshot.state in {
+                    "running",
+                    "cancelling",
+                    "resetting_login",
+                }:
                     return
                 if state["handled"] == snapshot.state:
                     return
                 state["handled"] = snapshot.state
-                start_button.enable()
-                stop_button.disable()
-                clear_button.enable()
                 if snapshot.state == "completed":
                     ui.notify("Garmin sync completed successfully.", type="positive")
                 elif snapshot.state == "failed":
                     _notify_error(snapshot.error or f"Sync exited with {snapshot.return_code}")
+                elif snapshot.state == "cancelled":
+                    ui.notify("Garmin sync stopped.", type="info")
 
+            refresh_credential_label()
+            poll_sync()
             ui.timer(1.0, poll_sync)
 
     @ui.page("/query")

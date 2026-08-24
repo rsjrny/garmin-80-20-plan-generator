@@ -9,8 +9,11 @@ import pytest
 from garmin_data_hub.db.migrate import apply_schema
 from garmin_data_hub.db.sqlite import connect_sqlite
 from garmin_data_hub.paths import schema_sql_path
+from garmin_data_hub.services.garmin_credentials import GarminCredentials
 from garmin_data_hub.services.plan_persistence import save_plan_setting
+from garmin_data_hub.ui_nicegui import data as nicegui_data
 from garmin_data_hub.ui_nicegui.data import (
+    SyncJob,
     activity_detail,
     activity_sports,
     compliance_data,
@@ -224,6 +227,55 @@ def test_sync_controller_survives_page_navigation(tmp_path):
     db_path = _database(tmp_path)
 
     assert get_sync_job(db_path) is get_sync_job(db_path)
+
+
+def test_sync_command_does_not_pass_legacy_chrome_flag(tmp_path):
+    command = SyncJob(tmp_path / "garmin.db")._command(days=30)
+
+    assert "--visible" in command
+    assert "--chrome" not in command
+
+
+def test_sync_credentials_are_passed_only_in_child_environment(
+    monkeypatch, tmp_path
+):
+    recorded: dict[str, object] = {}
+
+    class FakeProcess:
+        pid = 43210
+
+        @staticmethod
+        def poll():
+            return None
+
+    class FakeProcessTree:
+        warning = None
+
+    def fake_popen(command, **kwargs):
+        recorded["command"] = command
+        recorded["kwargs"] = kwargs
+        return FakeProcess()
+
+    job = SyncJob(tmp_path / "garmin.db")
+    monkeypatch.setattr(job, "_command", lambda _days: ["sync-helper", "--visible"])
+    monkeypatch.setattr(nicegui_data.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        nicegui_data,
+        "attach_process_tree",
+        lambda _process: FakeProcessTree(),
+    )
+    monkeypatch.setattr(job, "_start_monitor_locked", lambda *_args: None)
+
+    credentials = GarminCredentials("athlete@example.com", "super-secret")
+    job.start(days=30, credentials=credentials)
+
+    assert recorded["command"] == ["sync-helper", "--visible"]
+    kwargs = recorded["kwargs"]
+    assert kwargs["env"]["GARMIN_EMAIL"] == "athlete@example.com"
+    assert kwargs["env"]["GARMIN_PASSWORD"] == "super-secret"
+    assert kwargs["stdin"] is nicegui_data.subprocess.DEVNULL
+    assert "super-secret" not in job.log_path.read_text(encoding="utf-8")
+    assert "athlete@example.com" not in job.log_path.read_text(encoding="utf-8")
 
 
 def test_accepted_macro_schedule_is_available_on_plan_page(tmp_path):

@@ -6,6 +6,9 @@ import argparse
 from pathlib import Path
 from typing import Any
 
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+
 from garmin_data_hub.db.migrate import apply_schema
 from garmin_data_hub.db.sqlite import connect_sqlite
 from garmin_data_hub.paths import default_db_path, schema_sql_path
@@ -14,6 +17,9 @@ from garmin_data_hub.services.plan_persistence import (
     PlanPersistenceError,
     StalePlanWriteError,
 )
+from garmin_data_hub.ui_nicegui.data import cancel_all_sync_jobs
+from garmin_data_hub.ui_nicegui.layout import render_shell
+from garmin_data_hub.ui_nicegui.pages import register_core_pages
 from garmin_data_hub.ui_nicegui.workspace import (
     GenerationJob,
     ProposalReview,
@@ -31,8 +37,31 @@ from garmin_data_hub.ui_nicegui.workspace import (
     save_workspace_prompt,
     validate_workspace_context,
 )
-from garmin_data_hub.ui_nicegui.layout import render_shell
-from garmin_data_hub.ui_nicegui.pages import register_core_pages
+
+
+class _LocalSecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Prevent browser embedding and common content-type confusion attacks."""
+
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        response.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        return response
+
+
+def _configure_local_web_security(app: Any, core: Any, *, port: int) -> None:
+    """Restrict the local desktop server's hosts, origins, and framing."""
+    app.add_middleware(
+        TrustedHostMiddleware,
+        allowed_hosts=["127.0.0.1", "localhost"],
+    )
+    app.add_middleware(_LocalSecurityHeadersMiddleware)
+    core.sio.eio.cors_allowed_origins = [
+        f"http://127.0.0.1:{port}",
+        f"http://localhost:{port}",
+    ]
 
 
 def _workout_rows(review: ProposalReview) -> list[dict[str, Any]]:
@@ -493,16 +522,19 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     try:
-        from nicegui import ui
+        from nicegui import app, core, ui
     except ImportError as exc:  # pragma: no cover - environment guidance
         raise SystemExit(
             "NiceGUI is not installed. Run: pip install -e .[nicegui]"
         ) from exc
 
     db_path, sandboxed = _prepare_database(args)
+    _configure_local_web_security(app, core, port=args.port)
     create_ui(db_path, sandboxed=sandboxed)
+    app.on_shutdown(cancel_all_sync_jobs)
     ui.run(
         title="Garmin Data Hub",
+        host="127.0.0.1",
         native=not args.browser,
         reload=False,
         port=args.port,
