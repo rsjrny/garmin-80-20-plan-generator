@@ -34,6 +34,7 @@ $VenvPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
 $IssScriptFile = Join-Path $ScriptDir "installer\GarminDataHub.iss"
 $LicenseFile = Join-Path $ProjectRoot "LICENSE"
 $ThirdPartyNoticesFile = Join-Path $ProjectRoot "THIRD_PARTY_NOTICES.md"
+$SetupUsageFile = Join-Path $ProjectRoot "SETUP_AND_USAGE.txt"
 
 function Update-PyProjectVersion {
     param(
@@ -202,6 +203,9 @@ if hooks_version < Version('2026.3'):
     }
     if (-not (Test-Path -LiteralPath $ThirdPartyNoticesFile -PathType Leaf)) {
         throw "Third-party notices file not found: $ThirdPartyNoticesFile"
+    }
+    if (-not (Test-Path -LiteralPath $SetupUsageFile -PathType Leaf)) {
+        throw "Setup and usage guide not found: $SetupUsageFile"
     }
 }
 
@@ -397,6 +401,10 @@ $ReleaseNoticesFile = Join-Path $ReleaseDir "THIRD-PARTY-NOTICES.txt"
 Copy-Item -LiteralPath $ThirdPartyNoticesFile -Destination $ReleaseNoticesFile -Force
 Write-Host "  Copied: THIRD-PARTY-NOTICES.txt" -ForegroundColor Green
 
+$ReleaseSetupUsageFile = Join-Path $ReleaseDir "SETUP_AND_USAGE.txt"
+Copy-Item -LiteralPath $SetupUsageFile -Destination $ReleaseSetupUsageFile -Force
+Write-Host "  Copied: SETUP_AND_USAGE.txt" -ForegroundColor Green
+
 $givemydataMetadataLines = & $VenvPython -c "import json
 from importlib.metadata import distribution
 d = distribution('garmin-givemydata')
@@ -463,7 +471,7 @@ Invoke-PackagedSmokeTest -Executable $ExpectedCliExePath -Arguments @("--_run-bu
 Write-Host "  Packaged CLI smoke tests passed." -ForegroundColor Green
 
 $PortableArchive = Join-Path $ReleaseDir "GarminDataHub-$Version-portable.zip"
-Compress-Archive -Path $DestinationAppDir, $DestinationCliDir, $ReleaseLicenseFile, $ReleaseNoticesFile, $GivemydataLicenseFile, $ReleaseSourceDir, $SourceArchive, $SourceInfoFile -DestinationPath $PortableArchive -CompressionLevel Optimal -Force
+Compress-Archive -Path $DestinationAppDir, $DestinationCliDir, $ReleaseLicenseFile, $ReleaseNoticesFile, $ReleaseSetupUsageFile, $GivemydataLicenseFile, $ReleaseSourceDir, $SourceArchive, $SourceInfoFile -DestinationPath $PortableArchive -CompressionLevel Optimal -Force
 Write-Host "  Portable archive: $PortableArchive" -ForegroundColor Green
 
 # --- BUILD INSTALLER ---

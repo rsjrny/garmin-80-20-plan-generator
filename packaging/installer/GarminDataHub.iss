@@ -58,6 +58,7 @@ Source: "{#SourcePath}\GarminDataHub\*"; DestDir: "{app}"; Flags: ignoreversion 
 Source: "{#SourcePath}\cli_backup_ingest\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourcePath}\LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourcePath}\THIRD-PARTY-NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourcePath}\SETUP_AND_USAGE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourcePath}\LICENSE-garmin-givemydata-AGPL-3.0.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourcePath}\GarminDataHub-{#MyAppVersion}-source.zip"; DestDir: "{app}\source"; Flags: ignoreversion
 Source: "{#SourcePath}\SOURCE-COMMIT.txt"; DestDir: "{app}\source"; Flags: ignoreversion
@@ -69,5 +70,5 @@ Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent runasoriginaluser
 

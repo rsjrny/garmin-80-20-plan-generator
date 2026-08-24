@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -172,12 +173,82 @@ def test_plan_configuration_persists_for_codex_workspace(tmp_path):
         "sodium_mg_per_hour": 750,
         "plan_start": "2026-08-23",
         "event_date": "2026-10-18",
+        "output_directory": str(tmp_path / "exports"),
+        "output_filename": "autumn-20.xlsx",
     }
 
     save_planning_settings(db_path, values)
     saved = planning_settings(db_path)
 
     assert {key: saved[key] for key in values} == values
+
+
+@pytest.mark.parametrize(
+    "output_filename",
+    ["", "plan.xls", "nested/plan.xlsx", r"nested\plan.xlsx"],
+)
+def test_planning_settings_reject_invalid_workbook_filename(
+    tmp_path, output_filename
+):
+    db_path = _database(tmp_path)
+    values = {
+        "athlete_name": "Runner",
+        "age": 48,
+        "distance": "10K",
+        "event_name": "Autumn 10K",
+        "run_days_per_week": 5,
+        "long_run_day": "Sunday",
+        "sodium_mg_per_hour": 750,
+        "plan_start": "2026-08-23",
+        "event_date": "2026-10-18",
+        "output_directory": str(tmp_path),
+        "output_filename": output_filename,
+    }
+
+    with pytest.raises(ValueError, match="Workbook filename"):
+        save_planning_settings(db_path, values)
+
+
+def test_planning_settings_roll_back_as_one_transaction(tmp_path):
+    db_path = _database(tmp_path)
+    conn = connect_sqlite(db_path)
+    try:
+        conn.execute(
+            """
+            CREATE TRIGGER reject_plan_distance_setting
+            BEFORE INSERT ON app_settings
+            WHEN NEW.key = 'plan_distance'
+            BEGIN
+                SELECT RAISE(ABORT, 'settings failure');
+            END
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    values = {
+        "athlete_name": "Runner",
+        "age": 48,
+        "distance": "10K",
+        "event_name": "Autumn 10K",
+        "run_days_per_week": 5,
+        "long_run_day": "Sunday",
+        "sodium_mg_per_hour": 750,
+        "plan_start": "2026-08-23",
+        "event_date": "2026-10-18",
+    }
+
+    with pytest.raises(sqlite3.IntegrityError, match="settings failure"):
+        save_planning_settings(db_path, values)
+
+    conn = connect_sqlite(db_path)
+    try:
+        saved_count = conn.execute(
+            "SELECT COUNT(*) FROM app_settings WHERE key LIKE 'plan_%'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert saved_count == 0
 
 
 def test_interface_settings_persist_and_convert_distance_units(tmp_path):

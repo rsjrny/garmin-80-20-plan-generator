@@ -61,3 +61,9 @@
 	- [x] **Cutover decision**
 		- [x] Compare startup, packaging size, responsiveness, and workflow parity (all 10 Streamlit-free packaged routes healthy; Windows distribution 263.5 MB).
 		- [x] User approved NiceGUI replacement on 2026-08-23; NiceGUI is the sole source and packaged interface, and the legacy implementation was removed after a rollback commit.
+
+- [x] **Delivery prerequisite bootstrap complete (2026-08-24): install Node.js/npm and Codex CLI when missing.**
+	- [x] On first use of Codex Coach, detect existing Node.js, npm, and Codex CLI installations without replacing working versions.
+	- [x] With explicit user consent, install Node.js LTS (including npm) through WinGet and then install `@openai/codex` through npm only when required.
+	- [x] Verify the installed commands, launch the official Codex sign-in flow, and show clear manual recovery guidance for installation or authentication failures.
+	- [x] Keep setup asynchronous and covered by mocked failure-path, security, packaging, and full-suite tests (184 passed on 2026-08-24).

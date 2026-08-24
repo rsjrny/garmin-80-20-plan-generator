@@ -645,3 +645,112 @@ def test_save_imported_plan_rolls_back_delete_when_an_insert_fails(tmp_path):
         )
     finally:
         conn.close()
+
+
+def test_save_generated_plan_rolls_back_cache_delete_and_partial_inserts(tmp_path):
+    db_path = tmp_path / "garmin.db"
+    _create_db(db_path)
+    save_plan_setting(db_path, "last_generated_plan", {"state": "before"})
+    conn = connect_sqlite(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO planned_workout(scheduled_date, workout_name) VALUES (?, ?)",
+            ("2026-01-03", "Original"),
+        )
+        conn.execute(
+            """
+            CREATE TRIGGER reject_second_baseline_workout
+            BEFORE INSERT ON planned_workout
+            WHEN NEW.workout_name = 'Explode'
+            BEGIN
+                SELECT RAISE(ABORT, 'baseline insert failure');
+            END
+            """
+        )
+        conn.commit()
+        setting_before = conn.execute(
+            "SELECT value, updated_at FROM app_settings "
+            "WHERE key = 'last_generated_plan'"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    snapshot_before = get_active_plan_snapshot(db_path)
+    plan = _make_imported_plan(get_active_plan_sha256(db_path))
+    day_plans = [
+        DayPlan(
+            iso_date="2026-01-02",
+            day="Friday",
+            week=1,
+            phase="Base",
+            flags="",
+            workout="First new workout",
+            notes="30 min easy",
+        ),
+        DayPlan(
+            iso_date="2026-01-03",
+            day="Saturday",
+            week=1,
+            phase="Base",
+            flags="",
+            workout="Explode",
+            notes="45 min easy",
+        ),
+    ]
+
+    with pytest.raises(sqlite3.IntegrityError, match="baseline insert failure"):
+        save_generated_plan(
+            db_path,
+            plan.inputs,
+            plan.analysis,
+            day_plans,
+            list(plan.weekly_rows),
+        )
+
+    assert get_active_plan_snapshot(db_path) == snapshot_before
+    conn = connect_sqlite(db_path)
+    try:
+        setting_after = conn.execute(
+            "SELECT value, updated_at FROM app_settings "
+            "WHERE key = 'last_generated_plan'"
+        ).fetchone()
+        assert tuple(setting_after) == tuple(setting_before)
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM planned_workout "
+                "WHERE workout_name = 'First new workout'"
+            ).fetchone()[0]
+            == 0
+        )
+    finally:
+        conn.close()
+
+
+def test_save_generated_plan_rejects_stale_hash_without_writes(tmp_path):
+    db_path = tmp_path / "garmin.db"
+    _create_db(db_path)
+    stale_hash = get_active_plan_sha256(db_path)
+    conn = connect_sqlite(db_path)
+    try:
+        conn.execute(
+            "INSERT INTO planned_workout(scheduled_date, workout_name) VALUES (?, ?)",
+            ("2026-01-03", "Added during confirmation"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    snapshot_before = get_active_plan_snapshot(db_path)
+    plan = _make_imported_plan(get_active_plan_sha256(db_path))
+
+    with pytest.raises(StalePlanWriteError) as caught:
+        save_generated_plan(
+            db_path,
+            plan.inputs,
+            plan.analysis,
+            list(plan.day_plans),
+            list(plan.weekly_rows),
+            expected_active_plan_sha256=stale_hash,
+        )
+
+    assert caught.value.expected_sha256 == stale_hash
+    assert get_active_plan_snapshot(db_path) == snapshot_before

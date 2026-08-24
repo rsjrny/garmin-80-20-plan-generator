@@ -14,6 +14,12 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 from garmin_data_hub.mcp_sidecar_client import call_tool_via_sidecar
+from garmin_data_hub.services.baseline_plan_builder import (
+    BASELINE_DISTANCE_OPTIONS,
+    BaselinePlanRequest,
+    build_and_save_baseline,
+    normalize_baseline_distance,
+)
 from garmin_data_hub.services.garmin_auth_session import BrowserSessionResetError
 from garmin_data_hub.services.athlete_metrics_service import (
     calculate_metrics_from_db_sources,
@@ -31,6 +37,7 @@ from garmin_data_hub.services.garmin_credentials import (
     load_credentials,
     save_credentials,
 )
+from garmin_data_hub.services.plan_persistence import get_active_plan_sha256
 from garmin_data_hub.ui_nicegui.data import (
     INTERFACE_SETTING_DEFAULTS,
     activity_detail,
@@ -51,6 +58,7 @@ from garmin_data_hub.ui_nicegui.data import (
     run_read_only_query,
     save_interface_settings,
     save_planning_settings,
+    validate_planning_settings,
 )
 from garmin_data_hub.ui_nicegui.layout import (
     data_grid,
@@ -459,50 +467,401 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
     @ui.page("/plan")
     def plan_page() -> None:
         render_shell("Plan", db_path, sandboxed=sandboxed)
+        state: dict[str, Any] = {
+            "baseline_busy": False,
+            "confirmation_pending": False,
+            "last_workbook": None,
+        }
         with ui.column().classes("gdh-page"):
             page_heading(
                 "Plan Configuration & Review",
-                "Set locked coaching context, manage HR thresholds, and review the active schedule before asking Codex for changes.",
+                "Build a deterministic offline baseline or use Codex for a "
+                "personalized proposal, then review the active schedule.",
             )
             preferences = interface_settings(db_path)
             unit_system = preferences["unit_system"]
             settings = planning_settings(db_path)
+            try:
+                selected_distance = normalize_baseline_distance(
+                    settings["distance"]
+                )
+            except ValueError:
+                selected_distance = str(settings["distance"])
+            distance_options = dict(BASELINE_DISTANCE_OPTIONS)
+            if selected_distance not in distance_options:
+                distance_options[selected_distance] = (
+                    f"{selected_distance} (Codex only)"
+                )
+
             with ui.card().classes("gdh-card w-full"):
                 ui.label("Event and schedule").classes("text-xl font-semibold")
                 fields: dict[str, Any] = {}
                 with ui.grid(columns=3).classes("w-full gap-3"):
-                    fields["athlete_name"] = ui.input("Athlete name", value=settings["athlete_name"]).props("outlined")
-                    fields["age"] = ui.number("Age", value=settings["age"], min=10, max=100).props("outlined")
-                    distance_options = ["5K", "10K", "10 Miler", "Half Marathon", "20 Miler", "Marathon", "50K", "50 Mile", "100K", "100 Mile"]
-                    if settings["distance"] not in distance_options:
-                        distance_options.append(str(settings["distance"]))
-                    fields["distance"] = ui.select(distance_options, value=settings["distance"], label="Race distance").props("outlined")
-                    fields["event_name"] = ui.input("Event name", value=settings["event_name"]).props("outlined")
-                    fields["plan_start"] = ui.input("Plan start", value=str(settings["plan_start"])).props("outlined type=date")
-                    fields["event_date"] = ui.input("Event date", value=str(settings["event_date"])).props("outlined type=date")
-                    fields["run_days_per_week"] = ui.number("Run days/week", value=settings["run_days_per_week"], min=1, max=7).props("outlined")
-                    fields["long_run_day"] = ui.select(["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"], value=settings["long_run_day"], label="Long-session day").props("outlined")
-                    fields["sodium_mg_per_hour"] = ui.number("Sodium mg/hour (0 unknown)", value=settings["sodium_mg_per_hour"], min=0, max=3000).props("outlined")
+                    fields["athlete_name"] = ui.input(
+                        "Athlete name", value=settings["athlete_name"]
+                    ).props("outlined")
+                    fields["age"] = ui.number(
+                        "Age", value=settings["age"], min=10, max=100
+                    ).props("outlined")
+                    fields["distance"] = ui.select(
+                        distance_options,
+                        value=selected_distance,
+                        label="Race distance",
+                    ).props("outlined")
+                    fields["event_name"] = ui.input(
+                        "Event name", value=settings["event_name"]
+                    ).props("outlined")
+                    fields["plan_start"] = ui.input(
+                        "Plan start", value=str(settings["plan_start"])
+                    ).props("outlined type=date")
+                    fields["event_date"] = ui.input(
+                        "Event date", value=str(settings["event_date"])
+                    ).props("outlined type=date")
+                    fields["run_days_per_week"] = ui.number(
+                        "Run days/week",
+                        value=settings["run_days_per_week"],
+                        min=1,
+                        max=7,
+                    ).props("outlined")
+                    fields["long_run_day"] = ui.select(
+                        [
+                            "Monday",
+                            "Tuesday",
+                            "Wednesday",
+                            "Thursday",
+                            "Friday",
+                            "Saturday",
+                            "Sunday",
+                        ],
+                        value=settings["long_run_day"],
+                        label="Long-session day",
+                    ).props("outlined")
+                    fields["sodium_mg_per_hour"] = ui.number(
+                        "Sodium mg/hour (0 unknown)",
+                        value=settings["sodium_mg_per_hour"],
+                        min=0,
+                        max=3000,
+                    ).props("outlined")
+                with ui.grid(columns=2).classes("w-full gap-3"):
+                    fields["output_directory"] = ui.input(
+                        "Workbook folder",
+                        value=settings["output_directory"],
+                    ).props("outlined")
+                    fields["output_filename"] = ui.input(
+                        "Workbook filename",
+                        value=settings["output_filename"],
+                    ).props("outlined")
+
+                ui.label(
+                    "Offline generation never uses Codex. It applies the same "
+                    "local training-policy checks before replacing the selected "
+                    "plan date range."
+                ).classes("text-sm text-grey-7")
+
+                def collect_settings() -> dict[str, Any]:
+                    return {
+                        key: element.value for key, element in fields.items()
+                    }
 
                 def save_settings() -> None:
                     try:
-                        save_planning_settings(db_path, {key: element.value for key, element in fields.items()})
+                        save_planning_settings(db_path, collect_settings())
                     except (OSError, TypeError, ValueError) as exc:
                         _notify_error(exc)
                     else:
                         ui.notify("Planning settings saved locally.", type="positive")
 
-                with ui.row().classes("gap-3"):
-                    ui.button("Save settings", icon="save", on_click=save_settings)
-                    ui.button("Open Codex Coach", icon="auto_awesome", on_click=lambda: ui.navigate.to("/coach"))
+                with ui.row().classes("gap-3 flex-wrap"):
+                    save_settings_button = ui.button(
+                        "Save settings", icon="save", on_click=save_settings
+                    )
+                    generate_baseline_button = ui.button(
+                        "Generate offline baseline", icon="offline_bolt"
+                    ).props("color=primary")
+                    generate_workbook_button = ui.button(
+                        "Generate baseline + workbook", icon="table_view"
+                    ).props("outline")
+                    open_codex_button = ui.button(
+                        "Open Codex Coach",
+                        icon="auto_awesome",
+                        on_click=lambda: ui.navigate.to("/coach"),
+                    ).props("outline")
+
+                baseline_status = ui.label("Ready").classes("font-medium")
+                baseline_progress = ui.linear_progress(value=0).props(
+                    "indeterminate"
+                )
+                baseline_progress.set_visibility(False)
+                download_workbook_button = ui.button(
+                    "Download last workbook", icon="download"
+                ).props("outline")
+                download_workbook_button.set_visibility(False)
+
+                with ui.dialog() as baseline_dialog, ui.card().classes(
+                    "w-full max-w-2xl"
+                ):
+                    ui.label("Replace the active plan range?").classes(
+                        "text-xl font-semibold"
+                    )
+                    baseline_confirmation = ui.label().classes(
+                        "max-w-xl whitespace-pre-wrap"
+                    )
+                    workbook_confirmation = ui.label().classes(
+                        "max-w-xl text-amber-9 break-all"
+                    )
+                    baseline_acknowledgement = ui.checkbox(
+                        "I understand that workouts in this date range will be replaced."
+                    )
+
+                    def confirm_baseline_generation() -> None:
+                        if not baseline_acknowledgement.value:
+                            ui.notify(
+                                "Check the replacement acknowledgement first.",
+                                type="warning",
+                            )
+                            return
+                        baseline_dialog.submit(True)
+
+                    with ui.row().classes("w-full justify-end gap-2"):
+                        ui.button(
+                            "Cancel",
+                            on_click=lambda: baseline_dialog.submit(False),
+                        ).props("flat")
+                        ui.button(
+                            "Replace range and generate",
+                            icon="event_repeat",
+                            on_click=confirm_baseline_generation,
+                        ).props("color=primary")
+
+                def set_baseline_busy(busy: bool) -> None:
+                    state["baseline_busy"] = busy
+                    baseline_progress.set_visibility(busy)
+                    for button in (
+                        save_settings_button,
+                        generate_baseline_button,
+                        generate_workbook_button,
+                        open_codex_button,
+                    ):
+                        button.set_enabled(
+                            not busy and not bool(state["confirmation_pending"])
+                        )
+
+                def download_last_workbook() -> None:
+                    workbook = state.get("last_workbook")
+                    if not isinstance(workbook, Path) or not workbook.is_file():
+                        ui.notify(
+                            "The last workbook is no longer available.",
+                            type="warning",
+                        )
+                        download_workbook_button.set_visibility(False)
+                        return
+                    ui.download(str(workbook))
+
+                async def generate_reserved_baseline(
+                    *, include_workbook: bool
+                ) -> None:
+                    values = collect_settings()
+                    values_to_save = dict(values)
+                    if not include_workbook:
+                        values_to_save.pop("output_directory", None)
+                        values_to_save.pop("output_filename", None)
+                    try:
+                        values["distance"] = normalize_baseline_distance(
+                            values["distance"]
+                        )
+                        values_to_save["distance"] = values["distance"]
+                        validate_planning_settings(values_to_save)
+                        metrics = get_athlete_metrics(db_path)
+                        request = BaselinePlanRequest(
+                            athlete_name=str(values["athlete_name"] or ""),
+                            age=int(values["age"]),
+                            lthr=(
+                                int(metrics["lthr_effective"])
+                                if metrics.get("lthr_effective") is not None
+                                else None
+                            ),
+                            hrmax=(
+                                int(metrics["hrmax_effective"])
+                                if metrics.get("hrmax_effective") is not None
+                                else None
+                            ),
+                            sodium_mg_per_hour=(
+                                int(values["sodium_mg_per_hour"])
+                                if int(values["sodium_mg_per_hour"] or 0) > 0
+                                else None
+                            ),
+                            event_name=str(values["event_name"] or ""),
+                            distance=str(values["distance"]),
+                            start_date=str(values["plan_start"]),
+                            event_date=str(values["event_date"]),
+                            run_days_per_week=int(values["run_days_per_week"]),
+                            long_run_day=str(values["long_run_day"]),
+                        )
+                        workbook_path = (
+                            Path(str(values["output_directory"]))
+                            / str(values["output_filename"])
+                            if include_workbook
+                            else None
+                        )
+                        expected_plan_sha256 = get_active_plan_sha256(db_path)
+                    except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
+                        _notify_error(exc)
+                        return
+
+                    replaced_rows = sum(
+                        request.start_date
+                        <= str(row.get("date") or "")
+                        <= request.event_date
+                        for row in plan_rows(db_path)
+                    )
+                    destination = (
+                        f"\nWorkbook: {workbook_path.expanduser().resolve()}"
+                        if workbook_path is not None
+                        else ""
+                    )
+                    baseline_confirmation.text = (
+                        f"The offline builder will replace {replaced_rows} existing "
+                        f"schedule row(s) from {request.start_date} through "
+                        f"{request.event_date}. Rows outside that range are retained."
+                    )
+                    workbook_confirmation.text = (
+                        (
+                            "The workbook will be replaced if it already exists."
+                            + destination
+                        )
+                        if workbook_path is not None
+                        else "No workbook will be created."
+                    )
+                    baseline_acknowledgement.value = False
+                    if not await baseline_dialog:
+                        return
+                    if bool(state["baseline_busy"]):
+                        return
+
+                    try:
+                        save_planning_settings(db_path, values_to_save)
+                    except Exception as exc:
+                        baseline_status.text = (
+                            "Planning settings could not be saved; "
+                            "the active plan was not changed."
+                        )
+                        _notify_error(exc)
+                        return
+
+                    set_baseline_busy(True)
+                    baseline_status.text = (
+                        "Generating validated baseline and workbook..."
+                        if include_workbook
+                        else "Generating validated offline baseline..."
+                    )
+                    try:
+                        result = await run.io_bound(
+                            build_and_save_baseline,
+                            db_path,
+                            request,
+                            workbook_path=workbook_path,
+                            expected_active_plan_sha256=expected_plan_sha256,
+                        )
+                    except Exception as exc:
+                        baseline_status.text = (
+                            "Baseline generation failed; the active plan was not changed."
+                        )
+                        _notify_error(exc)
+                    else:
+                        render_active_schedule.refresh()
+                        baseline_status.text = (
+                            f"Saved {result.schedule_row_count} schedule rows "
+                            f"for {result.start_date} through {result.event_date}."
+                        )
+                        state["last_workbook"] = None
+                        download_workbook_button.set_visibility(False)
+                        if result.warnings:
+                            ui.notify(
+                                "Baseline policy warnings:\n- "
+                                + "\n- ".join(result.warnings),
+                                type="warning",
+                                multi_line=True,
+                                close_button=True,
+                            )
+                        if result.workbook_error:
+                            ui.notify(
+                                result.workbook_error,
+                                type="warning",
+                                multi_line=True,
+                                close_button=True,
+                            )
+                        elif result.workbook_path is not None:
+                            state["last_workbook"] = result.workbook_path
+                            download_workbook_button.set_visibility(True)
+                            ui.notify(
+                                f"Workbook saved: {result.workbook_path}",
+                                type="positive",
+                                multi_line=True,
+                            )
+                        else:
+                            ui.notify(
+                                "Offline baseline saved to the active schedule.",
+                                type="positive",
+                            )
+                    finally:
+                        set_baseline_busy(False)
+
+                async def generate_baseline(*, include_workbook: bool) -> None:
+                    if bool(state["baseline_busy"]) or bool(
+                        state["confirmation_pending"]
+                    ):
+                        return
+                    state["confirmation_pending"] = True
+                    set_baseline_busy(False)
+                    try:
+                        await generate_reserved_baseline(
+                            include_workbook=include_workbook
+                        )
+                    except Exception as exc:
+                        baseline_status.text = (
+                            "The baseline action encountered an unexpected error. "
+                            "Refresh Plan to verify the active schedule."
+                        )
+                        _notify_error(exc)
+                    finally:
+                        state["confirmation_pending"] = False
+                        set_baseline_busy(False)
+
+                async def generate_offline_baseline() -> None:
+                    await generate_baseline(include_workbook=False)
+
+                async def generate_baseline_workbook() -> None:
+                    await generate_baseline(include_workbook=True)
+
+                generate_baseline_button.on(
+                    "click", generate_offline_baseline
+                )
+                generate_workbook_button.on(
+                    "click", generate_baseline_workbook
+                )
+                download_workbook_button.on(
+                    "click", download_last_workbook
+                )
 
             with ui.card().classes("gdh-card w-full"):
                 ui.label("Athlete thresholds").classes("text-xl font-semibold")
                 metrics = get_athlete_metrics(db_path)
                 with ui.row().classes("items-end gap-3 flex-wrap"):
-                    hrmax = ui.number("HRmax override (0 clears)", value=metrics.get("hrmax_effective") or 0, min=0, max=250).props("outlined")
-                    lthr = ui.number("LTHR override (0 clears)", value=metrics.get("lthr_effective") or 0, min=0, max=220).props("outlined")
-                    years = ui.number("History years", value=5, min=1, max=50).props("outlined")
+                    hrmax = ui.number(
+                        "HRmax override (0 clears)",
+                        value=metrics.get("hrmax_effective") or 0,
+                        min=0,
+                        max=250,
+                    ).props("outlined")
+                    lthr = ui.number(
+                        "LTHR override (0 clears)",
+                        value=metrics.get("lthr_effective") or 0,
+                        min=0,
+                        max=220,
+                    ).props("outlined")
+                    years = ui.number(
+                        "History years", value=5, min=1, max=50
+                    ).props("outlined")
 
                     def save_thresholds() -> None:
                         high = int(hrmax.value or 0) or None
@@ -518,7 +877,11 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                         ui.notify("Threshold overrides cleared.", type="positive")
 
                     async def recalculate() -> None:
-                        result = await run.io_bound(calculate_metrics_from_db_sources, db_path, int(years.value or 5))
+                        result = await run.io_bound(
+                            calculate_metrics_from_db_sources,
+                            db_path,
+                            int(years.value or 5),
+                        )
                         high, threshold, error = result
                         if error:
                             _notify_error(error)
@@ -534,24 +897,42 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
 
             with ui.card().classes("gdh-card w-full"):
                 ui.label("Active training schedule").classes("text-xl font-semibold")
-                schedule = plan_rows(db_path)
-                display_schedule = _distance_rows(
-                    schedule, unit_system, "distance_km"
-                )
-                with ui.row().classes("w-full gap-3 flex-wrap"):
-                    metric_card("Sessions", len(schedule))
-                    metric_card("Start", schedule[0]["date"] if schedule else "-")
-                    metric_card("End", schedule[-1]["date"] if schedule else "-")
-                    metric_card("Strength", sum(1 for row in schedule if row.get("sport") == "strength"))
-                plan_tabs = ui.tabs().classes("w-full")
-                with plan_tabs:
-                    workouts_tab = ui.tab("Workouts")
-                    macros_tab = ui.tab("Daily macros")
-                with ui.tab_panels(plan_tabs, value=workouts_tab).classes("w-full"):
-                    with ui.tab_panel(workouts_tab):
-                        data_grid(display_schedule, height="34rem")
-                    with ui.tab_panel(macros_tab):
-                        data_grid(nutrition_rows(db_path), height="34rem")
+
+                @ui.refreshable
+                def render_active_schedule() -> None:
+                    schedule = plan_rows(db_path)
+                    display_schedule = _distance_rows(
+                        schedule, unit_system, "distance_km"
+                    )
+                    with ui.row().classes("w-full gap-3 flex-wrap"):
+                        metric_card("Sessions", len(schedule))
+                        metric_card(
+                            "Start", schedule[0]["date"] if schedule else "-"
+                        )
+                        metric_card(
+                            "End", schedule[-1]["date"] if schedule else "-"
+                        )
+                        metric_card(
+                            "Strength",
+                            sum(
+                                1
+                                for row in schedule
+                                if row.get("sport") == "strength"
+                            ),
+                        )
+                    plan_tabs = ui.tabs().classes("w-full")
+                    with plan_tabs:
+                        workouts_tab = ui.tab("Workouts")
+                        macros_tab = ui.tab("Daily macros")
+                    with ui.tab_panels(
+                        plan_tabs, value=workouts_tab
+                    ).classes("w-full"):
+                        with ui.tab_panel(workouts_tab):
+                            data_grid(display_schedule, height="34rem")
+                        with ui.tab_panel(macros_tab):
+                            data_grid(nutrition_rows(db_path), height="34rem")
+
+                render_active_schedule()
 
     @ui.page("/compliance")
     def compliance_page() -> None:

@@ -35,7 +35,6 @@ from garmin_data_hub.services.garmin_credentials import (
 from garmin_data_hub.services.plan_persistence import (
     load_generated_plan,
     load_plan_settings,
-    save_plan_setting,
 )
 from garmin_data_hub.services.sync_status import progress_from_log
 from garmin_data_hub.ui_nicegui.process_tree import (
@@ -488,6 +487,11 @@ PLAN_SETTING_KEYS = {
     "event_date": "plan_event_date",
 }
 
+PLAN_OUTPUT_SETTING_KEYS = {
+    "output_directory": "plan_out_dir",
+    "output_filename": "plan_out_name",
+}
+
 
 def planning_settings(db_path: Path) -> dict[str, Any]:
     raw = load_plan_settings(db_path)
@@ -495,11 +499,19 @@ def planning_settings(db_path: Path) -> dict[str, Any]:
         friendly: raw.get(setting)
         for friendly, setting in PLAN_SETTING_KEYS.items()
     }
+    result.update(
+        {
+            friendly: raw.get(setting)
+            for friendly, setting in PLAN_OUTPUT_SETTING_KEYS.items()
+        }
+    )
     result["metrics"] = get_athlete_metrics(db_path)
     return result
 
 
-def save_planning_settings(db_path: Path, values: Mapping[str, Any]) -> None:
+def _prepared_planning_settings(
+    values: Mapping[str, Any],
+) -> list[tuple[str, str]]:
     start = date.fromisoformat(str(values["plan_start"]))
     event = date.fromisoformat(str(values["event_date"]))
     if event < start:
@@ -515,8 +527,64 @@ def save_planning_settings(db_path: Path, values: Mapping[str, Any]) -> None:
         raise ValueError("Sodium must be between 0 and 3,000 mg/hour")
     if not str(values["distance"]).strip():
         raise ValueError("Race distance cannot be blank")
-    for friendly, setting in PLAN_SETTING_KEYS.items():
-        save_plan_setting(db_path, setting, values[friendly])
+    output_directory: str | None = None
+    if "output_directory" in values:
+        output_directory = str(values["output_directory"] or "").strip()
+        if not output_directory:
+            raise ValueError("Workbook folder cannot be blank")
+    output_filename: str | None = None
+    if "output_filename" in values:
+        output_filename = str(values["output_filename"] or "").strip()
+        if (
+            not output_filename
+            or "/" in output_filename
+            or "\\" in output_filename
+            or Path(output_filename).suffix.casefold() != ".xlsx"
+        ):
+            raise ValueError(
+                "Workbook filename must be a file name ending with .xlsx"
+            )
+    persisted_values = {
+        setting: values[friendly]
+        for friendly, setting in PLAN_SETTING_KEYS.items()
+    }
+    if output_directory is not None:
+        persisted_values[PLAN_OUTPUT_SETTING_KEYS["output_directory"]] = (
+            output_directory
+        )
+    if output_filename is not None:
+        persisted_values[PLAN_OUTPUT_SETTING_KEYS["output_filename"]] = (
+            output_filename
+        )
+    return [
+        (setting, json.dumps(value))
+        for setting, value in persisted_values.items()
+    ]
+
+
+def validate_planning_settings(values: Mapping[str, Any]) -> None:
+    """Validate Plan-page settings without changing the database."""
+
+    _prepared_planning_settings(values)
+
+
+def save_planning_settings(db_path: Path, values: Mapping[str, Any]) -> None:
+    """Validate and atomically persist Plan-page settings."""
+
+    rows = _prepared_planning_settings(values)
+    conn = connect_sqlite(db_path, timeout=30.0)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.executemany(
+            "INSERT OR REPLACE INTO app_settings(key, value) VALUES (?, ?)",
+            rows,
+        )
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def repair_derived_metrics(db_path: Path) -> dict[str, Any]:

@@ -36,14 +36,14 @@ class InvalidImportedPlanError(PlanPersistenceError):
 
 
 class StalePlanWriteError(PlanPersistenceError):
-    """The active plan changed after the ChatGPT response was prepared."""
+    """The active plan changed while a replacement was being prepared."""
 
     def __init__(self, *, expected_sha256: str, current_sha256: str) -> None:
         self.expected_sha256 = expected_sha256
         self.current_sha256 = current_sha256
         super().__init__(
-            "The active training plan changed after this response was created; "
-            "export a fresh coaching packet before importing it."
+            "The active training plan changed while this update was being "
+            "prepared. Refresh the plan and try again."
         )
 
 
@@ -737,8 +737,15 @@ def save_generated_plan(
     analysis: Any,
     day_plans: list[Any],
     weekly_rows: list[dict[str, Any]],
+    *,
+    expected_active_plan_sha256: str | None = None,
 ) -> None:
-    """Persist the most recent generated plan for UI reloads and compliance views."""
+    """Atomically persist a generated baseline after an optional stale check."""
+    if (
+        expected_active_plan_sha256 is not None
+        and _SHA256_RE.fullmatch(expected_active_plan_sha256) is None
+    ):
+        raise ValueError("expected active-plan SHA-256 is invalid")
     day_plans_data = [
         {
             "iso_date": dp.iso_date,
@@ -799,50 +806,39 @@ def save_generated_plan(
         }
     )
 
-    conn = connect_sqlite(db_path)
-    try:
-        db_queries.set_setting(conn, "last_generated_plan", plan_blob)
-
-        plan_dates = [dp.iso_date for dp in day_plans]
-        if plan_dates:
-            db_queries.delete_planned_workouts_in_range(
-                conn, min(plan_dates), max(plan_dates)
-            )
-
-        for dp in day_plans:
-            if not dp.workout:
-                continue
-
-            text_to_parse = (dp.workout + " " + (dp.notes or "")).lower()
-            planned_dist, planned_dur = _parse_planned_workout_metrics(text_to_parse)
-            structure_json = json.dumps(
-                {
-                    "source": "rule_based_baseline",
-                    "workout": {
-                        "sport": getattr(dp, "sport", None),
-                        "phase": dp.phase,
-                        "workout": dp.workout,
-                        "intensity": getattr(dp, "intensity", None),
-                        "duration_minutes": (
-                            planned_dur / 60.0 if planned_dur is not None else None
-                        ),
-                        "distance_km": (
-                            planned_dist / 1000.0 if planned_dist is not None else None
-                        ),
-                        "tss": None,
-                        "flags": [
-                            flag.strip()
-                            for flag in str(dp.flags or "").split(",")
-                            if flag.strip()
-                        ],
-                        "notes": dp.notes,
-                    },
+    rows_to_insert: list[tuple[Any, ...]] = []
+    for dp in day_plans:
+        if not dp.workout:
+            continue
+        text_to_parse = (dp.workout + " " + (dp.notes or "")).lower()
+        planned_dist, planned_dur = _parse_planned_workout_metrics(text_to_parse)
+        structure_json = json.dumps(
+            {
+                "source": "rule_based_baseline",
+                "workout": {
+                    "sport": getattr(dp, "sport", None),
+                    "phase": dp.phase,
+                    "workout": dp.workout,
+                    "intensity": getattr(dp, "intensity", None),
+                    "duration_minutes": (
+                        planned_dur / 60.0 if planned_dur is not None else None
+                    ),
+                    "distance_km": (
+                        planned_dist / 1000.0 if planned_dist is not None else None
+                    ),
+                    "tss": None,
+                    "flags": [
+                        flag.strip()
+                        for flag in str(dp.flags or "").split(",")
+                        if flag.strip()
+                    ],
+                    "notes": dp.notes,
                 },
-                ensure_ascii=False,
-            )
-
-            db_queries.insert_planned_workout(
-                conn,
+            },
+            ensure_ascii=False,
+        )
+        rows_to_insert.append(
+            (
                 dp.iso_date,
                 dp.workout,
                 dp.notes,
@@ -851,8 +847,48 @@ def save_generated_plan(
                 None,
                 structure_json,
             )
+        )
 
+    conn = connect_sqlite(db_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if expected_active_plan_sha256 is not None:
+            current_sha256 = active_plan_sha256(conn)
+            if current_sha256 != expected_active_plan_sha256:
+                raise StalePlanWriteError(
+                    expected_sha256=expected_active_plan_sha256,
+                    current_sha256=current_sha256,
+                )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO app_settings(key, value)
+            VALUES ('last_generated_plan', ?)
+            """,
+            (json.dumps(plan_blob),),
+        )
+        plan_dates = [dp.iso_date for dp in day_plans]
+        if plan_dates:
+            conn.execute(
+                """
+                DELETE FROM planned_workout
+                WHERE scheduled_date >= ? AND scheduled_date <= ?
+                """,
+                (min(plan_dates), max(plan_dates)),
+            )
+        conn.executemany(
+            """
+            INSERT INTO planned_workout(
+                scheduled_date, workout_name, description,
+                planned_distance_m, planned_duration_s, planned_tss,
+                structure_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows_to_insert,
+        )
         conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 

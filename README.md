@@ -32,11 +32,39 @@ The project syncs Garmin data using `garmin-givemydata`, applies app-specific sc
 The dedicated **Codex Plan Workspace** is the recommended personalized-plan path
 and supports an API-key-free, account-authenticated Codex CLI round trip:
 
-1. Configure the event and training settings on Build Plan.
+1. Configure the event and training settings on Plan.
 2. Add optional schedule, injury, strength, and nutrition constraints.
 3. Generate a structured proposal through the locally installed, signed-in Codex CLI.
 4. Review the plain-language summary, policy results, macros, and exact database changes.
 5. Explicitly approve the plan before it is written to SQLite.
+
+The Coach page checks Node.js, npm, the Codex CLI, and the saved Codex login on
+first use. Detection runs only version and login-status checks; it never invokes
+an installer. If a command is missing or broken, **Install missing tools** shows
+the exact changes and requires an explicit consent checkbox.
+On Windows it installs the Node.js LTS package through WinGet (which includes
+npm), then installs `@openai/codex` through npm only if Codex is still missing.
+Commands that pass a real `--version` check are not upgraded or replaced.
+
+Choose **Sign in to Codex** to open the official `codex login` terminal/browser
+flow, then return to the Coach page and choose **Check again**. Garmin Data Hub
+does not collect or store the Codex account password, browser MFA response, or
+CLI authentication file. Codex sign-in is separate from the Garmin login stored
+in Windows Credential Manager.
+
+Manual recovery commands are:
+
+```powershell
+winget install --id OpenJS.NodeJS.LTS --exact --source winget
+npm install --global @openai/codex
+codex login
+codex login status
+```
+
+See the official [Codex CLI installation guide](https://learn.chatgpt.com/docs/codex/cli),
+[Codex authentication guide](https://learn.chatgpt.com/docs/auth), and
+[Node.js downloads](https://nodejs.org/en/download) if WinGet or npm is blocked
+by an administrator, proxy, or offline environment.
 
 The packet includes summarized activities and bounded plan context. It excludes
 GPS routes, raw trackpoints, exact activity times, device identifiers, file
@@ -70,10 +98,16 @@ The application uses an **AI-first, rules-governed** planning model:
 4. The athlete reviews a plain-language summary and exact database differences.
 5. An approved plan is saved atomically with provenance and a recovery snapshot.
 
-The Build Plan page retains a deterministic rule-based generator as an offline
-baseline and fallback. Baselines pass through the same policy engine and are
-clearly identified in Plan Review. The policy code remains authoritative; AI
-cannot bypass it.
+The Plan page retains a deterministic rule-based generator as an offline
+baseline and fallback. Choose **Generate offline baseline** to update the active
+calendar without creating a file, or **Generate baseline + workbook** to also
+write the configured `.xlsx` workbook. Both paths show the affected date range
+for confirmation, validate the result with the local policy engine, and replace
+only workouts from the plan start through the event date. A failed validation,
+workbook preparation, or database transaction leaves the active plan unchanged.
+The workbook button exposes **Download last workbook** after a successful export.
+Offline generation needs no Node.js, npm, Codex login, or network connection.
+The policy code remains authoritative; AI cannot bypass it.
 
 AI plans include actual scheduled strength sessions in full Base, Build, and
 Peak weeks. They also include one food-agnostic macro target for every plan date:
@@ -91,7 +125,7 @@ The primary desktop interface is implemented under `src/garmin_data_hub/ui_niceg
 - **Garmin Sync** - non-blocking sync, cancellation, logs, and derived-metric repair
 - **Activities** - filters, splits, local GPS-track inspection, and complete JSON export
 - **Charts** - volume, heart-rate, speed, distribution, and training-load trends
-- **Plan** - event/schedule settings, HR thresholds, and active calendar review
+- **Plan** - offline baseline/workbook generation, event settings, HR thresholds, and active calendar review
 - **Codex Coach** - account-authenticated generation, deterministic validation, exact diff, and explicit approval
 - **Compliance** - planned-versus-completed distance and duration
 - **Data Query** - guarded read-only SQL and advanced garmin_mcp calls

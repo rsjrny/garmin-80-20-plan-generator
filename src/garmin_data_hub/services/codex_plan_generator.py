@@ -11,7 +11,6 @@ from __future__ import annotations
 import copy
 import json
 import os
-import shutil
 import subprocess
 import tempfile
 import threading
@@ -21,11 +20,14 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from garmin_data_hub.services.coaching_packet import TRAINING_PLAN_UPDATE_SCHEMA
+from garmin_data_hub.services.codex_prerequisites import (
+    external_tool_environment,
+    find_codex_cli,
+)
 
 
 DEFAULT_CODEX_TIMEOUT_SECONDS = 360
 DEFAULT_CODEX_REASONING_EFFORT = "low"
-_API_KEY_ENVIRONMENT_VARIABLES = ("OPENAI_API_KEY", "CODEX_API_KEY")
 _UNSUPPORTED_STRUCTURED_OUTPUT_KEYS = {
     "$schema",
     "$id",
@@ -56,11 +58,6 @@ class CodexCliCancelledError(CodexPlanGenerationError):
 class CodexPlanGenerationResult:
     response_json: str
     executable: str
-
-
-def find_codex_cli() -> str | None:
-    """Return the installed Codex launcher path, if one is available."""
-    return shutil.which("codex")
 
 
 def _json_type(value: Any) -> str:
@@ -263,13 +260,11 @@ def generate_plan_with_codex(
     codex_executable = executable or find_codex_cli()
     if not codex_executable:
         raise CodexCliNotFoundError(
-            "Codex CLI was not found on PATH. Install it and run 'codex login', "
-            "then restart Garmin Data Hub."
+            "A working Codex CLI was not found. Open Codex Coach to install it "
+            "and sign in, then try again."
         )
 
-    child_environment = os.environ.copy()
-    for variable in _API_KEY_ENVIRONMENT_VARIABLES:
-        child_environment.pop(variable, None)
+    child_environment = external_tool_environment(codex_executable)
 
     with tempfile.TemporaryDirectory(prefix="garmin-data-hub-codex-") as temp_dir:
         temp_path = Path(temp_dir)

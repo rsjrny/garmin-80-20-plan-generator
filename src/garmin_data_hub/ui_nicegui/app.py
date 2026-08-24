@@ -13,6 +13,17 @@ from garmin_data_hub.db.migrate import apply_schema
 from garmin_data_hub.db.sqlite import connect_sqlite
 from garmin_data_hub.paths import default_db_path, schema_sql_path
 from garmin_data_hub.services.ai_plan_import import PlanImportError
+from garmin_data_hub.services.codex_prerequisites import (
+    NODE_DOWNLOAD_URL,
+    OPENAI_CODEX_AUTH_URL,
+    OPENAI_CODEX_INSTALL_URL,
+    CodexPrerequisiteError,
+    CodexPrerequisiteStatus,
+    ToolStatus,
+    detect_codex_prerequisites,
+    install_missing_codex_prerequisites,
+    launch_codex_login,
+)
 from garmin_data_hub.services.plan_persistence import (
     PlanPersistenceError,
     StalePlanWriteError,
@@ -25,7 +36,6 @@ from garmin_data_hub.ui_nicegui.workspace import (
     ProposalReview,
     WorkspaceContext,
     build_workspace_packet,
-    codex_executable,
     create_database_snapshot,
     load_workspace_context,
     load_workspace_prompt,
@@ -115,9 +125,27 @@ def _grid(rows: list[dict[str, Any]], *, height: str = "24rem") -> None:
     ).classes("w-full").style(f"height: {height}")
 
 
+def _tool_status_text(tool: ToolStatus) -> str:
+    if tool.available:
+        return f"{tool.name}: {tool.version} ({tool.path})"
+    if tool.path:
+        return f"{tool.name}: found but unavailable - {tool.error}"
+    return f"{tool.name}: not installed"
+
+
+def _auth_status_text(status: CodexPrerequisiteStatus) -> str:
+    if status.auth_state == "signed_in":
+        return "Codex account: signed in"
+    if status.auth_state == "signed_out":
+        return "Codex account: sign-in required"
+    if status.auth_state == "not_installed":
+        return "Codex account: install Codex before signing in"
+    return f"Codex account: status unavailable - {status.auth_detail or 'try again'}"
+
+
 def create_ui(db_path: Path, *, sandboxed: bool) -> None:
     """Register the primary NiceGUI application against the selected database."""
-    from nicegui import ui
+    from nicegui import run, ui
 
     register_core_pages(db_path, sandboxed=sandboxed)
 
@@ -132,6 +160,9 @@ def create_ui(db_path: Path, *, sandboxed: bool) -> None:
             "prompt_packet": None,
             "review": None,
             "handled_generation_state": "idle",
+            "prerequisites": None,
+            "prerequisites_busy": False,
+            "codex_login_launched": False,
         }
 
         render_shell("Codex Coach", db_path, sandboxed=sandboxed)
@@ -223,11 +254,109 @@ def create_ui(db_path: Path, *, sandboxed: bool) -> None:
 
                     with ui.card().classes("gdh-card w-full bg-slate-50"):
                         ui.label("Codex generation").classes("text-lg font-semibold")
-                        cli = codex_executable()
-                        cli_label = ui.label(
-                            f"Codex CLI: {cli}" if cli else "Codex CLI was not found on PATH."
+                        ui.label(
+                            "Node.js, npm, and Codex are optional and used only "
+                            "for this page. Existing working installations are kept."
                         ).classes("text-sm text-grey-7")
-                        status_label = ui.label("Ready").classes("font-medium")
+                        prerequisite_summary = ui.label(
+                            "Checking local prerequisites..."
+                        ).classes("font-medium")
+                        node_status_label = ui.label("node: checking...").classes(
+                            "text-sm text-grey-7 break-all"
+                        )
+                        npm_status_label = ui.label("npm: checking...").classes(
+                            "text-sm text-grey-7 break-all"
+                        )
+                        codex_status_label = ui.label("codex: checking...").classes(
+                            "text-sm text-grey-7 break-all"
+                        )
+                        auth_status_label = ui.label(
+                            "Codex account: checking..."
+                        ).classes("text-sm text-grey-7")
+                        setup_detail_label = ui.label(
+                            "Detection runs version and login-status checks; it "
+                            "does not invoke installers."
+                        ).classes("text-sm text-grey-7 whitespace-pre-wrap")
+                        setup_progress = ui.linear_progress(value=0).props(
+                            "indeterminate"
+                        )
+                        setup_progress.set_visibility(False)
+                        with ui.row().classes("gap-2 flex-wrap"):
+                            check_prerequisites_button = ui.button(
+                                "Check again", icon="refresh"
+                            ).props("outline")
+                            install_prerequisites_button = ui.button(
+                                "Install missing tools", icon="download"
+                            ).props("color=primary")
+                            sign_in_button = ui.button(
+                                "Sign in to Codex", icon="login"
+                            ).props("outline")
+                            install_prerequisites_button.set_visibility(False)
+                            sign_in_button.set_visibility(False)
+                        with ui.row().classes("gap-4 flex-wrap"):
+                            ui.link(
+                                "Node.js manual download",
+                                NODE_DOWNLOAD_URL,
+                                new_tab=True,
+                            )
+                            ui.link(
+                                "Codex install help",
+                                OPENAI_CODEX_INSTALL_URL,
+                                new_tab=True,
+                            )
+                            ui.link(
+                                "Codex sign-in help",
+                                OPENAI_CODEX_AUTH_URL,
+                                new_tab=True,
+                            )
+
+                        with ui.dialog() as prerequisite_dialog, ui.card().classes(
+                            "w-full max-w-2xl"
+                        ):
+                            ui.label("Install missing Codex tools?").classes(
+                                "text-xl font-semibold"
+                            )
+                            ui.label(
+                                "Garmin Data Hub will leave every working command "
+                                "unchanged. If Node.js or npm is missing, Windows "
+                                "Package Manager will install the Node.js LTS package. "
+                                "If Codex is missing, npm will run "
+                                "'npm install --global @openai/codex'."
+                            ).classes("max-w-xl")
+                            ui.label(
+                                "This downloads software from the internet. Windows "
+                                "may request administrator approval for Node.js. "
+                                "A failed setup does not remove Garmin Data Hub or "
+                                "uninstall any shared tools."
+                            ).classes("max-w-xl text-amber-9")
+                            setup_consent = ui.checkbox(
+                                "I approve downloading and installing only the missing tools."
+                            )
+
+                            def confirm_prerequisite_install() -> None:
+                                if not setup_consent.value:
+                                    ui.notify(
+                                        "Check the consent box before installing.",
+                                        type="warning",
+                                    )
+                                    return
+                                prerequisite_dialog.submit(True)
+
+                            with ui.row().classes("w-full justify-end gap-2"):
+                                ui.button(
+                                    "Cancel",
+                                    on_click=lambda: prerequisite_dialog.submit(False),
+                                ).props("flat")
+                                ui.button(
+                                    "Install missing tools",
+                                    icon="download",
+                                    on_click=confirm_prerequisite_install,
+                                ).props("color=primary")
+
+                        ui.separator()
+                        status_label = ui.label(
+                            "Generation is available after Codex sign-in."
+                        ).classes("font-medium")
                         try:
                             prompt_packet = build_workspace_packet(context)
                             initial_prompt = load_workspace_prompt(
@@ -262,6 +391,7 @@ def create_ui(db_path: Path, *, sandboxed: bool) -> None:
                             generate_button = ui.button(
                                 "Generate proposal", icon="auto_awesome"
                             ).props("color=primary")
+                            generate_button.disable()
                             cancel_button = ui.button(
                                 "Cancel", icon="stop", color="negative"
                             )
@@ -295,6 +425,233 @@ def create_ui(db_path: Path, *, sandboxed: bool) -> None:
 
                         load_default_button.on("click", load_default_prompt)
                         save_prompt_button.on("click", save_current_prompt)
+
+                        def refresh_prerequisite_controls() -> None:
+                            prerequisite_status: CodexPrerequisiteStatus | None = (
+                                state.get("prerequisites")
+                            )
+                            busy = bool(state["prerequisites_busy"])
+                            generation_running = job.snapshot().state in {
+                                "running",
+                                "cancelling",
+                            }
+                            controls_enabled = not busy and not generation_running
+                            check_prerequisites_button.set_enabled(controls_enabled)
+                            if prerequisite_status is None:
+                                install_prerequisites_button.set_visibility(False)
+                                sign_in_button.set_visibility(False)
+                                generate_button.disable()
+                                return
+                            install_prerequisites_button.set_visibility(
+                                not prerequisite_status.commands_ready
+                            )
+                            install_prerequisites_button.set_enabled(
+                                controls_enabled
+                            )
+                            sign_in_button.set_visibility(
+                                prerequisite_status.codex.available
+                                and prerequisite_status.auth_state == "signed_out"
+                            )
+                            sign_in_button.set_enabled(
+                                controls_enabled
+                                and not bool(state["codex_login_launched"])
+                            )
+                            generate_button.set_enabled(
+                                prerequisite_status.ready_for_generation
+                                and not validation_errors
+                                and not busy
+                                and not generation_running
+                            )
+
+                        def show_prerequisite_status(
+                            prerequisite_status: CodexPrerequisiteStatus,
+                        ) -> None:
+                            state["prerequisites"] = prerequisite_status
+                            node_status_label.text = _tool_status_text(
+                                prerequisite_status.node
+                            )
+                            npm_status_label.text = _tool_status_text(
+                                prerequisite_status.npm
+                            )
+                            codex_status_label.text = _tool_status_text(
+                                prerequisite_status.codex
+                            )
+                            auth_status_label.text = _auth_status_text(
+                                prerequisite_status
+                            )
+                            if prerequisite_status.ready_for_generation:
+                                prerequisite_summary.text = (
+                                    "Codex is installed, signed in, and ready."
+                                )
+                            elif prerequisite_status.auth_state == "signed_out":
+                                prerequisite_summary.text = (
+                                    "Codex is installed; complete account sign-in."
+                                )
+                            elif prerequisite_status.codex.available:
+                                prerequisite_summary.text = (
+                                    "Codex is installed, but login status could not "
+                                    "be verified."
+                                )
+                            else:
+                                missing = ", ".join(
+                                    prerequisite_status.missing_tools
+                                )
+                                prerequisite_summary.text = (
+                                    f"Missing or unavailable: {missing}."
+                                )
+                            failures = [
+                                tool.error
+                                for tool in (
+                                    prerequisite_status.node,
+                                    prerequisite_status.npm,
+                                    prerequisite_status.codex,
+                                )
+                                if tool.error
+                            ]
+                            if failures:
+                                setup_detail_label.text = "\n".join(failures)
+                            elif prerequisite_status.auth_state == "signed_out":
+                                setup_detail_label.text = (
+                                    "Use Sign in to Codex. The official CLI opens "
+                                    "the browser flow; this app does not receive or "
+                                    "store your Codex credentials."
+                                )
+                            elif prerequisite_status.auth_state == "unknown":
+                                setup_detail_label.text = (
+                                    prerequisite_status.auth_detail
+                                    or "Could not verify the saved Codex login."
+                                )
+                            else:
+                                setup_detail_label.text = (
+                                    "All command and login checks passed."
+                                )
+                            refresh_prerequisite_controls()
+
+                        def set_prerequisite_busy(busy: bool) -> None:
+                            state["prerequisites_busy"] = busy
+                            setup_progress.set_visibility(busy)
+                            refresh_prerequisite_controls()
+
+                        async def check_prerequisites() -> None:
+                            if bool(state["prerequisites_busy"]):
+                                return
+                            state["codex_login_launched"] = False
+                            set_prerequisite_busy(True)
+                            prerequisite_summary.text = (
+                                "Checking local prerequisites..."
+                            )
+                            try:
+                                prerequisite_status = await run.io_bound(
+                                    detect_codex_prerequisites
+                                )
+                            except Exception as exc:
+                                state["prerequisites"] = None
+                                prerequisite_summary.text = (
+                                    "Prerequisite check failed."
+                                )
+                                setup_detail_label.text = str(exc)
+                                ui.notify(
+                                    f"Could not check Codex tools: {exc}",
+                                    type="negative",
+                                    multi_line=True,
+                                )
+                            else:
+                                show_prerequisite_status(prerequisite_status)
+                            finally:
+                                set_prerequisite_busy(False)
+
+                        async def install_prerequisites() -> None:
+                            if not await prerequisite_dialog:
+                                setup_consent.value = False
+                                return
+                            if bool(state["prerequisites_busy"]) or job.snapshot().state in {
+                                "running",
+                                "cancelling",
+                            }:
+                                setup_consent.value = False
+                                ui.notify(
+                                    "Wait for the current Codex operation to finish.",
+                                    type="warning",
+                                )
+                                return
+                            set_prerequisite_busy(True)
+                            prerequisite_summary.text = (
+                                "Installing and verifying missing tools..."
+                            )
+                            try:
+                                result = await run.io_bound(
+                                    install_missing_codex_prerequisites,
+                                    consent=True,
+                                )
+                            except CodexPrerequisiteError as exc:
+                                setup_detail_label.text = str(exc)
+                                ui.notify(str(exc), type="negative", multi_line=True)
+                            except Exception as exc:
+                                setup_detail_label.text = str(exc)
+                                ui.notify(
+                                    f"Prerequisite setup failed: {exc}",
+                                    type="negative",
+                                    multi_line=True,
+                                )
+                            else:
+                                show_prerequisite_status(result.after)
+                                setup_detail_label.text = result.detail
+                                if result.success:
+                                    ui.notify(
+                                        "Codex tools are installed. Sign in if prompted.",
+                                        type="positive",
+                                    )
+                                else:
+                                    ui.notify(
+                                        "Setup is incomplete. Review the recovery "
+                                        "details and manual-install links.",
+                                        type="negative",
+                                        multi_line=True,
+                                    )
+                            finally:
+                                setup_consent.value = False
+                                set_prerequisite_busy(False)
+
+                        async def sign_in_to_codex() -> None:
+                            if (
+                                bool(state["prerequisites_busy"])
+                                or bool(state["codex_login_launched"])
+                                or job.snapshot().state in {"running", "cancelling"}
+                            ):
+                                return
+                            set_prerequisite_busy(True)
+                            try:
+                                launch = await run.io_bound(launch_codex_login)
+                            except CodexPrerequisiteError as exc:
+                                ui.notify(str(exc), type="negative", multi_line=True)
+                            except Exception as exc:
+                                ui.notify(
+                                    f"Could not open Codex sign-in: {exc}",
+                                    type="negative",
+                                    multi_line=True,
+                                )
+                            else:
+                                state["codex_login_launched"] = True
+                                setup_detail_label.text = (
+                                    "Codex sign-in opened in a separate terminal and "
+                                    "browser. Complete it there, close the terminal, "
+                                    "then choose Check again."
+                                )
+                                ui.notify(
+                                    f"Codex sign-in started (process {launch.process_id}).",
+                                    type="info",
+                                )
+                            finally:
+                                set_prerequisite_busy(False)
+
+                        check_prerequisites_button.on(
+                            "click", check_prerequisites
+                        )
+                        install_prerequisites_button.on(
+                            "click", install_prerequisites
+                        )
+                        sign_in_button.on("click", sign_in_to_codex)
+                        ui.timer(0.1, check_prerequisites, once=True)
 
                 with ui.tab_panel(review_tab):
                     @ui.refreshable
@@ -395,10 +752,48 @@ def create_ui(db_path: Path, *, sandboxed: bool) -> None:
 
                     render_review()
 
-            def start_generation() -> None:
+            async def start_generation() -> None:
                 nonlocal context
-                if not cli:
-                    ui.notify("Codex CLI was not found on PATH.", color="negative")
+                if bool(state["prerequisites_busy"]) or job.snapshot().state in {
+                    "running",
+                    "cancelling",
+                }:
+                    return
+                set_prerequisite_busy(True)
+                status_label.text = "Verifying Codex sign-in..."
+                try:
+                    prerequisite_status = await run.io_bound(
+                        detect_codex_prerequisites
+                    )
+                except Exception as exc:
+                    status_label.text = "Could not verify Codex prerequisites."
+                    setup_detail_label.text = str(exc)
+                    ui.notify(
+                        f"Could not check Codex tools: {exc}",
+                        color="negative",
+                        multi_line=True,
+                    )
+                    set_prerequisite_busy(False)
+                    return
+                show_prerequisite_status(prerequisite_status)
+                if not prerequisite_status.ready_for_generation:
+                    if not prerequisite_status.codex.available:
+                        message = "Install the missing Codex tools before generating."
+                    elif prerequisite_status.auth_state == "signed_out":
+                        message = "Sign in to Codex before generating."
+                    else:
+                        message = (
+                            "The saved Codex login could not be verified. "
+                            "Review the status details, then use Check again."
+                        )
+                    status_label.text = message
+                    ui.notify(message, color="negative")
+                    set_prerequisite_busy(False)
+                    return
+                cli_path = prerequisite_status.codex.path
+                if not cli_path:
+                    status_label.text = "A working Codex CLI was not found."
+                    set_prerequisite_busy(False)
                     return
                 preferences = {
                     key: str(element.value or "")
@@ -424,9 +819,10 @@ def create_ui(db_path: Path, *, sandboxed: bool) -> None:
                         prompt = str(packet["chatgpt"]["copyable_prompt"])
                     prompt_editor.value = prompt
                     state["prompt_packet"] = packet
-                    job.start(packet, prompt=prompt, executable=cli)
+                    job.start(packet, prompt=prompt, executable=cli_path)
                 except (OSError, TypeError, ValueError, RuntimeError) as exc:
                     ui.notify(str(exc), color="negative", multi_line=True)
+                    set_prerequisite_busy(False)
                     return
                 state["packet"] = packet
                 state["review"] = None
@@ -436,6 +832,7 @@ def create_ui(db_path: Path, *, sandboxed: bool) -> None:
                 generate_button.disable()
                 cancel_button.set_visibility(True)
                 progress.set_visibility(True)
+                set_prerequisite_busy(False)
 
             def cancel_generation() -> None:
                 if job.cancel():
@@ -457,7 +854,6 @@ def create_ui(db_path: Path, *, sandboxed: bool) -> None:
                 progress.set_visibility(False)
                 cancel_button.set_visibility(False)
                 cancel_button.enable()
-                generate_button.enable()
                 if snapshot.state == "completed" and snapshot.response_json:
                     try:
                         state["review"] = review_proposal(
@@ -477,6 +873,9 @@ def create_ui(db_path: Path, *, sandboxed: bool) -> None:
                 elif snapshot.state == "failed":
                     status_label.text = "Generation failed; nothing was saved."
                     ui.notify(snapshot.error or "Unknown Codex failure", color="negative")
+                    state["prerequisites"] = None
+                    ui.timer(0.1, check_prerequisites, once=True)
+                refresh_prerequisite_controls()
 
             ui.timer(0.5, poll_generation)
 

@@ -18,7 +18,7 @@ Option 1: GUI (recommended)
    in Windows Credential Manager, or clear it to avoid saving the password there.
 5. Click Run sync. If Garmin requests MFA, enter the code in the Garmin Chrome
    window. Sync resumes automatically after Garmin accepts the login.
-6. Review data in Activities, Charts, Build Plan, and Compliance pages.
+6. Review data in Activities, Charts, Plan, and Compliance pages.
 
 Run sync saves a newly entered login when Remember is selected. Save login can
 store the entered login without starting a sync.
@@ -54,11 +54,59 @@ GUI Pages (Current)
 - Activities
 - Build Plan
 - Charts
+- Codex Coach
 - Compliance
 - 80/20 Help
 
 Notes:
 - MCP Query exists but may be hidden depending on filename/config.
+
+Offline Plan Builder
+--------------------
+The Plan page can build a deterministic training baseline without Node.js, npm,
+Codex, a Codex login, or an internet connection.
+
+1. Open Plan and configure the athlete, event, schedule, and workbook fields.
+2. Choose Save settings if you only want to retain the entries.
+3. Choose Generate offline baseline to replace the active schedule without
+   creating a workbook, or Generate baseline + workbook to also create the
+   configured .xlsx file.
+4. Review the date range and workbook destination, select the acknowledgement,
+   and confirm. Only workouts from the plan start through the event date are
+   replaced; schedule rows outside that range remain intact.
+5. After a successful export, choose Download last workbook to open or copy it.
+
+The same local training-policy checks used for Codex plans run before the
+baseline is saved. A policy failure, workbook-preparation failure, or failed
+database transaction leaves the active plan unchanged.
+
+Codex Coach Setup (Optional)
+----------------------------
+Node.js, npm, and Codex are needed only for AI plan generation on Codex Coach.
+The rest of Garmin Data Hub continues to work when they are not installed.
+
+1. Open Codex Coach. The page checks node, npm, codex, and the saved Codex login.
+2. If tools are missing, choose Install missing tools and review the consent
+   dialog. Nothing is downloaded until the consent checkbox is selected.
+3. Working installations are retained. If needed, the app installs Node.js LTS
+   (including npm) with Windows Package Manager and Codex with npm.
+4. Choose Sign in to Codex. Complete the official Codex login in the separate
+   terminal/browser, return to Garmin Data Hub, and choose Check again.
+
+Garmin Data Hub does not collect or store the Codex account password or browser
+MFA response. Codex manages its own saved login; this is separate from the
+Garmin Connect credential stored in Windows Credential Manager.
+
+Manual setup or recovery:
+  winget install --id OpenJS.NodeJS.LTS --exact --source winget
+  npm install --global @openai/codex
+  codex login
+  codex login status
+
+Official help:
+- https://learn.chatgpt.com/docs/codex/cli
+- https://learn.chatgpt.com/docs/auth
+- https://nodejs.org/en/download
 
 CLI Reference
 -------------
@@ -110,6 +158,16 @@ Sync/login issues:
 - For direct CLI use, run with --visible when interactive login is needed.
 - Verify internet connectivity.
 
+Codex Coach setup or login issues:
+- Choose Check again to verify each command and the saved login.
+- Review the status shown for node, npm, codex, and Codex account separately.
+- If WinGet is unavailable, install Node.js LTS from the Node.js download link,
+  restart Garmin Data Hub, and choose Check again.
+- If npm is blocked by a proxy or administrator, use the official Codex install
+  guide or ask the administrator to allow @openai/codex.
+- Complete codex login in the separate terminal/browser. Garmin Data Hub never
+  asks for the Codex password or MFA response.
+
 No new trackpoints after sync:
 - Rerun sync and check the sync log for garmin-givemydata errors.
 
@@ -132,12 +190,19 @@ Security Notes
   when it is no longer needed.
 - Do not store session cookies or passwords in tracked files.
 - Local data remains on your machine unless you export it.
+- Prerequisite detection runs version and login-status checks but does not
+  invoke installers. Downloads occur only after explicit consent, and working
+  Node.js, npm, and Codex commands are not replaced.
+- Codex account authentication is handled by the official Codex CLI. Garmin
+  Data Hub does not read or save the CLI authentication file.
 
 System Requirements
 -------------------
 - Windows 10 or later
 - Internet connection for Garmin sync
 - Modern browser (Chrome recommended)
+- Optional for Codex Coach: Node.js LTS/npm and Codex CLI. The Coach page can
+  install missing tools with consent when Windows Package Manager is available.
 
 Versioning and Build
 --------------------
