@@ -15,7 +15,7 @@ NAVIGATION = (
     ("Compliance", "/compliance", "fact_check"),
     ("Data Query", "/query", "database"),
     ("Settings", "/settings", "settings"),
-    ("Guide", "/guide", "help_outline"),
+    ("Help & About", "/guide", "help_outline"),
 )
 
 

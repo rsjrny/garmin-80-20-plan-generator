@@ -14,7 +14,7 @@ import time
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping, TypeVar
 
 import pandas as pd
 
@@ -24,7 +24,9 @@ from garmin_data_hub.db.migrate import apply_schema
 from garmin_data_hub.db.sqlite import connect_sqlite
 from garmin_data_hub.paths import schema_sql_path
 from garmin_data_hub.services.garmin_auth_session import (
+    BrowserSessionResetRequired,
     BrowserSessionResetResult,
+    garmin_browser_session_exists,
     reset_garmin_browser_session,
 )
 from garmin_data_hub.services.athlete_metrics_service import get_athlete_metrics
@@ -46,6 +48,7 @@ from garmin_data_hub.ui_nicegui.process_tree import (
 
 
 READ_ONLY_SQL = re.compile(r"^\s*(SELECT|WITH|EXPLAIN)\b", re.IGNORECASE)
+_LoginUpdateResult = TypeVar("_LoginUpdateResult")
 FORBIDDEN_SQL = re.compile(
     r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|REPLACE|ATTACH|DETACH|"
     r"VACUUM|REINDEX|PRAGMA|TRIGGER)\b",
@@ -644,6 +647,7 @@ class SyncJob:
         self.db_path = Path(db_path)
         self.log_path = self.db_path.parent / "logs" / "garmin_sync_latest.log"
         self._lock = threading.Lock()
+        self._login_operation_lock = threading.RLock()
         self._process: subprocess.Popen[str] | None = None
         self._process_tree: ProcessTree | None = None
         self._monitor_thread: threading.Thread | None = None
@@ -691,6 +695,9 @@ class SyncJob:
         if not 0 <= days <= 3650:
             raise ValueError("Sync days must be between 0 and 3,650")
         with self._lock:
+            if self._maintenance_state is not None:
+                raise RuntimeError("Garmin browser login is being reset")
+        with self._login_operation_lock, self._lock:
             self._refresh_process_locked()
             if self._maintenance_state is not None:
                 raise RuntimeError("Garmin browser login is being reset")
@@ -775,8 +782,37 @@ class SyncJob:
                     pass
             self._start_monitor_locked(process, process_tree)
 
+    def apply_browser_login_update(
+        self,
+        operation: Callable[[], _LoginUpdateResult],
+        *,
+        reset_confirmed: bool,
+    ) -> tuple[BrowserSessionResetResult | None, _LoginUpdateResult]:
+        """Apply a login change without allowing another sync to race it.
+
+        The caller obtains user confirmation before setting ``reset_confirmed``.
+        If no reset was confirmed, a newly appeared browser session aborts the
+        operation so the UI can request confirmation instead of removing it.
+        """
+
+        with self._login_operation_lock:
+            reset_result = None
+            if reset_confirmed:
+                reset_result = self.reset_browser_session()
+            elif garmin_browser_session_exists(self.db_path.parent):
+                raise BrowserSessionResetRequired(
+                    "The Garmin browser session changed. Confirm its reset "
+                    "before updating the login."
+                )
+            return reset_result, operation()
+
     def reset_browser_session(self) -> BrowserSessionResetResult:
         """Exclusively reset persisted Garmin browser authentication state."""
+
+        with self._login_operation_lock:
+            return self._reset_browser_session_exclusive()
+
+    def _reset_browser_session_exclusive(self) -> BrowserSessionResetResult:
         with self._lock:
             self._refresh_process_locked()
             process = self._process

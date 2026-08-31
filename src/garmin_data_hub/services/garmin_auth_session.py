@@ -15,6 +15,10 @@ class BrowserSessionResetError(RuntimeError):
     """Garmin browser state could not be reset safely."""
 
 
+class BrowserSessionResetRequired(RuntimeError):
+    """A login update needs confirmation before existing state is removed."""
+
+
 @dataclass(frozen=True)
 class BrowserSessionResetResult:
     """Summary of local Garmin login state removed by an explicit reset."""
@@ -42,6 +46,18 @@ def _refuse_link(target: Path) -> None:
         raise BrowserSessionResetError(
             f"Refusing to remove linked Garmin browser state: {target}"
         )
+
+
+def garmin_browser_session_exists(data_directory: Path) -> bool:
+    """Return whether persisted Garmin browser state might still authenticate."""
+
+    root = Path(data_directory)
+    for name in (GARMIN_BROWSER_PROFILE_NAME, GARMIN_SESSION_FILE_NAME):
+        target = root / name
+        is_junction = getattr(target, "is_junction", lambda: False)()
+        if target.exists() or target.is_symlink() or is_junction:
+            return True
+    return False
 
 
 def reset_garmin_browser_session(

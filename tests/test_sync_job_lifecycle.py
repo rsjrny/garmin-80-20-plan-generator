@@ -354,6 +354,128 @@ def test_browser_login_reset_blocks_sync_start_across_clients(
     assert job.snapshot().state == "idle"
 
 
+def test_atomic_login_update_prevents_start_between_reset_and_operation(
+    monkeypatch, tmp_path
+):
+    operation_started = threading.Event()
+    release_operation = threading.Event()
+    competing_start_called = threading.Event()
+    spawned_processes: list[FakeProcess] = []
+    update_results: list[object] = []
+    update_errors: list[BaseException] = []
+    competing_errors: list[BaseException] = []
+
+    profile = tmp_path / "browser_profile"
+    profile.mkdir()
+
+    def fake_reset(_data_directory):
+        return nicegui_data.BrowserSessionResetResult(True, False)
+
+    class AttachedTree:
+        warning = None
+
+    def fake_popen(_command, **_kwargs):
+        process = FakeProcess()
+        spawned_processes.append(process)
+        return process
+
+    monkeypatch.setattr(
+        nicegui_data,
+        "reset_garmin_browser_session",
+        fake_reset,
+    )
+    monkeypatch.setattr(nicegui_data.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        nicegui_data,
+        "attach_process_tree",
+        lambda _process: AttachedTree(),
+    )
+
+    job = nicegui_data.SyncJob(tmp_path / "garmin.db")
+    monkeypatch.setattr(job, "_command", lambda _days: ["sync-helper"])
+    monkeypatch.setattr(job, "_start_monitor_locked", lambda *_args: None)
+
+    def update_operation():
+        operation_started.set()
+        assert release_operation.wait(timeout=2.0)
+        job.start(days=0)
+        return "updated"
+
+    def apply_update():
+        try:
+            update_results.append(
+                job.apply_browser_login_update(
+                    update_operation,
+                    reset_confirmed=True,
+                )
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            update_errors.append(exc)
+
+    def competing_start():
+        competing_start_called.set()
+        try:
+            job.start(days=0)
+        except BaseException as exc:
+            competing_errors.append(exc)
+
+    update_thread = threading.Thread(target=apply_update)
+    competing_thread = threading.Thread(target=competing_start)
+    update_thread.start()
+    assert operation_started.wait(timeout=1.0)
+    competing_thread.start()
+    assert competing_start_called.wait(timeout=1.0)
+    try:
+        time.sleep(0.05)
+        assert competing_thread.is_alive()
+        assert spawned_processes == []
+    finally:
+        release_operation.set()
+        update_thread.join(timeout=1.0)
+        competing_thread.join(timeout=1.0)
+
+    assert not update_thread.is_alive()
+    assert not competing_thread.is_alive()
+    assert len(update_results) == 1
+    reset_result, operation_result = update_results[0]
+    assert reset_result == nicegui_data.BrowserSessionResetResult(True, False)
+    assert operation_result == "updated"
+    assert update_errors == []
+    assert len(spawned_processes) == 1
+    assert len(competing_errors) == 1
+    assert isinstance(competing_errors[0], RuntimeError)
+    assert "already running" in str(competing_errors[0])
+
+
+def test_atomic_login_update_requires_reset_before_operation_when_state_exists(
+    monkeypatch, tmp_path
+):
+    session = tmp_path / "garmin_session.json"
+    session.write_text("{}", encoding="utf-8")
+    operation_calls = 0
+
+    def operation():
+        nonlocal operation_calls
+        operation_calls += 1
+
+    monkeypatch.setattr(
+        nicegui_data,
+        "reset_garmin_browser_session",
+        lambda _directory: pytest.fail("an unconfirmed reset must not run"),
+    )
+    job = nicegui_data.SyncJob(tmp_path / "garmin.db")
+
+    with pytest.raises(
+        nicegui_data.BrowserSessionResetRequired,
+        match="reset",
+    ):
+        job.apply_browser_login_update(operation, reset_confirmed=False)
+
+    assert operation_calls == 0
+    assert session.is_file()
+    assert job.snapshot().state == "idle"
+
+
 @pytest.mark.parametrize(
     ("state", "expected"),
     [

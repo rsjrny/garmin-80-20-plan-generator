@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import subprocess
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
+from garmin_data_hub import __version__
+from garmin_data_hub.analytics.sleep_recovery import analyze_sleep_recovery
 from garmin_data_hub.mcp_sidecar_client import call_tool_via_sidecar
 from garmin_data_hub.services.baseline_plan_builder import (
     BASELINE_DISTANCE_OPTIONS,
@@ -20,7 +24,12 @@ from garmin_data_hub.services.baseline_plan_builder import (
     build_and_save_baseline,
     normalize_baseline_distance,
 )
-from garmin_data_hub.services.garmin_auth_session import BrowserSessionResetError
+from garmin_data_hub.services.garmin_auth_session import (
+    BrowserSessionResetError,
+    BrowserSessionResetRequired,
+    BrowserSessionResetResult,
+    garmin_browser_session_exists,
+)
 from garmin_data_hub.services.athlete_metrics_service import (
     calculate_metrics_from_db_sources,
     clear_override_metrics,
@@ -68,6 +77,82 @@ from garmin_data_hub.ui_nicegui.layout import (
 )
 
 
+HELP_WORKFLOW_SECTIONS = (
+    (
+        "1",
+        "Set preferences",
+        "Choose miles or kilometres and save reusable defaults for activity "
+        "history, charts, the dashboard, and Garmin sync.",
+        "Open Settings",
+        "/settings",
+    ),
+    (
+        "2",
+        "Sync Garmin",
+        "Set up your Garmin login, choose an optional lookback, and run the "
+        "sync. You can keep using the rest of the app while it runs.",
+        "Open Garmin Sync",
+        "/sync",
+    ),
+    (
+        "3",
+        "Review history",
+        "Filter activities, inspect splits and routes, export activity JSON, "
+        "and explore volume, intensity, heart-rate, speed, and load trends.",
+        "Open Activities",
+        "/activities",
+    ),
+    (
+        "4",
+        "Configure the goal",
+        "Set the athlete, event, schedule, nutrition context, and effective "
+        "heart-rate thresholds used for training plans.",
+        "Open Plan",
+        "/plan",
+    ),
+    (
+        "5",
+        "Generate safely",
+        "Build an offline baseline or ask Codex Coach for a proposal. Codex "
+        "receives minimized context without GPS routes, raw trackpoints, exact "
+        "activity times, or device identifiers.",
+        "Open Codex Coach",
+        "/coach",
+    ),
+    (
+        "6",
+        "Review and apply",
+        "Read the rationale, policy warnings, nutrition targets, and exact "
+        "calendar changes before explicitly approving a proposal.",
+        "Review in Codex Coach",
+        "/coach",
+    ),
+    (
+        "7",
+        "Track compliance",
+        "Compare the active schedule with completed Garmin activities through "
+        "today.",
+        "Open Compliance",
+        "/compliance",
+    ),
+)
+
+ABOUT_LINKS = (
+    (
+        "Project source",
+        "https://github.com/rsjrny/garmin-80-20-plan-generator",
+    ),
+    (
+        "Report an issue",
+        "https://github.com/rsjrny/garmin-80-20-plan-generator/issues",
+    ),
+    (
+        "Releases",
+        "https://github.com/rsjrny/garmin-80-20-plan-generator/releases",
+    ),
+)
+
+
 def _notify_error(message: object) -> None:
     from nicegui import ui
 
@@ -102,6 +187,44 @@ def _resolve_sync_credentials(
     return saved, False
 
 
+def _credentials_for_sync(
+    editing_login: bool,
+    email: object,
+    password: object,
+    saved: GarminCredentials | None,
+) -> tuple[GarminCredentials, bool]:
+    """Use the saved login unless setup or an explicit update is open."""
+
+    if not editing_login:
+        if saved is None:
+            raise ValueError(
+                "The saved Garmin login is unavailable. Choose Update login."
+            )
+        return saved, False
+    return _resolve_sync_credentials(email, password, saved)
+
+
+def _browser_login_state_exists(data_directory: Path) -> bool:
+    """Return whether Garmin browser state might supersede entered credentials."""
+
+    return garmin_browser_session_exists(data_directory)
+
+
+def _mark_saved_login_unavailable(
+    state: dict[str, Any],
+    problem: object,
+    *,
+    credential_may_exist: bool,
+) -> None:
+    """Move the Sync page into a non-cancellable login recovery state."""
+
+    state["saved_email"] = None
+    state["credential_problem"] = str(problem)
+    state["credential_may_exist"] = credential_may_exist
+    state["editing_login"] = True
+    state["login_reset_required"] = True
+
+
 def _sync_waiting_for_mfa(log: str) -> bool:
     """Return whether the latest login event is an unresolved MFA prompt."""
     normalized = str(log or "").casefold()
@@ -132,6 +255,64 @@ def _distance_rows(
             row[f"{stem}_{unit}"] = distance_from_km(value, unit_system)
         converted.append(row)
     return converted
+
+
+def _format_upcoming_plan_for_sharing(
+    rows: list[dict[str, Any]],
+    distance_unit_label: str,
+) -> str:
+    """Format the visible Dashboard plan rows as shareable plain text."""
+
+    session_count = len(rows)
+    session_label = "session" if session_count == 1 else "sessions"
+    heading = (
+        f"Upcoming training plan ({session_count} {session_label} shown)"
+        if rows
+        else "Upcoming training plan"
+    )
+    if not rows:
+        return f"{heading}\nNo upcoming sessions scheduled."
+
+    distance_key = f"distance_{distance_unit_label}"
+
+    def compact_number(value: object) -> str | None:
+        if value is None:
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(number):
+            return None
+        return f"{number:g}"
+
+    lines = [heading]
+    for row in rows:
+        raw_date = " ".join(str(row.get("date") or "Unscheduled").split())
+        try:
+            scheduled_date = date.fromisoformat(raw_date)
+        except ValueError:
+            date_label = raw_date
+        else:
+            date_label = f"{scheduled_date:%a} {scheduled_date.isoformat()}"
+
+        workout = " ".join(str(row.get("workout") or "Workout").split())
+        details: list[str] = []
+        for value, prefix, suffix in (
+            (row.get("duration_min"), "", " min"),
+            (row.get(distance_key), "", f" {distance_unit_label}"),
+            (row.get("tss"), "TSS ", ""),
+        ):
+            rendered = compact_number(value)
+            if rendered is None:
+                continue
+            details.append(f"{prefix}{rendered}{suffix}")
+
+        line = f"- {date_label} — {workout}"
+        if details:
+            line += " · " + " · ".join(details)
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def _split_rows(rows: list[dict[str, Any]], unit_system: str) -> list[dict[str, Any]]:
@@ -219,13 +400,48 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                     ).classes("font-medium")
                     ui.link("Open Garmin Sync", "/sync")
 
+            display_upcoming = _distance_rows(
+                data["upcoming"], unit_system, "distance_km"
+            )
+            shareable_upcoming = _format_upcoming_plan_for_sharing(
+                display_upcoming,
+                unit,
+            )
+
+            def copy_upcoming_plan() -> None:
+                if not display_upcoming:
+                    ui.notify(
+                        "There are no upcoming sessions to copy.",
+                        type="warning",
+                    )
+                    return
+                ui.clipboard.write(shareable_upcoming)
+                session_count = len(display_upcoming)
+                session_label = "session" if session_count == 1 else "sessions"
+                ui.notify(
+                    f"Copied {session_count} upcoming {session_label} "
+                    "to the clipboard.",
+                    type="positive",
+                )
+
             with ui.row().classes("w-full gap-4 items-stretch"):
                 with ui.card().classes("gdh-card flex-1 min-w-[420px]"):
-                    ui.label("Upcoming plan").classes("text-xl font-semibold")
-                    data_grid(
-                        _distance_rows(data["upcoming"], unit_system, "distance_km"),
-                        height="21rem",
-                    )
+                    with ui.row().classes(
+                        "w-full items-center justify-between gap-3 flex-wrap"
+                    ):
+                        ui.label("Upcoming plan").classes("text-xl font-semibold")
+                        copy_plan_button = ui.button(
+                            "Copy plan",
+                            icon="content_copy",
+                            on_click=copy_upcoming_plan,
+                        ).props("outline")
+                        copy_plan_button.set_enabled(bool(display_upcoming))
+                        if display_upcoming:
+                            copy_plan_button.tooltip(
+                                f"Copy the {len(display_upcoming)} upcoming "
+                                "sessions shown"
+                            )
+                    data_grid(display_upcoming, height="21rem")
                 with ui.card().classes("gdh-card flex-1 min-w-[420px]"):
                     ui.label("Recent activities").classes("text-xl font-semibold")
                     recent = [
@@ -1002,44 +1218,29 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
             "credential_may_exist": bool(saved_email)
             or bool(credential_problem and credential_store_available),
             "resetting_browser": False,
+            "editing_login": not bool(saved_email),
+            "login_reset_required": bool(saved_email)
+            or bool(credential_problem)
+            or _browser_login_state_exists(db_path.parent),
         }
         with ui.column().classes("gdh-page"):
             page_heading(
                 "Garmin Sync",
-                "Sign in securely, complete Garmin MFA in Chrome when requested, and monitor the local sync log.",
+                "Reuse the saved Garmin session for normal syncs. Update the "
+                "login only when Garmin requires a fresh sign-in.",
             )
             with ui.card().classes("gdh-card w-full"):
-                ui.label("Garmin Connect login").classes("text-lg font-semibold")
+                ui.label("Garmin login session").classes("text-lg font-semibold")
                 ui.label(
-                    "A saved password is never filled back into this page or added "
-                    "to the sync command or log."
+                    "Normal sync restores Garmin's browser session first. Your "
+                    "saved Windows credential is available only if Garmin sends "
+                    "that browser through a fresh sign-in."
                 ).classes("text-grey-7")
-                with ui.row().classes("w-full items-end gap-3 flex-wrap"):
-                    email = (
-                        ui.input(
-                            "Garmin Connect email",
-                            value=str(saved_email or ""),
-                        )
-                        .props("outlined")
-                        .classes("w-80 max-w-full")
-                    )
-                    password = (
-                        ui.input(
-                            "Garmin Connect password",
-                            password=True,
-                            password_toggle_button=True,
-                        )
-                        .props("outlined")
-                        .classes("w-80 max-w-full")
-                    )
+                credential_label = ui.label().classes("font-medium")
                 with ui.row().classes("w-full items-center gap-3 flex-wrap"):
-                    remember = ui.checkbox(
-                        "Remember on this Windows account",
-                        value=credential_store_available,
-                    )
-                    save_login_button = ui.button(
-                        "Save login",
-                        icon="key",
+                    update_login_button = ui.button(
+                        "Update login",
+                        icon="manage_accounts",
                     ).props("outline")
                     forget_login_button = ui.button(
                         "Forget saved login",
@@ -1049,18 +1250,56 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                         "Reset browser login",
                         icon="restart_alt",
                     ).props("outline")
-                credential_label = ui.label().classes("font-medium")
+                with ui.column().classes("w-full gap-3") as login_editor:
+                    ui.label("Initial sign-in or login update").classes(
+                        "font-semibold"
+                    )
+                    with ui.row().classes("w-full items-end gap-3 flex-wrap"):
+                        email = (
+                            ui.input(
+                                "Garmin Connect email",
+                                value=str(saved_email or ""),
+                            )
+                            .props("outlined")
+                            .classes("w-80 max-w-full")
+                        )
+                        password = (
+                            ui.input(
+                                "Garmin Connect password",
+                                password=True,
+                                password_toggle_button=True,
+                            )
+                            .props("outlined")
+                            .classes("w-80 max-w-full")
+                        )
+                    with ui.row().classes(
+                        "w-full items-center gap-3 flex-wrap"
+                    ):
+                        remember = ui.checkbox(
+                            "Remember on this Windows account",
+                            value=credential_store_available,
+                        )
+                        save_login_button = ui.button(
+                            "Save login",
+                            icon="key",
+                        ).props("outline")
+                        cancel_login_button = ui.button(
+                            "Cancel login update",
+                            icon="close",
+                        ).props("flat")
+                    ui.label(
+                        "The password is never filled back into this page or added "
+                        "to the sync command or log. Leave Remember enabled so "
+                        "ordinary syncs do not ask for it again."
+                    ).classes("text-grey-7")
                 ui.label(
-                    "Clearing Remember prevents password storage in Windows "
-                    "Credential Manager, but Garmin's browser session can still persist."
+                    "If Garmin requests MFA during a fresh sign-in, enter the "
+                    "separate code in the Chrome window. The MFA code is never saved."
                 ).classes("text-grey-7")
                 ui.label(
-                    "When Garmin requests MFA, enter the code in the Chrome window that opens. Sync resumes automatically."
-                ).classes("text-grey-7")
-                ui.label(
-                    "An existing Garmin browser session can take precedence over "
-                    "new credentials. Reset browser login to force a fresh sign-in; "
-                    "use a separate database when changing Garmin accounts."
+                    "Updating a different Garmin account also requires Reset browser "
+                    "login; otherwise the existing session can take precedence. Use "
+                    "a separate database so accounts are not mixed."
                 ).classes("text-amber-9")
                 if legacy_env_path.is_file():
                     ui.label(
@@ -1104,14 +1343,32 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                 progress = ui.linear_progress(value=0).classes("w-full")
                 log = ui.textarea("Sync log", value="").props("outlined readonly").classes("w-full").style("height: 28rem")
 
+            def refresh_login_editor() -> None:
+                editing = bool(state["editing_login"])
+                login_editor.set_visibility(editing)
+                update_login_button.set_visibility(not editing)
+                cancel_login_button.set_visibility(
+                    editing and bool(state["saved_email"])
+                )
+                save_login_button.text = (
+                    "Save updated login"
+                    if state["saved_email"]
+                    else "Save login"
+                )
+
             def refresh_credential_controls(*, enabled: bool = True) -> None:
                 enabled = enabled and not bool(state["resetting_browser"])
-                email.set_enabled(enabled)
-                password.set_enabled(enabled)
-                remember.set_enabled(enabled and credential_store_available)
-                save_login_button.set_enabled(
-                    enabled and credential_store_available
+                editing = bool(state["editing_login"])
+                email.set_enabled(enabled and editing)
+                password.set_enabled(enabled and editing)
+                remember.set_enabled(
+                    enabled and editing and credential_store_available
                 )
+                save_login_button.set_enabled(
+                    enabled and editing and credential_store_available
+                )
+                cancel_login_button.set_enabled(enabled and editing)
+                update_login_button.set_enabled(enabled and not editing)
                 forget_login_button.set_enabled(
                     enabled
                     and credential_store_available
@@ -1122,15 +1379,22 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
             def refresh_credential_label() -> None:
                 if state["saved_email"]:
                     credential_label.text = (
-                        f"Saved securely in {credential_backend} for "
-                        f"{state['saved_email']}."
+                        f"Garmin session ready for {state['saved_email']}. "
+                        f"The backup login is protected by {credential_backend}."
                     )
                 elif state["credential_problem"]:
                     if credential_store_available:
+                        recovery_action = (
+                            " Enter a complete login to replace it."
+                        )
+                        if state["credential_may_exist"]:
+                            recovery_action = (
+                                " Enter a complete login to replace it, or choose "
+                                "Forget saved login."
+                            )
                         credential_label.text = (
                             "Could not read the saved Garmin login: "
-                            f"{state['credential_problem']}. Enter a complete login "
-                            "to replace it or choose Forget saved login."
+                            f"{state['credential_problem']}.{recovery_action}"
                         )
                     else:
                         credential_label.text = (
@@ -1139,10 +1403,113 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                         )
                 else:
                     credential_label.text = (
-                        f"No Garmin login is saved in {credential_backend}."
+                        "Set up the Garmin login once. After the browser sign-in "
+                        f"and MFA are complete, {credential_backend} supplies it "
+                        "without showing these fields again."
                     )
 
-            def save_login() -> None:
+            def edit_login() -> None:
+                state["editing_login"] = True
+                email.value = str(state["saved_email"] or "")
+                password.value = ""
+                refresh_login_editor()
+                refresh_credential_controls()
+
+            def cancel_login_update() -> None:
+                if not state["saved_email"]:
+                    return
+                state["editing_login"] = False
+                email.value = str(state["saved_email"])
+                password.value = ""
+                refresh_login_editor()
+                refresh_credential_controls()
+
+            async def _confirm_browser_login_reset() -> bool:
+                if job.snapshot().state in {
+                    "running",
+                    "cancelling",
+                    "resetting_login",
+                }:
+                    _notify_error(
+                        "Stop Garmin sync before resetting its browser login"
+                    )
+                    return False
+                if not await reset_browser_dialog:
+                    return False
+                if job.snapshot().state in {
+                    "running",
+                    "cancelling",
+                    "resetting_login",
+                }:
+                    _notify_error(
+                        "Garmin sync started; stop it before resetting login"
+                    )
+                    return False
+                return True
+
+            async def _apply_browser_login_update(
+                operation: Callable[[], Any],
+                *,
+                reset_required: bool,
+            ) -> tuple[BrowserSessionResetResult | None, Any] | None:
+                reset_confirmed = False
+                confirmation_needed = reset_required
+                while True:
+                    if confirmation_needed:
+                        if not await _confirm_browser_login_reset():
+                            return None
+                        reset_confirmed = True
+                    state["resetting_browser"] = True
+                    start_button.disable()
+                    refresh_credential_controls(enabled=False)
+                    retry_with_confirmation = False
+                    try:
+                        applied = await run.io_bound(
+                            job.apply_browser_login_update,
+                            operation,
+                            reset_confirmed=reset_confirmed,
+                        )
+                    except BrowserSessionResetRequired:
+                        if reset_confirmed:
+                            raise
+                        retry_with_confirmation = True
+                    else:
+                        if applied is None:
+                            return None
+                        if applied[0] is not None:
+                            state["login_reset_required"] = False
+                        return applied
+                    finally:
+                        state["resetting_browser"] = False
+                        poll_sync()
+                    if retry_with_confirmation:
+                        confirmation_needed = True
+
+            async def reset_browser_login() -> None:
+                try:
+                    applied = await _apply_browser_login_update(
+                        lambda: None,
+                        reset_required=True,
+                    )
+                except (BrowserSessionResetError, RuntimeError) as exc:
+                    _notify_error(exc)
+                    return
+                if applied is None:
+                    return
+                result = applied[0]
+                if result is None:
+                    return
+                message = (
+                    "Garmin browser login reset. The next sync will perform a fresh sign-in."
+                    if result.removed_anything
+                    else "No saved Garmin browser login was found."
+                )
+                ui.notify(message, type="positive")
+
+            async def save_login() -> None:
+                entered_email = str(email.value or "")
+                entered_password = str(password.value or "")
+                password.value = ""
                 if not credential_store_available:
                     _notify_error(
                         state["credential_problem"]
@@ -1150,22 +1517,54 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                     )
                     return
                 try:
-                    credentials = save_credentials(
-                        str(email.value or ""),
-                        str(password.value or ""),
+                    credentials = GarminCredentials(
+                        entered_email,
+                        entered_password,
                     )
-                except (CredentialStoreError, ValueError) as exc:
+                except ValueError as exc:
                     _notify_error(exc)
                     return
+
+                def commit_login() -> GarminCredentials:
+                    return save_credentials(
+                        credentials.email,
+                        credentials.password,
+                    )
+
+                try:
+                    applied = await _apply_browser_login_update(
+                        commit_login,
+                        reset_required=bool(state["login_reset_required"])
+                        or _browser_login_state_exists(db_path.parent),
+                    )
+                except (
+                    BrowserSessionResetError,
+                    CredentialStoreError,
+                    RuntimeError,
+                    ValueError,
+                ) as exc:
+                    _notify_error(exc)
+                    return
+                if applied is None:
+                    return
+                reset_result, credentials = applied
                 state["saved_email"] = credentials.email
                 state["credential_problem"] = None
                 state["credential_may_exist"] = True
+                state["editing_login"] = False
+                state["login_reset_required"] = False
                 email.value = credentials.email
-                password.value = ""
                 refresh_credential_label()
+                refresh_login_editor()
                 refresh_credential_controls()
                 ui.notify(
-                    "Garmin login saved securely for this Windows account.",
+                    (
+                        "Garmin login updated securely after resetting the old "
+                        "browser session."
+                        if reset_result is not None
+                        and reset_result.removed_anything
+                        else "Garmin login saved securely for this Windows account."
+                    ),
                     type="positive",
                 )
 
@@ -1178,8 +1577,14 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                 state["saved_email"] = None
                 state["credential_problem"] = None
                 state["credential_may_exist"] = False
+                state["editing_login"] = True
+                state["login_reset_required"] = _browser_login_state_exists(
+                    db_path.parent
+                )
+                email.value = ""
                 password.value = ""
                 refresh_credential_label()
+                refresh_login_editor()
                 refresh_credential_controls()
                 message = (
                     "Saved Garmin login removed. Browser session data was left unchanged."
@@ -1188,73 +1593,132 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                 )
                 ui.notify(message, type="info")
 
-            async def reset_browser_login() -> None:
-                if job.snapshot().state in {"running", "cancelling"}:
-                    _notify_error("Stop Garmin sync before resetting its browser login")
-                    return
-                if not await reset_browser_dialog:
-                    return
-                if job.snapshot().state in {"running", "cancelling"}:
-                    _notify_error("Garmin sync started; stop it before resetting login")
-                    return
-                state["resetting_browser"] = True
-                start_button.disable()
-                refresh_credential_controls(enabled=False)
-                try:
-                    result = await run.io_bound(
-                        job.reset_browser_session,
-                    )
-                except (BrowserSessionResetError, RuntimeError) as exc:
-                    _notify_error(exc)
-                else:
-                    message = (
-                        "Garmin browser login reset. The next sync will perform a fresh sign-in."
-                        if result.removed_anything
-                        else "No saved Garmin browser login was found."
-                    )
-                    ui.notify(message, type="positive")
-                finally:
-                    state["resetting_browser"] = False
-                    poll_sync()
-
-            def start_sync() -> None:
+            async def start_sync() -> None:
+                editing_login = bool(state["editing_login"])
+                entered_email = str(email.value or "")
+                entered_password = str(password.value or "")
+                password.value = ""
                 saved_credentials = None
-                try:
-                    if not str(password.value or "") and credential_store_available:
+                if credential_store_available and (
+                    not editing_login or not entered_password
+                ):
+                    try:
                         saved_credentials = load_credentials()
-                    credentials, entered = _resolve_sync_credentials(
-                        email.value,
-                        password.value,
+                    except CredentialStoreError as exc:
+                        _mark_saved_login_unavailable(
+                            state,
+                            exc,
+                            credential_may_exist=True,
+                        )
+                        email.value = ""
+                        refresh_credential_label()
+                        refresh_login_editor()
+                        refresh_credential_controls()
+                        _notify_error(exc)
+                        return
+                try:
+                    credentials, entered = _credentials_for_sync(
+                        editing_login,
+                        entered_email,
+                        entered_password,
                         saved_credentials,
                     )
-                    if entered and bool(remember.value):
+                except ValueError as exc:
+                    if not editing_login or (
+                        saved_credentials is None and bool(state["saved_email"])
+                    ):
+                        _mark_saved_login_unavailable(
+                            state,
+                            exc,
+                            credential_may_exist=saved_credentials is not None,
+                        )
+                        email.value = ""
+                        refresh_credential_label()
+                        refresh_login_editor()
+                        refresh_credential_controls()
+                    _notify_error(exc)
+                    return
+
+                try:
+                    days_to_sync = int(days.value or 0)
+                except (TypeError, ValueError) as exc:
+                    _notify_error(exc)
+                    return
+
+                login_commit: dict[str, str | None] = {}
+                remember_login = entered and bool(remember.value)
+                remove_old_login = (
+                    entered
+                    and not remember_login
+                    and credential_store_available
+                    and bool(state["credential_may_exist"])
+                )
+
+                def publish_login_commit() -> None:
+                    if "saved_email" not in login_commit:
+                        return
+                    committed_email = login_commit["saved_email"]
+                    state["saved_email"] = committed_email
+                    state["credential_problem"] = None
+                    state["credential_may_exist"] = bool(committed_email)
+                    state["editing_login"] = not bool(committed_email)
+                    email.value = str(committed_email or entered_email)
+                    refresh_credential_label()
+                    refresh_login_editor()
+                    refresh_credential_controls()
+
+                def launch_with_entered_login() -> GarminCredentials:
+                    launch_credentials = credentials
+                    if remember_login:
                         if not credential_store_available:
                             raise CredentialStoreUnavailable(
                                 "Windows Credential Manager is unavailable; "
                                 "clear Remember to use these credentials once"
                             )
-                        credentials = save_credentials(
+                        launch_credentials = save_credentials(
                             credentials.email,
                             credentials.password,
                         )
-                        state["saved_email"] = credentials.email
-                        state["credential_problem"] = None
-                        state["credential_may_exist"] = True
-                        email.value = credentials.email
-                        refresh_credential_label()
+                        login_commit["saved_email"] = launch_credentials.email
+                    elif remove_old_login:
+                        delete_credentials()
+                        login_commit["saved_email"] = None
                     job.start(
-                        days=int(days.value or 0),
-                        credentials=credentials,
+                        days=days_to_sync,
+                        credentials=launch_credentials,
                     )
+                    return launch_credentials
+
+                try:
+                    if entered:
+                        applied = await _apply_browser_login_update(
+                            launch_with_entered_login,
+                            reset_required=bool(state["login_reset_required"])
+                            or _browser_login_state_exists(db_path.parent),
+                        )
+                        if applied is None:
+                            return
+                        _, credentials = applied
+                    else:
+                        job.start(
+                            days=days_to_sync,
+                            credentials=credentials,
+                        )
                 except (
+                    BrowserSessionResetError,
                     CredentialStoreError,
                     OSError,
                     RuntimeError,
                     ValueError,
                 ) as exc:
+                    publish_login_commit()
+                    state["login_reset_required"] = (
+                        _browser_login_state_exists(db_path.parent)
+                    )
                     _notify_error(exc)
                     return
-                password.value = ""
+                publish_login_commit()
+                state["login_reset_required"] = True
                 state["handled"] = "running"
                 state["handled_error"] = None
                 start_button.disable()
@@ -1262,7 +1726,13 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                 clear_button.disable()
                 refresh_credential_controls(enabled=False)
                 ui.notify(
-                    "Garmin login window is opening. Complete MFA there if requested.",
+                    (
+                        "Fresh Garmin sign-in started. Complete MFA in Chrome "
+                        "if Garmin requests it."
+                        if entered
+                        else "Sync started with the saved Garmin session. Complete "
+                        "MFA in Chrome only if Garmin requests a fresh sign-in."
+                    ),
                     type="info",
                 )
 
@@ -1299,6 +1769,8 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
             clear_button.on("click", clear_sync_log)
             repair_button.on("click", repair)
             save_login_button.on("click", save_login)
+            update_login_button.on("click", edit_login)
+            cancel_login_button.on("click", cancel_login_update)
             forget_login_button.on("click", forget_login)
             reset_browser_button.on("click", reset_browser_login)
 
@@ -1347,6 +1819,10 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                     return
                 state["handled"] = snapshot.state
                 if snapshot.state == "completed":
+                    if state["saved_email"]:
+                        state["editing_login"] = False
+                        refresh_login_editor()
+                        refresh_credential_controls()
                     ui.notify("Garmin sync completed successfully.", type="positive")
                 elif snapshot.state == "failed":
                     _notify_error(snapshot.error or f"Sync exited with {snapshot.return_code}")
@@ -1354,6 +1830,7 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                     ui.notify("Garmin sync stopped.", type="info")
 
             refresh_credential_label()
+            refresh_login_editor()
             poll_sync()
             ui.timer(1.0, poll_sync)
 
@@ -1361,12 +1838,391 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
     def query_page() -> None:
         render_shell("Data Query", db_path, sandboxed=sandboxed)
         with ui.column().classes("gdh-page"):
-            page_heading("Data Query", "Run guarded read-only SQLite queries or advanced garmin_mcp tools.")
+            page_heading(
+                "Data Query",
+                "Analyze sleep and recovery, run guarded read-only SQLite "
+                "queries, or use advanced garmin_mcp tools.",
+            )
             tabs = ui.tabs().classes("w-full")
             with tabs:
+                recovery_tab = ui.tab("Sleep & Recovery", icon="bedtime")
                 sql_tab = ui.tab("Read-only SQL")
                 mcp_tab = ui.tab("MCP tool")
-            with ui.tab_panels(tabs, value=sql_tab).classes("gdh-card w-full bg-white"):
+            with ui.tab_panels(tabs, value=recovery_tab).classes(
+                "gdh-card w-full bg-white"
+            ):
+                with ui.tab_panel(recovery_tab):
+                    today = date.today()
+                    recovery_state: dict[str, Any] = {"analysis": None}
+                    with ui.row().classes("w-full items-end gap-3 flex-wrap"):
+                        recovery_start = ui.input(
+                            "Start date",
+                            value=(today - timedelta(days=27)).isoformat(),
+                        ).props("outlined type=date").classes("w-48")
+                        recovery_end = ui.input(
+                            "End date",
+                            value=today.isoformat(),
+                        ).props("outlined type=date").classes("w-48")
+                        analyze_recovery_button = ui.button(
+                            "Analyze recovery",
+                            icon="insights",
+                        )
+                        for days in (14, 30, 90):
+                            ui.button(
+                                f"{days} days",
+                                on_click=lambda _, count=days: (
+                                    setattr(recovery_end, "value", today.isoformat()),
+                                    setattr(
+                                        recovery_start,
+                                        "value",
+                                        (today - timedelta(days=count - 1)).isoformat(),
+                                    ),
+                                ),
+                            ).props("flat dense")
+
+                    with ui.card().classes("gdh-card w-full bg-blue-1"):
+                        ui.label(
+                            "This analysis compares your Garmin trends and personal "
+                            "baselines. Consumer wearable sleep stages and recovery "
+                            "signals are estimates, not a diagnosis; prioritize "
+                            "patterns over individual nights."
+                        ).classes("text-blue-10")
+
+                    @ui.refreshable
+                    def recovery_results() -> None:
+                        analysis = recovery_state["analysis"]
+                        if analysis is None:
+                            ui.label(
+                                "Choose a period and select Analyze recovery. A "
+                                "28-day window gives the 7-day comparisons useful "
+                                "context."
+                            ).classes("text-grey-7 py-6")
+                            return
+                        rows = analysis["rows"]
+                        summary = analysis["summary"]
+                        if not rows:
+                            with ui.card().classes("gdh-card w-full bg-amber-1"):
+                                ui.label(
+                                    "No sleep or recovery records were found in "
+                                    "this period. Run Garmin Sync with health data "
+                                    "enabled, then try again."
+                                ).classes("text-amber-10")
+                            data_grid(analysis["sources"], height="14rem")
+                            return
+
+                        def latest_value(key: str) -> Any:
+                            return next(
+                                (
+                                    row[key]
+                                    for row in reversed(rows)
+                                    if row.get(key) is not None
+                                ),
+                                None,
+                            )
+
+                        def display(value: Any, suffix: str = "") -> str:
+                            return f"{value}{suffix}" if value is not None else "—"
+
+                        with ui.row().classes("w-full gap-3 flex-wrap"):
+                            metric_card(
+                                "Average sleep",
+                                display(summary["average_sleep_hours"], " h"),
+                                icon="bedtime",
+                            )
+                            metric_card(
+                                "Average sleep score",
+                                display(summary["average_sleep_score"], "/100"),
+                                icon="hotel_class",
+                            )
+                            metric_card(
+                                "Duration variability",
+                                display(
+                                    summary["sleep_duration_sd_hours"], " h SD"
+                                ),
+                                icon="swap_vert",
+                            )
+                            metric_card(
+                                "Latest readiness",
+                                display(latest_value("readiness_score"), "/100"),
+                                icon="battery_charging_full",
+                            )
+                            metric_card(
+                                "Latest HRV average",
+                                display(latest_value("hrv_weekly"), " ms"),
+                                icon="monitor_heart",
+                            )
+                            metric_card(
+                                "Body Battery at wake",
+                                display(latest_value("body_battery_wake"), "/100"),
+                                icon="battery_full",
+                            )
+
+                        with ui.card().classes("gdh-card w-full"):
+                            ui.label("Deep-dive observations").classes(
+                                "text-xl font-semibold"
+                            )
+                            for insight in analysis["insights"]:
+                                with ui.row().classes(
+                                    "w-full items-start gap-3 flex-nowrap"
+                                ):
+                                    ui.icon("search").classes("text-blue-7 mt-1")
+                                    with ui.column().classes("gap-0"):
+                                        ui.label(insight["title"]).classes(
+                                            "font-semibold"
+                                        )
+                                        ui.label(insight["text"]).classes(
+                                            "text-slate-700"
+                                        )
+
+                        frame = pd.DataFrame(rows)
+                        frame["date"] = pd.to_datetime(frame["date"])
+                        with ui.row().classes("w-full gap-4 items-stretch flex-wrap"):
+                            with ui.card().classes(
+                                "gdh-card flex-1 min-w-[30rem]"
+                            ):
+                                ui.label("Sleep duration vs. need").classes(
+                                    "text-lg font-semibold"
+                                )
+                                figure = go.Figure()
+                                figure.add_trace(
+                                    go.Bar(
+                                        x=frame["date"],
+                                        y=frame["sleep_hours"],
+                                        name="Recorded sleep",
+                                    )
+                                )
+                                figure.add_trace(
+                                    go.Scatter(
+                                        x=frame["date"],
+                                        y=frame["sleep_need_hours"],
+                                        name="Garmin sleep need",
+                                        mode="lines+markers",
+                                    )
+                                )
+                                figure.update_layout(
+                                    yaxis_title="Hours",
+                                    legend_orientation="h",
+                                    margin=dict(l=40, r=20, t=20, b=40),
+                                )
+                                ui.plotly(figure).classes("w-full").style(
+                                    "height: 25rem"
+                                )
+
+                            with ui.card().classes(
+                                "gdh-card flex-1 min-w-[30rem]"
+                            ):
+                                ui.label("Sleep-stage composition").classes(
+                                    "text-lg font-semibold"
+                                )
+                                stage_figure = go.Figure()
+                                for key, label in (
+                                    ("deep_min", "Deep"),
+                                    ("rem_min", "REM"),
+                                    ("light_min", "Light"),
+                                    ("awake_min", "Awake"),
+                                ):
+                                    stage_figure.add_trace(
+                                        go.Bar(
+                                            x=frame["date"],
+                                            y=frame[key],
+                                            name=label,
+                                        )
+                                    )
+                                stage_figure.update_layout(
+                                    barmode="stack",
+                                    yaxis_title="Minutes",
+                                    legend_orientation="h",
+                                    margin=dict(l=40, r=20, t=20, b=40),
+                                )
+                                ui.plotly(stage_figure).classes("w-full").style(
+                                    "height: 25rem"
+                                )
+
+                        with ui.row().classes("w-full gap-4 items-stretch flex-wrap"):
+                            with ui.card().classes(
+                                "gdh-card flex-1 min-w-[30rem]"
+                            ):
+                                ui.label("Recovery signals").classes(
+                                    "text-lg font-semibold"
+                                )
+                                recovery_figure = go.Figure()
+                                for key, label in (
+                                    ("sleep_score", "Sleep score"),
+                                    ("readiness_score", "Training readiness"),
+                                    ("body_battery_wake", "Body Battery at wake"),
+                                    ("daily_stress", "Daily stress"),
+                                ):
+                                    recovery_figure.add_trace(
+                                        go.Scatter(
+                                            x=frame["date"],
+                                            y=frame[key],
+                                            name=label,
+                                            mode="lines+markers",
+                                        )
+                                    )
+                                recovery_figure.update_layout(
+                                    yaxis_title="Garmin scale (0–100)",
+                                    legend_orientation="h",
+                                    margin=dict(l=40, r=20, t=20, b=40),
+                                )
+                                ui.plotly(recovery_figure).classes("w-full").style(
+                                    "height: 25rem"
+                                )
+
+                            with ui.card().classes(
+                                "gdh-card flex-1 min-w-[30rem]"
+                            ):
+                                ui.label("HRV and resting heart rate").classes(
+                                    "text-lg font-semibold"
+                                )
+                                physiology_figure = make_subplots(
+                                    specs=[[{"secondary_y": True}]]
+                                )
+                                physiology_figure.add_trace(
+                                    go.Scatter(
+                                        x=frame["date"],
+                                        y=frame["hrv_nightly"],
+                                        name="Nightly HRV",
+                                        mode="lines+markers",
+                                    ),
+                                    secondary_y=False,
+                                )
+                                physiology_figure.add_trace(
+                                    go.Scatter(
+                                        x=frame["date"],
+                                        y=frame["hrv_weekly"],
+                                        name="7-day HRV",
+                                        mode="lines",
+                                    ),
+                                    secondary_y=False,
+                                )
+                                physiology_figure.add_trace(
+                                    go.Scatter(
+                                        x=frame["date"],
+                                        y=frame["resting_hr"],
+                                        name="Resting HR",
+                                        mode="lines+markers",
+                                    ),
+                                    secondary_y=True,
+                                )
+                                physiology_figure.update_yaxes(
+                                    title_text="HRV (ms)", secondary_y=False
+                                )
+                                physiology_figure.update_yaxes(
+                                    title_text="Resting HR (bpm)", secondary_y=True
+                                )
+                                physiology_figure.update_layout(
+                                    legend_orientation="h",
+                                    margin=dict(l=40, r=40, t=20, b=40),
+                                )
+                                ui.plotly(physiology_figure).classes("w-full").style(
+                                    "height: 25rem"
+                                )
+
+                        if analysis["relationships"]:
+                            with ui.card().classes("gdh-card w-full"):
+                                ui.label("Exploratory relationships").classes(
+                                    "text-xl font-semibold"
+                                )
+                                ui.label(
+                                    "Pearson correlations summarize association, "
+                                    "not cause and effect. At least five paired days "
+                                    "are required."
+                                ).classes("text-grey-7")
+                                data_grid(
+                                    analysis["relationships"], height="12rem"
+                                )
+
+                        with ui.card().classes("gdh-card w-full"):
+                            ui.label("7-day comparison").classes(
+                                "text-xl font-semibold"
+                            )
+                            data_grid(analysis["trends"], height="18rem")
+
+                        latest_notes = [
+                            ("Sleep feedback", latest_value("sleep_feedback")),
+                            ("Sleep insight", latest_value("sleep_insight")),
+                            ("HRV feedback", latest_value("hrv_feedback")),
+                            (
+                                "Readiness feedback",
+                                latest_value("readiness_feedback"),
+                            ),
+                        ]
+                        latest_notes = [item for item in latest_notes if item[1]]
+                        if latest_notes:
+                            with ui.card().classes("gdh-card w-full"):
+                                ui.label("Latest Garmin context").classes(
+                                    "text-xl font-semibold"
+                                )
+                                for label, value in latest_notes:
+                                    ui.label(f"{label}: {value}").classes(
+                                        "text-slate-700"
+                                    )
+
+                        table_fields = (
+                            "date",
+                            "sleep_hours",
+                            "sleep_need_hours",
+                            "sleep_score",
+                            "deep_min",
+                            "rem_min",
+                            "awake_min",
+                            "sleeping_hr",
+                            "resting_hr",
+                            "sleep_stress",
+                            "daily_stress",
+                            "body_battery_wake",
+                            "body_battery_change",
+                            "hrv_nightly",
+                            "hrv_weekly",
+                            "hrv_status",
+                            "readiness_score",
+                            "readiness_level",
+                            "average_spo2",
+                            "lowest_spo2",
+                            "sleep_respiration",
+                            "skin_temp_delta_c",
+                            "activity_sessions",
+                            "activity_load",
+                        )
+                        with ui.card().classes("gdh-card w-full"):
+                            ui.label("Daily detail").classes(
+                                "text-xl font-semibold"
+                            )
+                            data_grid(
+                                [
+                                    {key: row.get(key) for key in table_fields}
+                                    for row in reversed(rows)
+                                ],
+                                height="30rem",
+                            )
+                        with ui.card().classes("gdh-card w-full"):
+                            ui.label("Data coverage by source").classes(
+                                "text-xl font-semibold"
+                            )
+                            data_grid(analysis["sources"], height="15rem")
+
+                    async def execute_recovery_analysis() -> None:
+                        analyze_recovery_button.disable()
+                        try:
+                            recovery_state["analysis"] = await run.io_bound(
+                                analyze_sleep_recovery,
+                                db_path,
+                                recovery_start.value,
+                                recovery_end.value,
+                            )
+                        except (OSError, sqlite3.Error, ValueError) as exc:
+                            _notify_error(exc)
+                            return
+                        finally:
+                            analyze_recovery_button.enable()
+                        recovery_results.refresh()
+
+                    analyze_recovery_button.on(
+                        "click", execute_recovery_analysis
+                    )
+                    recovery_results()
+
                 with ui.tab_panel(sql_tab):
                     sql_state: dict[str, list[dict]] = {"rows": []}
                     sql = ui.textarea("SQL", value="SELECT activity_type AS sport, COUNT(*) AS activities FROM activity GROUP BY activity_type ORDER BY activities DESC").props("outlined autogrow").classes("w-full")
@@ -1519,20 +2375,116 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                 )
 
     @ui.page("/guide")
-    def guide_page() -> None:
-        render_shell("Guide", db_path, sandboxed=sandboxed)
+    def help_about_page() -> None:
+        render_shell("Help & About", db_path, sandboxed=sandboxed)
         with ui.column().classes("gdh-page"):
-            page_heading("Garmin Data Hub Guide", "The core workflow in the NiceGUI desktop interface.")
-            sections = (
-                ("0. Set preferences", "Open Settings to choose miles or kilometres and save the default history windows, table size, sport, dashboard rows, and Garmin sync lookback used across the interface."),
-                ("1. Sync Garmin", "Open Garmin Sync, choose an optional lookback, and run the account-authenticated garmin-givemydata workflow. Navigation remains usable while it runs."),
-                ("2. Review history", "Activities provides filterable Garmin sessions, split/trackpoint inspection, and complete per-activity JSON downloads. Charts summarizes volume, intensity, heart rate, speed, and load."),
-                ("3. Configure the goal", "Plan stores the athlete, event, schedule, nutrition context, and effective HR thresholds used as locked inputs for coaching."),
-                ("4. Generate safely", "Codex Coach uses your signed-in Codex CLI. It excludes raw routes and identifiers, validates the structured response locally, and never writes a proposal automatically."),
-                ("5. Review and apply", "Read the rationale, policy warnings, macros, and exact date-level database changes. Check the acknowledgement only when you want to apply the proposal."),
-                ("6. Track compliance", "Compliance compares the active schedule with completed Garmin activities through today."),
+            page_heading(
+                "Help & About",
+                "Get oriented, find support, and review application and "
+                "open-source information.",
             )
-            for title, text in sections:
-                with ui.card().classes("gdh-card w-full"):
-                    ui.label(title).classes("text-xl font-semibold")
-                    ui.label(text).classes("text-slate-700")
+
+            with ui.card().classes("gdh-card w-full bg-slate-900 text-white p-5"):
+                with ui.row().classes("w-full items-center gap-4 flex-wrap"):
+                    ui.icon("directions_run").classes("text-5xl text-blue-3")
+                    with ui.column().classes("gap-1 flex-1 min-w-[18rem]"):
+                        with ui.row().classes("items-center gap-3 flex-wrap"):
+                            ui.label("Garmin Data Hub").classes(
+                                "text-2xl font-semibold"
+                            )
+                            ui.badge(f"Version {__version__}", color="blue")
+                        ui.label(
+                            "A local-first desktop app for syncing and analysing "
+                            "Garmin activity data, exploring training metrics, and "
+                            "creating policy-validated training plans with optional "
+                            "Codex coaching."
+                        ).classes("text-slate-200")
+
+            ui.label("Getting started").classes(
+                "text-2xl font-semibold text-slate-900 mt-2"
+            )
+            ui.label(
+                "Follow this workflow, or jump directly to the page you need."
+            ).classes("text-slate-600")
+            with ui.row().classes("w-full gap-4 items-stretch flex-wrap"):
+                for step, title, text, link_label, route in HELP_WORKFLOW_SECTIONS:
+                    with ui.card().classes(
+                        "gdh-card flex-1 min-w-[20rem] max-w-full"
+                    ):
+                        with ui.row().classes("items-center gap-3"):
+                            ui.badge(step, color="blue")
+                            ui.label(title).classes("text-lg font-semibold")
+                        ui.label(text).classes("text-slate-700 flex-1")
+                        ui.link(link_label, route).classes("font-medium")
+
+            ui.label("About Garmin Data Hub").classes(
+                "text-2xl font-semibold text-slate-900 mt-2"
+            )
+            with ui.row().classes("w-full gap-4 items-stretch flex-wrap"):
+                with ui.card().classes("gdh-card flex-1 min-w-[20rem]"):
+                    with ui.row().classes("items-center gap-2"):
+                        ui.icon("lock").classes("text-blue-7")
+                        ui.label("Local by design").classes(
+                            "text-lg font-semibold"
+                        )
+                    ui.label(
+                        "The selected local SQLite database is the app's primary "
+                        "store for Garmin-derived activity records, saved "
+                        "preferences, and accepted plans. Network-backed features "
+                        "run only when you initiate them—for example Garmin sync, "
+                        "optional Codex setup, sign-in, or generation, viewing "
+                        "online map tiles, and external links. On Windows, optional "
+                        "saved Garmin credentials use Windows Credential Manager; "
+                        "browser-session data and logs are separate local files."
+                    ).classes("text-slate-700")
+                    ui.label("Current database").classes(
+                        "text-xs font-bold uppercase text-grey-6 mt-2"
+                    )
+                    ui.label(str(db_path)).classes(
+                        "text-xs font-mono text-grey-8 break-all"
+                    )
+                    ui.badge(
+                        "Sandbox snapshot" if sandboxed else "Local database",
+                        color="amber" if sandboxed else "green",
+                    )
+
+                with ui.card().classes("gdh-card flex-1 min-w-[20rem]"):
+                    with ui.row().classes("items-center gap-2"):
+                        ui.icon("support").classes("text-blue-7")
+                        ui.label("Project & support").classes(
+                            "text-lg font-semibold"
+                        )
+                    ui.label(
+                        "Use these links for source code, known updates, or a "
+                        "problem that is not resolved by the workflow above."
+                    ).classes("text-slate-700")
+                    with ui.column().classes("gap-2"):
+                        for label, target in ABOUT_LINKS:
+                            ui.link(label, target, new_tab=True).classes(
+                                "font-medium"
+                            )
+
+            with ui.card().classes("gdh-card w-full"):
+                with ui.row().classes("items-center gap-2"):
+                    ui.icon("balance").classes("text-blue-7")
+                    ui.label("Open-source & legal").classes(
+                        "text-lg font-semibold"
+                    )
+                ui.label(
+                    "Garmin Data Hub project code is available under the MIT "
+                    "License. Garmin Connect download support is powered by the "
+                    "open-source garmin-givemydata project, licensed "
+                    "AGPL-3.0-only. Packaged releases include the applicable "
+                    "license texts, third-party notices, and source materials."
+                ).classes("text-slate-700")
+                ui.link(
+                    "View the garmin-givemydata project",
+                    "https://github.com/nrvim/garmin-givemydata",
+                    new_tab=True,
+                ).classes("font-medium")
+                ui.label(
+                    "Garmin Data Hub is not affiliated with or endorsed by Garmin."
+                ).classes("text-slate-700")
+                ui.label("Copyright © 2024 Garmin Data Hub").classes(
+                    "text-sm text-grey-7"
+                )

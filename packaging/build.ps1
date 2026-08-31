@@ -30,6 +30,7 @@ $CliBuildDir = Join-Path $BuildDir "cli_tool"
 $GuiDistDir = Join-Path $GuiBuildDir "dist"
 $CliDistDir = Join-Path $CliBuildDir "dist"
 $PyProjectPath = Join-Path $ProjectRoot "pyproject.toml"
+$PackageInitPath = Join-Path $ProjectRoot "src\garmin_data_hub\__init__.py"
 $VenvPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
 $IssScriptFile = Join-Path $ScriptDir "installer\GarminDataHub.iss"
 $LicenseFile = Join-Path $ProjectRoot "LICENSE"
@@ -79,6 +80,34 @@ function Update-PyProjectVersion {
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllLines($FilePath, $lines, $utf8NoBom)
     Write-Host "Updated pyproject version to $NewVersion" -ForegroundColor Green
+}
+
+function Update-PackageVersion {
+    param(
+        [string]$FilePath,
+        [string]$NewVersion
+    )
+
+    if (-not (Test-Path -LiteralPath $FilePath -PathType Leaf)) {
+        throw "Package metadata file not found: $FilePath"
+    }
+
+    $lines = Get-Content -LiteralPath $FilePath
+    $updatedAny = $false
+    for ($i = 0; $i -lt $lines.Length; $i++) {
+        if ($lines[$i] -match '^__version__\s*=\s*"[^"]*"\s*$') {
+            $lines[$i] = "__version__ = `"$NewVersion`""
+            $updatedAny = $true
+            break
+        }
+    }
+    if (-not $updatedAny) {
+        throw "Could not find __version__ in package metadata: $FilePath"
+    }
+
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllLines($FilePath, $lines, $utf8NoBom)
+    Write-Host "Updated package version to $NewVersion" -ForegroundColor Green
 }
 
 function Ensure-GivemydataFromPypi {
@@ -239,6 +268,7 @@ Write-Host ""
 Write-Host "Building version: $Version" -ForegroundColor Cyan
 Write-Host "garmin-givemydata package spec: $GivemydataPypiSpec" -ForegroundColor Cyan
 Update-PyProjectVersion -FilePath $PyProjectPath -NewVersion $Version
+Update-PackageVersion -FilePath $PackageInitPath -NewVersion $Version
 Ensure-GivemydataFromPypi -PythonExe $VenvPython -PackageSpec $GivemydataPypiSpec -TryAutoUpdate:(-not $SkipGivemydataUpdate)
 Assert-PackagingEnvironment -PythonExe $VenvPython
 

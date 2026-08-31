@@ -130,7 +130,7 @@ The primary desktop interface is implemented under `src/garmin_data_hub/ui_niceg
 - **Compliance** - planned-versus-completed distance and duration
 - **Data Query** - guarded read-only SQL and advanced garmin_mcp calls
 - **Settings** - persistent distance units and activity, chart, dashboard, and sync defaults
-- **Guide** - the end-to-end local workflow
+- **Help & About** - the end-to-end workflow, support links, version, privacy, and licensing information
 
 ## Data Query Page (Advanced)
 
@@ -231,16 +231,26 @@ Helpful sync options:
 
 ### Garmin Login and MFA
 
-The Garmin Sync page accepts a Garmin Connect email and password. With
-**Remember on this Windows account** selected, the app saves the login in
-Windows Credential Manager for the current Windows user. A saved password is
-resolved locally by the application and is never filled back into the page. **Save
-login** stores the entered values without starting a sync; **Run sync** also
-saves a newly entered login when Remember is selected.
+On first use, the Garmin Sync page opens a one-time login editor. Enter the
+Garmin Connect email and password and leave **Remember on this Windows account**
+selected to protect them in Windows Credential Manager for the current Windows
+user. After the login is saved, the editor is hidden and the page reports that
+the Garmin session is ready.
 
-Click **Run sync** to launch the existing visible Chrome login flow. If Garmin
-requests MFA, enter the code in that Chrome window; the sync continues after
-Garmin accepts it. Garmin Data Hub does not collect or save the MFA code.
+For later syncs, click **Run sync** without re-entering either value. The Garmin
+client restores its saved browser session first. The app silently retrieves the
+backup login from Windows Credential Manager because the sync helper requires a
+credential pair even when that browser session is still valid; it is used only
+if Garmin requires a fresh sign-in. The password is never filled back into the
+page or added to command-line arguments or sync logs.
+
+Choose **Update login** only when the Garmin email or password changes. Saving an
+updated login asks for confirmation before resetting the old browser session so
+that its cookies cannot take precedence. The new login is not saved or used if
+that reset is cancelled or fails. The same safeguard applies when **Run sync** is
+used directly from the login editor. If a fresh sign-in triggers MFA, enter the
+separate code in the Chrome window; the sync continues after Garmin accepts it.
+Garmin Data Hub does not collect or save the MFA code.
 
 Choose **Forget saved login** to remove the saved email/password credential.
 This does not remove the separate Garmin browser profile or revoke an already
@@ -249,9 +259,9 @@ active Garmin session. It also does not delete a legacy plaintext
 passed to the sync helper through its process environment, not through
 command-line arguments or sync logs.
 
-Clearing **Remember on this Windows account** means the password is not saved
-in Windows Credential Manager; Garmin's own browser session can still persist.
-An existing Garmin session can take precedence over newly entered credentials.
+The one-time editor also permits a sync without saving the login by clearing
+**Remember on this Windows account**, but the editor will be needed again when no
+saved credential is available. Garmin's browser session can persist separately.
 Use the confirmed **Reset browser login** action to remove the local browser
 profile and session-cookie backup before a fresh sign-in. Use a separate
 database when changing Garmin accounts so activity data is not mixed.

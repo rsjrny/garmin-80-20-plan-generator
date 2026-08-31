@@ -13,7 +13,7 @@ Quick Start
 Option 1: GUI (recommended)
 1. Run GarminDataHub.exe.
 2. In the native window, open Garmin Sync from the navigation drawer.
-3. Under Garmin Connect login, enter your Garmin Connect email and password.
+3. In the one-time login editor, enter your Garmin Connect email and password.
 4. Leave Remember on this Windows account selected to save the login securely
    in Windows Credential Manager, or clear it to avoid saving the password there.
 5. Click Run sync. If Garmin requests MFA, enter the code in the Garmin Chrome
@@ -21,12 +21,15 @@ Option 1: GUI (recommended)
 6. Review data in Activities, Charts, Plan, and Compliance pages.
 
 Run sync saves a newly entered login when Remember is selected. Save login can
-store the entered login without starting a sync.
+store it without starting a sync. After setup, the editor is hidden and the page
+reports Garmin session ready. For later GUI syncs, click Run sync; no email or
+password entry is needed. The saved password is never filled back into the page.
 
-For later GUI syncs, leave the password blank to use the saved Windows
-credential. The saved password is never filled back into the page. Use Forget
-saved login to remove the saved email and password from Windows Credential
-Manager.
+Use Update login only when the Garmin email or password changes. Saving an
+updated login asks for confirmation before resetting the old browser session;
+the new login is not saved or used if the reset is cancelled or fails. Use
+Forget saved login to remove the saved email and password from Windows Credential
+Manager and reopen the editor.
 
 Garmin's browser session may persist even when Remember is cleared. An existing
 browser session can take precedence over newly entered credentials. Use Reset
@@ -56,7 +59,7 @@ GUI Pages (Current)
 - Charts
 - Codex Coach
 - Compliance
-- 80/20 Help
+- Help & About
 
 Notes:
 - MCP Query exists but may be hidden depending on filename/config.
@@ -150,10 +153,10 @@ GUI does not start:
 - Retry by launching GarminDataHub.exe again.
 
 Sync/login issues:
-- In the GUI, enter a complete email/password pair or use the saved credential
-  shown on the Garmin Sync page.
-- If the saved login is stale, choose Forget saved login, enter the current
-  credentials, and run sync again.
+- If no saved login is available, use the one-time editor and enter a complete
+  email/password pair.
+- If the saved login is stale, choose Update login, enter the current
+  credentials, save it, and confirm the browser-session reset.
 - Complete MFA in the visible Chrome window when Garmin requests it.
 - For direct CLI use, run with --visible when interactive login is needed.
 - Verify internet connectivity.
@@ -181,8 +184,10 @@ Security Notes
   in Windows Credential Manager for the current Windows user. It is not stored
   in the Garmin database or a tracked project file.
 - The password is not placed in command-line arguments or sync logs and is not
-  filled back into the Sync page. It is supplied only to the launched sync
-  process through its environment.
+  filled back into the Sync page. After setup, its editor is hidden. The saved
+  credential is supplied only to the launched sync process through its
+  environment; the Garmin client restores its browser session before using it
+  for a fresh sign-in.
 - MFA codes are entered on Garmin's browser page and are not saved by Garmin
   Data Hub.
 - Forget saved login does not delete a legacy plaintext .env file. If an older
