@@ -447,7 +447,9 @@ def _existing_by_date(
     return grouped
 
 
-def _summary(session: Mapping[str, Any]) -> str:
+def _summary(
+    session: Mapping[str, Any], *, detail_fields: tuple[str, ...] = ()
+) -> str:
     details = [str(session.get("workout") or "(unnamed workout)")]
     if session.get("duration_minutes") is not None:
         details.append(f"{session['duration_minutes']:g} min")
@@ -455,7 +457,27 @@ def _summary(session: Mapping[str, Any]) -> str:
         details.append(f"{session['distance_km']:g} km")
     if session.get("intensity"):
         details.append(str(session["intensity"]))
+    if "phase" in detail_fields and session.get("phase"):
+        details.append(f"Phase: {session['phase']}")
+    if "tss" in detail_fields and session.get("tss") is not None:
+        details.append(f"TSS: {session['tss']:g}")
+    if "flags" in detail_fields:
+        flags = session.get("flags") or []
+        details.append(f"Flags: {', '.join(flags) if flags else '(none)'}")
+    if "notes" in detail_fields:
+        note = str(session.get("notes") or "").strip()
+        details.append(f"Notes: {note or '(blank)'}")
     return " | ".join(details)
+
+
+def _comparison_value(value: Any) -> Any:
+    if isinstance(value, (int, float)):
+        return round(float(value), 6)
+    if isinstance(value, str):
+        return " ".join(value.split())
+    if isinstance(value, list):
+        return tuple(sorted(_comparison_value(item) for item in value))
+    return value
 
 
 def _plan_changes(db_path: Path, plan: ImportedTrainingPlan) -> tuple[dict[str, str], ...]:
@@ -491,12 +513,21 @@ def _plan_changes(db_path: Path, plan: ImportedTrainingPlan) -> tuple[dict[str, 
         )
         if old_values == new_values:
             continue
-        changed_fields = [
-            field.replace("_", " ").title()
+        changed_field_keys = tuple(
+            field
             for field in fields
-            if sorted(repr(item.get(field)) for item in old)
-            != sorted(repr(item.get(field)) for item in new)
+            if sorted(_comparison_value(item.get(field)) for item in old)
+            != sorted(_comparison_value(item.get(field)) for item in new)
+        )
+        changed_fields = [
+            field.replace("_", " ").title() for field in changed_field_keys
         ]
+        current_summary = " ; ".join(
+            _summary(item, detail_fields=changed_field_keys) for item in old
+        )
+        proposed_summary = " ; ".join(
+            _summary(item, detail_fields=changed_field_keys) for item in new
+        )
         changes.append(
             {
                 "Date": iso_date,
@@ -507,6 +538,8 @@ def _plan_changes(db_path: Path, plan: ImportedTrainingPlan) -> tuple[dict[str, 
                 or "Rest / no scheduled row",
             }
         )
+        changes[-1]["Current"] = current_summary or "(none)"
+        changes[-1]["Proposed"] = proposed_summary or "Rest / no scheduled row"
     return tuple(changes)
 
 

@@ -218,6 +218,30 @@ def test_build_packet_is_deterministic_and_privacy_minimized(tmp_path):
         row["activity_id"]
         for row in context["training_history"]["recent_activities"]
     ] == [1, 2]
+    assert context["runner_profile"] == {
+        "age": 44,
+        "experience_level": "limited_recent_load",
+        "experience_basis": (
+            "Derived from the selected Garmin lookback summary and recent "
+            "date-only activities; do not treat as lifetime athletic history."
+        ),
+        "history_window_days": 14,
+        "active_days_in_window": 2,
+        "recent_activity_count": 2,
+        "recent_run_activity_count": 2,
+        "weekly_average_training_hours": 0.75,
+        "weekly_average_run_distance_km": 7.5,
+        "weekly_average_run_hours": 0.75,
+        "longest_recent_run": {
+            "date": "2026-08-15",
+            "distance_km": 10.0,
+            "duration_min": 60.0,
+        },
+        "easy_hr_zone_fraction": 0.64,
+        "explicit_strength_experience": "Beginner",
+        "explicit_limitations": "Avoid deep knee flexion",
+        "data_quality_flags": [],
+    }
     assert context["preferences"]["strength_equipment"] == "Dumbbells and bands"
     assert context["current_plan"]["sessions"] == [
         {
@@ -257,6 +281,7 @@ def test_packet_contains_copyable_prompt_and_explicit_output_schema(tmp_path):
     assert packet["request_id"] in chatgpt["copyable_prompt"]
     assert packet["active_plan_sha256"] in chatgpt["copyable_prompt"]
     assert "Return only one JSON object" in chatgpt["copyable_prompt"]
+    assert "context.runner_profile" in chatgpt["copyable_prompt"]
     assert "uploaded Garmin coaching packet" not in chatgpt["copyable_prompt"]
     assert "chatgpt.requested_output_schema" not in chatgpt["copyable_prompt"]
     assert output_schema["additionalProperties"] is False

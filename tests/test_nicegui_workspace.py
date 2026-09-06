@@ -209,6 +209,58 @@ def test_review_diff_detects_metric_changes_with_same_workout_name(tmp_path):
     assert "Duration Minutes" in review.changes[0]["Changed fields"]
 
 
+def test_review_diff_shows_note_only_changes(tmp_path):
+    db_path = _database(tmp_path)
+    conn = connect_sqlite(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO planned_workout(
+                scheduled_date, workout_name, description,
+                planned_distance_m, planned_duration_s, planned_tss,
+                structure_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                TEST_PLAN_DATE,
+                "10K Race",
+                "Original note.",
+                10_000,
+                3_600,
+                100,
+                json.dumps(
+                    {
+                        "workout": {
+                            "sport": "run",
+                            "phase": "Race",
+                            "workout": "10K Race",
+                            "intensity": "race",
+                            "duration_minutes": 60,
+                            "distance_km": 10,
+                            "tss": 100,
+                            "flags": ["RACE"],
+                            "notes": "Original note.",
+                        }
+                    }
+                ),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    context = workspace.load_workspace_context(db_path, sandboxed=True)
+    packet = workspace.build_workspace_packet(context)
+    response = _response_for(packet)
+    response["workouts"][0]["notes"] = "Updated note."
+    review = workspace.review_proposal(context, packet, json.dumps(response))
+
+    assert len(review.changes) == 1
+    assert review.changes[0]["Changed fields"] == "Notes"
+    assert "Notes: Original note." in review.changes[0]["Current"]
+    assert "Notes: Updated note." in review.changes[0]["Proposed"]
+
+
 def test_future_plan_start_keeps_training_history_as_of_today(monkeypatch, tmp_path):
     context = workspace.load_workspace_context(_database(tmp_path), sandboxed=True)
     future_start = date.today() + timedelta(days=30)

@@ -119,6 +119,7 @@ def _generation_input(packet: Mapping[str, Any], prompt: str) -> str:
     cli_packet = copy.deepcopy(dict(packet))
     chatgpt = cli_packet.get("chatgpt")
     if isinstance(chatgpt, dict):
+        chatgpt.pop("copyable_prompt", None)
         chatgpt.pop("requested_output_schema", None)
         chatgpt["output_schema_note"] = (
             "The required response schema is enforced by the Codex CLI."

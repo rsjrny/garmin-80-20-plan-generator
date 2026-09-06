@@ -67,7 +67,9 @@ def test_codex_generation_uses_saved_login_and_isolated_read_only_run(
             "\n</coaching_packet_json>", 1
         )[0]
     )
+    assert "copyable_prompt" not in submitted_packet["chatgpt"]
     assert "requested_output_schema" not in submitted_packet["chatgpt"]
+    assert "copyable_prompt" in _packet()["chatgpt"]
     assert "requested_output_schema" in _packet()["chatgpt"]
     assert captured["schema"]["required"] == list(
         captured["schema"]["properties"]
