@@ -61,12 +61,17 @@ from garmin_data_hub.ui_nicegui.data import (
     interface_settings,
     list_activities,
     nutrition_rows,
+    pace_minutes_from_mps,
+    pace_text_from_mps,
+    pace_unit,
     plan_rows,
     planning_settings,
     repair_derived_metrics,
     run_read_only_query,
     save_interface_settings,
     save_planning_settings,
+    speed_from_mps,
+    speed_unit,
     validate_planning_settings,
 )
 from garmin_data_hub.ui_nicegui.layout import (
@@ -151,6 +156,22 @@ ABOUT_LINKS = (
         "https://github.com/rsjrny/garmin-80-20-plan-generator/releases",
     ),
 )
+
+CHART_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("activity_distribution", "Activity distribution"),
+    ("weekly_distance", "Weekly distance"),
+    ("weekly_duration", "Weekly duration"),
+    ("average_heart_rate", "Average heart rate"),
+    ("average_velocity", "Average pace/speed"),
+    ("weekly_training_stress", "Weekly training stress"),
+    ("weekly_hr_zones", "Weekly HR zones"),
+    ("weekly_elevation", "Weekly elevation gain"),
+    ("longest_activity", "Longest activity by week"),
+    ("load_vs_duration", "Load vs duration"),
+    ("drift_decoupling", "Drift and decoupling"),
+)
+CHART_LABELS = {chart_id: label for chart_id, label in CHART_OPTIONS}
+CHART_IDS_BY_LABEL = {label: chart_id for chart_id, label in CHART_OPTIONS}
 
 
 def _notify_error(message: object) -> None:
@@ -257,6 +278,247 @@ def _distance_rows(
     return converted
 
 
+def _activity_velocity_fields(
+    speed_mps: object,
+    unit_system: str,
+    velocity_display: str,
+    *,
+    prefix: str = "avg",
+) -> dict[str, object]:
+    """Return one visible pace/speed field for activity summary tables."""
+    if velocity_display == "Speed":
+        suffix = "mph" if unit_system == "Imperial" else "kmh"
+        return {f"{prefix}_speed_{suffix}": speed_from_mps(speed_mps, unit_system)}
+    return {f"{prefix}_pace": pace_text_from_mps(speed_mps, unit_system)}
+
+
+def _chart_ids_from_labels(labels: object) -> set[str]:
+    if not labels:
+        return set()
+    if isinstance(labels, str):
+        labels = [labels]
+    return {
+        chart_id
+        for label in labels
+        for chart_id in (CHART_IDS_BY_LABEL.get(str(label)),)
+        if chart_id is not None
+    }
+
+
+def _add_chart(
+    figures: list[go.Figure],
+    selected_chart_ids: set[str],
+    chart_id: str,
+    figure: go.Figure,
+) -> None:
+    if chart_id in selected_chart_ids:
+        figures.append(figure)
+
+
+def _has_positive_sum(frame: pd.DataFrame, columns: list[str]) -> bool:
+    available = [column for column in columns if column in frame.columns]
+    if not available:
+        return False
+    values = frame[available].apply(pd.to_numeric, errors="coerce").fillna(0)
+    return float(values.to_numpy().sum()) > 0
+
+
+def _training_chart_figures(
+    frame: pd.DataFrame,
+    selected_chart_ids: set[str],
+    *,
+    unit: str,
+    unit_system: str,
+    velocity_display: str,
+) -> list[go.Figure]:
+    if not selected_chart_ids:
+        return []
+
+    frame = frame.copy()
+    frame["date"] = pd.to_datetime(frame["start_time_utc"], errors="coerce")
+    frame = frame.dropna(subset=["date"])
+    frame["distance"] = pd.to_numeric(frame["total_distance_m"], errors="coerce").fillna(0) / 1000
+    if unit_system == "Imperial":
+        frame["distance"] *= 0.621371192237334
+    frame["duration_hours"] = pd.to_numeric(frame["total_elapsed_s"], errors="coerce").fillna(0) / 3600
+    frame["ascent"] = pd.to_numeric(frame["total_ascent_m"], errors="coerce").fillna(0)
+    ascent_unit = "ft" if unit_system == "Imperial" else "m"
+    if unit_system == "Imperial":
+        frame["ascent"] *= 3.2808398950131
+    frame["tss"] = pd.to_numeric(frame["tss"], errors="coerce").fillna(0)
+    frame["week"] = frame["date"].dt.to_period("W").dt.start_time
+
+    if velocity_display == "Speed":
+        velocity_field = "display_speed"
+        velocity_title = f"Average speed ({speed_unit(unit_system)})"
+        frame[velocity_field] = frame["avg_speed_mps"].apply(
+            lambda value: speed_from_mps(value, unit_system)
+        )
+        velocity_yaxis = None
+    else:
+        velocity_field = "display_pace"
+        velocity_title = f"Average pace ({pace_unit(unit_system)})"
+        frame[velocity_field] = frame["avg_speed_mps"].apply(
+            lambda value: pace_minutes_from_mps(value, unit_system)
+        )
+        velocity_yaxis = {"autorange": "reversed"}
+
+    weekly = frame.groupby("week", as_index=False).agg(
+        distance=("distance", "sum"),
+        duration_hours=("duration_hours", "sum"),
+        tss=("tss", "sum"),
+        ascent=("ascent", "sum"),
+        longest_distance=("distance", "max"),
+    )
+    figures: list[go.Figure] = []
+    _add_chart(
+        figures,
+        selected_chart_ids,
+        "activity_distribution",
+        px.bar(
+            frame.groupby("sport", as_index=False).size(),
+            x="sport",
+            y="size",
+            title="Activity distribution",
+        ),
+    )
+    _add_chart(
+        figures,
+        selected_chart_ids,
+        "weekly_distance",
+        px.bar(weekly, x="week", y="distance", title=f"Weekly distance ({unit})"),
+    )
+    _add_chart(
+        figures,
+        selected_chart_ids,
+        "weekly_duration",
+        px.line(
+            weekly,
+            x="week",
+            y="duration_hours",
+            markers=True,
+            title="Weekly duration (hours)",
+        ),
+    )
+    _add_chart(
+        figures,
+        selected_chart_ids,
+        "average_heart_rate",
+        px.scatter(
+            frame,
+            x="date",
+            y="avg_hr_bpm",
+            color="sport",
+            hover_data=["distance", "duration_hours"],
+            title="Average heart rate",
+        ),
+    )
+    velocity_figure = px.scatter(
+        frame,
+        x="date",
+        y=velocity_field,
+        color="sport",
+        size="distance",
+        title=velocity_title,
+    )
+    if velocity_yaxis is not None:
+        velocity_figure.update_yaxes(**velocity_yaxis)
+    _add_chart(figures, selected_chart_ids, "average_velocity", velocity_figure)
+    _add_chart(
+        figures,
+        selected_chart_ids,
+        "weekly_training_stress",
+        px.bar(weekly, x="week", y="tss", title="Weekly training stress"),
+    )
+    zone_columns = ["zone_1_s", "zone_2_s", "zone_3_s", "zone_4_s", "zone_5_s"]
+    if "weekly_hr_zones" in selected_chart_ids and _has_positive_sum(frame, zone_columns):
+        weekly_zones = (
+            frame.groupby("week", as_index=False)[zone_columns].sum()
+            .rename(
+                columns={
+                    "zone_1_s": "Zone 1",
+                    "zone_2_s": "Zone 2",
+                    "zone_3_s": "Zone 3",
+                    "zone_4_s": "Zone 4",
+                    "zone_5_s": "Zone 5",
+                }
+            )
+        )
+        for column in ("Zone 1", "Zone 2", "Zone 3", "Zone 4", "Zone 5"):
+            weekly_zones[column] = weekly_zones[column] / 3600
+        zones_long = weekly_zones.melt(
+            id_vars="week",
+            var_name="zone",
+            value_name="hours",
+        )
+        figures.append(
+            px.bar(
+                zones_long,
+                x="week",
+                y="hours",
+                color="zone",
+                title="Weekly HR zones (hours)",
+                barmode="stack",
+            )
+        )
+    _add_chart(
+        figures,
+        selected_chart_ids,
+        "weekly_elevation",
+        px.bar(weekly, x="week", y="ascent", title=f"Weekly elevation gain ({ascent_unit})"),
+    )
+    _add_chart(
+        figures,
+        selected_chart_ids,
+        "longest_activity",
+        px.line(
+            weekly,
+            x="week",
+            y="longest_distance",
+            markers=True,
+            title=f"Longest activity by week ({unit})",
+        ),
+    )
+    _add_chart(
+        figures,
+        selected_chart_ids,
+        "load_vs_duration",
+        px.scatter(
+            frame,
+            x="duration_hours",
+            y="tss",
+            color="sport",
+            size="distance",
+            title="Load vs duration",
+        ),
+    )
+    if "drift_decoupling" in selected_chart_ids:
+        drift_columns = [
+            column
+            for column in ("aerobic_decoupling_pct", "hr_drift_pct")
+            if column in frame.columns and frame[column].notna().any()
+        ]
+        if drift_columns:
+            drift_frame = frame[["date", "sport", *drift_columns]].melt(
+                id_vars=["date", "sport"],
+                value_vars=drift_columns,
+                var_name="metric",
+                value_name="percent",
+            ).dropna(subset=["percent"])
+            if not drift_frame.empty:
+                figures.append(
+                    px.scatter(
+                        drift_frame,
+                        x="date",
+                        y="percent",
+                        color="metric",
+                        symbol="sport",
+                        title="Drift and decoupling (%)",
+                    )
+                )
+    return figures
+
+
 def _format_upcoming_plan_for_sharing(
     rows: list[dict[str, Any]],
     distance_unit_label: str,
@@ -315,7 +577,11 @@ def _format_upcoming_plan_for_sharing(
     return "\n".join(lines)
 
 
-def _split_rows(rows: list[dict[str, Any]], unit_system: str) -> list[dict[str, Any]]:
+def _split_rows(
+    rows: list[dict[str, Any]],
+    unit_system: str,
+    velocity_display: str,
+) -> list[dict[str, Any]]:
     unit = distance_unit(unit_system)
     converted: list[dict[str, Any]] = []
     for source in rows:
@@ -323,6 +589,15 @@ def _split_rows(rows: list[dict[str, Any]], unit_system: str) -> list[dict[str, 
         meters = row.pop("distance_meters", None)
         kilometres = float(meters) / 1000 if meters is not None else None
         row[f"distance_{unit}"] = distance_from_km(kilometres, unit_system)
+        speed_mps = row.pop("speed_mps", None)
+        row.update(
+            _activity_velocity_fields(
+                speed_mps,
+                unit_system,
+                velocity_display,
+                prefix="split",
+            )
+        )
         converted.append(row)
     return converted
 
@@ -373,6 +648,7 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
             preferences = interface_settings(db_path)
             unit_system = preferences["unit_system"]
             unit = distance_unit(unit_system)
+            velocity_display = preferences["activity_velocity_display"]
             data = dashboard_data(
                 db_path,
                 item_limit=preferences["dashboard_item_limit"],
@@ -455,6 +731,11 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                             "duration_min": round(float(row["elapsed_min"]), 1)
                             if row.get("elapsed_min") is not None
                             else None,
+                            **_activity_velocity_fields(
+                                row.get("speed_mps"),
+                                unit_system,
+                                velocity_display,
+                            ),
                             "avg_hr": row.get("avg_hr"),
                         }
                         for row in data["recent"]
@@ -472,6 +753,7 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
             preferences = interface_settings(db_path)
             unit_system = preferences["unit_system"]
             unit = distance_unit(unit_system)
+            velocity_display = preferences["activity_velocity_display"]
             sports = activity_sports(db_path)
             state: dict[str, Any] = {"selected_id": None, "rows": []}
             with ui.card().classes("gdh-card w-full"):
@@ -487,7 +769,18 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
 
             @ui.refreshable
             def activity_table() -> None:
-                rows = _distance_rows(state["rows"], unit_system, "distance_km")
+                rows = []
+                for source in _distance_rows(state["rows"], unit_system, "distance_km"):
+                    row = dict(source)
+                    speed_mps = row.pop("speed_mps", None)
+                    row.update(
+                        _activity_velocity_fields(
+                            speed_mps,
+                            unit_system,
+                            velocity_display,
+                        )
+                    )
+                    rows.append(row)
                 grid = data_grid(rows, height="34rem")
                 if grid is not None:
                     def select_row(event) -> None:
@@ -533,6 +826,17 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                         if isinstance(value, (int, float)):
                             value = f"{value / divisor:.1f}{suffix}"
                         metric_card(label, value if value is not None else "-" )
+                    velocity_value = (
+                        speed_from_mps(activity.get("average_speed"), unit_system)
+                        if velocity_display == "Speed"
+                        else pace_text_from_mps(activity.get("average_speed"), unit_system)
+                    )
+                    velocity_label = (
+                        f"Average speed ({speed_unit(unit_system)})"
+                        if velocity_display == "Speed"
+                        else "Average pace"
+                    )
+                    metric_card(velocity_label, velocity_value or "-", icon="speed")
                 ui.button(
                     "Download complete JSON",
                     icon="download",
@@ -552,7 +856,13 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                     with ui.tab_panel(overview_tab):
                         data_grid([detail["metrics"]] if detail["metrics"] else [])
                     with ui.tab_panel(splits_tab):
-                        data_grid(_split_rows(detail["splits"], unit_system))
+                        data_grid(
+                            _split_rows(
+                                detail["splits"],
+                                unit_system,
+                                velocity_display,
+                            )
+                        )
                     with ui.tab_panel(track_tab):
                         points = pd.DataFrame(detail["trackpoints"])
                         if not points.empty and {"lon_deg", "lat_deg"}.issubset(points.columns):
@@ -636,15 +946,26 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
             preferences = interface_settings(db_path)
             unit_system = preferences["unit_system"]
             unit = distance_unit(unit_system)
+            velocity_display = preferences["activity_velocity_display"]
             sports = activity_sports(db_path)
             with ui.card().classes("gdh-card w-full"):
                 with ui.row().classes("items-end gap-3 flex-wrap"):
                     start = ui.input("Start date", value=(date.today() - timedelta(days=preferences["chart_lookback_days"])).isoformat()).props("outlined type=date").classes("w-48")
                     selected_sports = ui.select(sports, value=[], multiple=True, label="Sports (blank means all)").props("outlined use-chips").classes("w-96")
+                    selected_charts = ui.select(
+                        [label for _, label in CHART_OPTIONS],
+                        value=[label for _, label in CHART_OPTIONS],
+                        multiple=True,
+                        label="Charts to show",
+                    ).props("outlined use-chips").classes("min-w-[22rem] flex-1")
                     draw_button = ui.button("Update charts", icon="monitoring")
 
             @ui.refreshable
             def render_charts() -> None:
+                selected_chart_ids = _chart_ids_from_labels(selected_charts.value)
+                if not selected_chart_ids:
+                    ui.label("Select one or more charts to display.").classes("text-grey-7")
+                    return
                 frame = chart_dataframe(
                     db_path,
                     start_date=str(start.value),
@@ -653,25 +974,18 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                 if frame.empty:
                     ui.label("No activities match the selected filters.").classes("text-grey-7")
                     return
-                frame["date"] = pd.to_datetime(frame["start_time_utc"], errors="coerce")
-                frame = frame.dropna(subset=["date"])
-                frame["distance"] = frame["total_distance_m"].fillna(0) / 1000
-                if unit_system == "Imperial":
-                    frame["distance"] *= 0.621371192237334
-                frame["duration_hours"] = frame["total_elapsed_s"].fillna(0) / 3600
-                speed_unit = "mph" if unit_system == "Imperial" else "km/h"
-                speed_factor = 2.2369362920544 if unit_system == "Imperial" else 3.6
-                frame["display_speed"] = frame["avg_speed_mps"] * speed_factor
-                frame["week"] = frame["date"].dt.to_period("W").dt.start_time
-                weekly = frame.groupby("week", as_index=False).agg(distance=("distance", "sum"), duration_hours=("duration_hours", "sum"), tss=("tss", "sum"))
-                figures = (
-                    px.bar(frame.groupby("sport", as_index=False).size(), x="sport", y="size", title="Activity distribution"),
-                    px.bar(weekly, x="week", y="distance", title=f"Weekly distance ({unit})"),
-                    px.line(weekly, x="week", y="duration_hours", markers=True, title="Weekly duration (hours)"),
-                    px.scatter(frame, x="date", y="avg_hr_bpm", color="sport", hover_data=["distance", "duration_hours"], title="Average heart rate"),
-                    px.scatter(frame, x="date", y="display_speed", color="sport", size="distance", title=f"Average speed ({speed_unit})"),
-                    px.bar(weekly, x="week", y="tss", title="Weekly training stress"),
+                figures = _training_chart_figures(
+                    frame,
+                    selected_chart_ids,
+                    unit=unit,
+                    unit_system=unit_system,
+                    velocity_display=velocity_display,
                 )
+                if not figures:
+                    ui.label(
+                        "The selected charts need data that is not available for these filters."
+                    ).classes("text-grey-7")
+                    return
                 with ui.grid(columns=2).classes("w-full gap-4"):
                     for figure in figures:
                         with ui.card().classes("gdh-card w-full"):
@@ -2292,10 +2606,17 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                 ui.label("Units").classes("text-xl font-semibold")
                 fields["unit_system"] = ui.radio(
                     {
-                        "Imperial": "Miles and mph",
-                        "Metric": "Kilometres and km/h",
+                        "Imperial": "Miles",
+                        "Metric": "Kilometres",
                     },
                     value=saved["unit_system"],
+                ).props("inline")
+                fields["activity_velocity_display"] = ui.radio(
+                    {
+                        "Pace": "Pace",
+                        "Speed": "Speed",
+                    },
+                    value=saved["activity_velocity_display"],
                 ).props("inline")
                 ui.label(
                     "This changes presentation only. Garmin records, JSON exports, "

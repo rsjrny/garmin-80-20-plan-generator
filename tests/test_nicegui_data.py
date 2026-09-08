@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import pandas as pd
 
 from garmin_data_hub.db.migrate import apply_schema
 from garmin_data_hub.db.sqlite import connect_sqlite
@@ -18,19 +19,32 @@ from garmin_data_hub.ui_nicegui.data import (
     activity_detail,
     activity_sports,
     compliance_data,
+    dashboard_data,
     distance_from_km,
     distance_unit,
     get_sync_job,
     interface_settings,
     list_activities,
     nutrition_rows,
+    pace_minutes_from_mps,
+    pace_text_from_mps,
+    pace_unit,
     planning_settings,
     run_read_only_query,
     save_interface_settings,
     save_planning_settings,
+    speed_from_mps,
+    speed_unit,
     validate_read_only_sql,
 )
-from garmin_data_hub.ui_nicegui.pages import _fit_leaflet_route, _show_activity_detail
+from garmin_data_hub.ui_nicegui.pages import (
+    CHART_OPTIONS,
+    _chart_ids_from_labels,
+    _fit_leaflet_route,
+    _show_activity_detail,
+    _split_rows,
+    _training_chart_figures,
+)
 
 
 def _database(tmp_path: Path) -> Path:
@@ -255,6 +269,7 @@ def test_interface_settings_persist_and_convert_distance_units(tmp_path):
     db_path = _database(tmp_path)
     values = {
         "unit_system": "Metric",
+        "activity_velocity_display": "Speed",
         "activity_lookback_days": 180,
         "activity_row_limit": 250,
         "activity_default_sport": "running",
@@ -269,9 +284,124 @@ def test_interface_settings_persist_and_convert_distance_units(tmp_path):
     assert distance_from_km(10, "Metric") == 10.0
     assert distance_unit("Imperial") == "mi"
     assert distance_from_km(10, "Imperial") == 6.21
+    assert speed_unit("Metric") == "km/h"
+    assert speed_from_mps(2.78, "Metric") == 10.01
+    assert speed_unit("Imperial") == "mph"
+    assert speed_from_mps(2.78, "Imperial") == 6.22
+    assert pace_unit("Metric") == "min/km"
+    assert pace_text_from_mps(2.78, "Metric") == "6:00 min/km"
+    assert pace_unit("Imperial") == "min/mi"
+    assert pace_text_from_mps(2.78, "Imperial") == "9:39 min/mi"
+    assert pace_minutes_from_mps(0, "Imperial") is None
 
     with pytest.raises(ValueError, match="between 25 and 5,000"):
         save_interface_settings(db_path, {**values, "activity_row_limit": 10})
+
+    with pytest.raises(ValueError, match="Pace or Speed"):
+        save_interface_settings(
+            db_path,
+            {**values, "activity_velocity_display": "Meters per second"},
+        )
+
+
+def test_dashboard_recent_activities_include_speed_source(tmp_path):
+    db_path = _database(tmp_path)
+
+    recent = dashboard_data(db_path)["recent"]
+
+    assert recent[0]["speed_mps"] == 2.78
+
+
+def test_split_rows_show_configured_pace_or_speed():
+    rows = [{"split_number": 1, "distance_meters": 1609.344, "speed_mps": 2.78}]
+
+    pace_rows = _split_rows(rows, "Imperial", "Pace")
+    speed_rows = _split_rows(rows, "Imperial", "Speed")
+
+    assert pace_rows == [
+        {"split_number": 1, "distance_mi": 1.0, "split_pace": "9:39 min/mi"}
+    ]
+    assert speed_rows == [
+        {"split_number": 1, "distance_mi": 1.0, "split_speed_mph": 6.22}
+    ]
+
+
+def test_chart_selection_labels_map_to_stable_ids():
+    labels = [label for _, label in CHART_OPTIONS]
+
+    assert _chart_ids_from_labels(labels[:2]) == {
+        "activity_distribution",
+        "weekly_distance",
+    }
+    assert _chart_ids_from_labels([]) == set()
+    assert _chart_ids_from_labels("Weekly HR zones") == {"weekly_hr_zones"}
+
+
+def test_training_chart_figures_include_selected_new_charts():
+    frame = pd.DataFrame(
+        [
+            {
+                "start_time_utc": "2026-08-17T10:00:00",
+                "sport": "running",
+                "total_distance_m": 10000,
+                "total_elapsed_s": 3600,
+                "total_ascent_m": 120,
+                "avg_hr_bpm": 145,
+                "avg_speed_mps": 2.78,
+                "tss": 70,
+                "zone_1_s": 600,
+                "zone_2_s": 2400,
+                "zone_3_s": 600,
+                "zone_4_s": 0,
+                "zone_5_s": 0,
+                "aerobic_decoupling_pct": 3.2,
+                "hr_drift_pct": 2.5,
+            },
+            {
+                "start_time_utc": "2026-08-20T10:00:00",
+                "sport": "running",
+                "total_distance_m": 5000,
+                "total_elapsed_s": 1800,
+                "total_ascent_m": 40,
+                "avg_hr_bpm": 140,
+                "avg_speed_mps": 2.9,
+                "tss": 35,
+                "zone_1_s": 300,
+                "zone_2_s": 1200,
+                "zone_3_s": 300,
+                "zone_4_s": 0,
+                "zone_5_s": 0,
+                "aerobic_decoupling_pct": 1.8,
+                "hr_drift_pct": 1.2,
+            },
+        ]
+    )
+
+    figures = _training_chart_figures(
+        frame,
+        {
+            "average_velocity",
+            "weekly_hr_zones",
+            "weekly_elevation",
+            "longest_activity",
+            "load_vs_duration",
+            "drift_decoupling",
+        },
+        unit="mi",
+        unit_system="Imperial",
+        velocity_display="Pace",
+    )
+
+    titles = [figure.layout.title.text for figure in figures]
+    assert titles == [
+        "Average pace (min/mi)",
+        "Weekly HR zones (hours)",
+        "Weekly elevation gain (ft)",
+        "Longest activity by week (mi)",
+        "Load vs duration",
+        "Drift and decoupling (%)",
+    ]
+    assert figures[0].layout.yaxis.autorange == "reversed"
 
 
 def test_data_query_is_read_only_and_bounded(tmp_path):

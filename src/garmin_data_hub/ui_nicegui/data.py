@@ -56,8 +56,10 @@ FORBIDDEN_SQL = re.compile(
 )
 
 MILES_PER_KILOMETRE = 0.621371192237334
+METRES_PER_MILE = 1609.344
 INTERFACE_SETTING_DEFAULTS: dict[str, Any] = {
     "unit_system": "Imperial",
+    "activity_velocity_display": "Pace",
     "activity_lookback_days": 365,
     "activity_row_limit": 1000,
     "activity_default_sport": "All",
@@ -67,6 +69,7 @@ INTERFACE_SETTING_DEFAULTS: dict[str, Any] = {
 }
 INTERFACE_SETTING_KEYS = {
     "unit_system": "unit_system",  # shared with the legacy interface
+    "activity_velocity_display": "nicegui_activity_velocity_display",
     "activity_lookback_days": "nicegui_activity_lookback_days",
     "activity_row_limit": "nicegui_activity_row_limit",
     "activity_default_sport": "nicegui_activity_default_sport",
@@ -129,6 +132,9 @@ def _validated_interface_settings(values: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("Distance units must be Imperial or Metric")
     result = {
         "unit_system": unit_system,
+        "activity_velocity_display": str(
+            values.get("activity_velocity_display") or "Pace"
+        ),
         "activity_lookback_days": int(values.get("activity_lookback_days", 365)),
         "activity_row_limit": int(values.get("activity_row_limit", 1000)),
         "activity_default_sport": str(values.get("activity_default_sport") or "All"),
@@ -136,6 +142,8 @@ def _validated_interface_settings(values: Mapping[str, Any]) -> dict[str, Any]:
         "sync_lookback_days": int(values.get("sync_lookback_days", 0)),
         "dashboard_item_limit": int(values.get("dashboard_item_limit", 8)),
     }
+    if result["activity_velocity_display"] not in {"Pace", "Speed"}:
+        raise ValueError("Activity velocity display must be Pace or Speed")
     if not 7 <= result["activity_lookback_days"] <= 3650:
         raise ValueError("Activity history must be between 7 and 3,650 days")
     if not 25 <= result["activity_row_limit"] <= 5000:
@@ -172,6 +180,42 @@ def distance_from_km(value: Any, unit_system: str, *, digits: int = 2) -> float 
     if unit_system == "Imperial":
         converted *= MILES_PER_KILOMETRE
     return round(converted, digits)
+
+
+def speed_unit(unit_system: str) -> str:
+    return "mph" if unit_system == "Imperial" else "km/h"
+
+
+def pace_unit(unit_system: str) -> str:
+    return "min/mi" if unit_system == "Imperial" else "min/km"
+
+
+def speed_from_mps(value: Any, unit_system: str, *, digits: int = 2) -> float | None:
+    if value is None:
+        return None
+    converted = float(value) * (2.2369362920544 if unit_system == "Imperial" else 3.6)
+    if not math.isfinite(converted):
+        return None
+    return round(converted, digits)
+
+
+def pace_minutes_from_mps(value: Any, unit_system: str, *, digits: int = 2) -> float | None:
+    if value is None:
+        return None
+    speed_mps = float(value)
+    if not math.isfinite(speed_mps) or speed_mps <= 0:
+        return None
+    metres = METRES_PER_MILE if unit_system == "Imperial" else 1000.0
+    return round((metres / speed_mps) / 60.0, digits)
+
+
+def pace_text_from_mps(value: Any, unit_system: str) -> str | None:
+    pace_minutes = pace_minutes_from_mps(value, unit_system, digits=4)
+    if pace_minutes is None:
+        return None
+    total_seconds = int(round(pace_minutes * 60))
+    minutes, seconds = divmod(total_seconds, 60)
+    return f"{minutes}:{seconds:02d} {pace_unit(unit_system)}"
 
 
 def dashboard_data(db_path: Path, *, item_limit: int = 8) -> dict[str, Any]:
