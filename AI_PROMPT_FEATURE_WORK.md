@@ -9,7 +9,7 @@ You are implementing a new feature in Garmin Data Hub.
 
 Project context:
 - Python >= 3.10, package in src/garmin_data_hub.
-- Streamlit app entry: src/garmin_data_hub/ui_streamlit/app.py
+- NiceGUI app entry: src/garmin_data_hub/ui_nicegui/app.py
 - CLI entry: src/garmin_data_hub/cli_backup_ingest.py
 - Data layer: src/garmin_data_hub/db
 - Ingest pipeline: src/garmin_data_hub/ingest
@@ -38,7 +38,7 @@ Quality bar:
 
 Validation options:
 - python -m garmin_data_hub.cli_backup_ingest --help
-- streamlit run src/garmin_data_hub/ui_streamlit/app.py
+- garmin-data-hub
 - pytest
 
 Output format:

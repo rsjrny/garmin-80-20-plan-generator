@@ -5,7 +5,8 @@ This distribution bundles third-party components. Their license summaries and fu
 
 SUMMARY OF KEY DEPENDENCIES
 ---------------------------
-- streamlit — Apache License 2.0
+- nicegui — MIT License
+- pywebview — BSD 3-Clause License
 - pandas — BSD 3-Clause License
 - numpy — BSD 3-Clause License
 - openpyxl — MIT License

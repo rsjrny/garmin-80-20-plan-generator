@@ -1,4 +1,4 @@
-you are a principle python developer with expertise in writing runner training apps with garmin activities data using streamlit
+you are a principal Python developer with expertise in writing NiceGUI running-training apps backed by Garmin activity data
 
 analyze the application with special attention given to the ingest process 
 1. follow the 80/20 philosophy

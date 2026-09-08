@@ -1,10 +1,10 @@
 # Garmin Data Hub
 
-A local Garmin analytics app built on **SQLite + Streamlit**.
+A local Garmin analytics desktop app built on **SQLite + NiceGUI**.
 
 The project syncs Garmin data using `garmin-givemydata`, applies app-specific schema extensions, ingests FIT trackpoints, and refreshes cached derived metrics used across the UI.
 
-> Garmin Connect download support in this project is powered by the open-source [`garmin-givemydata`](https://github.com/pe-st/garmin-givemydata) project. Garmin is not affiliated with or endorsing this application.
+> Garmin Connect download support in this project is powered by the open-source [`garmin-givemydata`](https://github.com/nrvim/garmin-givemydata) project. Garmin is not affiliated with or endorsing this application.
 
 ## Current Architecture
 
@@ -16,25 +16,166 @@ The project syncs Garmin data using `garmin-givemydata`, applies app-specific sc
 
 ## Main Capabilities
 
-- Garmin Connect sync via visible browser login flow
+- Garmin Connect login on the Sync page, optional Windows Credential Manager
+  storage, and visible-browser MFA
 - Incremental FIT trackpoint ingestion into `activity_trackpoint`
 - Activity analysis with map and detail views
 - Derived metrics including HR zones, TRIMP/TSS, FTP estimates, and power zones
 - Charts for training load, pace/power trends, and power profile analysis
-- Build Plan and compliance pages for planning workflows
+- AI-first planning with a deterministic rule-based baseline/fallback
+- Account-authenticated Codex CLI plan generation
+- Shared local training-policy validation across baseline and AI plans
 - Local-first operation with SQLite storage
 
-## Streamlit Pages
+## AI Coaching Workspace
 
-Located in `src/garmin_data_hub/ui_streamlit/pages`:
+The dedicated **Codex Plan Workspace** is the recommended personalized-plan path
+and supports an API-key-free, account-authenticated Codex CLI round trip:
 
-- `0_Backup_Import.py` — Garmin sync, progress, and derived-refresh diagnostics
-- `2_Activities.py` — activity browsing and analysis
-- `3_Build_Plan.py` — plan creation workflow
-- `4_Charts.py` — trend and power/load charts
-- `5_Compliance.py` — compliance and zone analysis
-- `6_8020_Help.py`
-- `_1_MCP_Query.py` — hidden helper page (Streamlit naming convention)
+1. Configure the event and training settings on Plan.
+2. Add optional schedule, injury, strength, and nutrition constraints.
+3. Generate a structured proposal through the locally installed, signed-in Codex CLI.
+4. Review the plain-language summary, policy results, macros, and exact database changes.
+5. Explicitly approve the plan before it is written to SQLite.
+
+The Coach page checks Node.js, npm, the Codex CLI, and the saved Codex login on
+first use. Detection runs only version and login-status checks; it never invokes
+an installer. If a command is missing or broken, **Install missing tools** shows
+the exact changes and requires an explicit consent checkbox.
+On Windows it installs the Node.js LTS package through WinGet (which includes
+npm), then installs `@openai/codex` through npm only if Codex is still missing.
+Commands that pass a real `--version` check are not upgraded or replaced.
+
+Choose **Sign in to Codex** to open the official `codex login` terminal/browser
+flow, then return to the Coach page and choose **Check again**. Garmin Data Hub
+does not collect or store the Codex account password, browser MFA response, or
+CLI authentication file. Codex sign-in is separate from the Garmin login stored
+in Windows Credential Manager.
+
+Manual recovery commands are:
+
+```powershell
+winget install --id OpenJS.NodeJS.LTS --exact --source winget
+npm install --global @openai/codex
+codex login
+codex login status
+```
+
+See the official [Codex CLI installation guide](https://learn.chatgpt.com/docs/codex/cli),
+[Codex authentication guide](https://learn.chatgpt.com/docs/auth), and
+[Node.js downloads](https://nodejs.org/en/download) if WinGet or npm is blocked
+by an administrator, proxy, or offline environment.
+
+The packet includes summarized activities and bounded plan context. It excludes
+GPS routes, raw trackpoints, exact activity times, device identifiers, file
+paths, and raw Garmin JSON. The automated path starts `codex exec` in a read-only,
+ephemeral, isolated directory and reuses the user's saved Codex/ChatGPT CLI login.
+Garmin Data Hub does not use the OpenAI SDK, make a direct API call, read an API
+key, or save authentication in SQLite.
+
+Workspace constraints and the selected training-history window are saved in the
+local SQLite settings database and restored when the application is reopened.
+
+Accepted plans replace only their declared future date window. The save is one
+atomic transaction: previous state is archived in `plan_import_history`, exact
+duration/distance/TSS values are written to `planned_workout`, and Plan Review's
+active snapshot is updated. A failed write is rolled back without a partial
+calendar change.
+
+## Planning Architecture
+
+The application uses an **AI-first, rules-governed** planning model:
+
+1. Garmin history, the active plan, event settings, and athlete preferences are
+   assembled into a privacy-minimized coaching packet.
+2. Codex CLI proposes and explains a
+   structured plan.
+3. A local deterministic policy engine checks the proposal before it can be
+   saved. Checks include race-day correctness, daily and weekly session limits,
+   age-based hard-session limits, hard-day separation, run-volume progression,
+   workload caps, strength frequency, long-session placement, and known-duration
+   80/20 distribution.
+4. The athlete reviews a plain-language summary and exact database differences.
+5. An approved plan is saved atomically with provenance and a recovery snapshot.
+
+The Plan page retains a deterministic rule-based generator as an offline
+baseline and fallback. Choose **Generate offline baseline** to update the active
+calendar without creating a file, or **Generate baseline + workbook** to also
+write the configured `.xlsx` workbook. Both paths show the affected date range
+for confirmation, validate the result with the local policy engine, and replace
+only workouts from the plan start through the event date. A failed validation,
+workbook preparation, or database transaction leaves the active plan unchanged.
+The workbook button exposes **Download last workbook** after a successful export.
+Offline generation needs no Node.js, npm, Codex login, or network connection.
+The policy code remains authoritative; AI cannot bypass it.
+
+AI plans include actual scheduled strength sessions in full Base, Build, and
+Peak weeks. They also include one food-agnostic macro target for every plan date:
+carbohydrate, protein, and fat ranges in g/kg plus optional during-training
+carbohydrate in g/hour. These educational suggestions are validated, displayed
+with the calendar, and stored with the accepted plan; they do not prescribe
+specific foods or medical nutrition treatment. The offline baseline schedules
+alternating strength sessions but does not invent individualized macro targets.
+
+## NiceGUI Pages
+
+The primary desktop interface is implemented under `src/garmin_data_hub/ui_nicegui`:
+
+- **Dashboard** - Garmin history, threshold, metrics-health, and upcoming-plan overview
+- **Garmin Sync** - non-blocking sync, cancellation, logs, and derived-metric repair
+- **Activities** - filters, splits, local GPS-track inspection, and complete JSON export
+- **Charts** - volume, heart-rate, speed, distribution, and training-load trends
+- **Plan** - offline baseline/workbook generation, event settings, HR thresholds, and active calendar review
+- **Codex Coach** - account-authenticated generation, deterministic validation, exact diff, and explicit approval
+- **Compliance** - planned-versus-completed distance and duration
+- **Data Query** - guarded read-only SQL and advanced garmin_mcp calls
+- **Settings** - persistent distance units and activity, chart, dashboard, and sync defaults
+- **Help & About** - the end-to-end workflow, support links, version, privacy, and licensing information
+
+## Data Query Page (Advanced)
+
+The NiceGUI **Data Query** page provides guarded read-only SQLite access and an
+advanced Model Context Protocol (MCP) tool runner. Six common tools are offered
+initially, and any installed `garmin_mcp` tool name can be entered directly:
+
+#### Available MCP Tools
+
+1. **garmin_schema** — View database schema (tables, row counts, columns)
+2. **garmin_query** — Execute read-only SELECT queries with preset templates
+3. **garmin_health_summary** — Fetch daily health metrics (HR, stress, body battery) by date range
+4. **garmin_activities** — List activities with filtering by type, date, and limit
+5. **garmin_trends** — Retrieve metric trends (weekly or monthly aggregation)
+6. **garmin_sync** — Trigger manual sync and view sync status
+
+#### Requirements
+
+- **garmin_mcp** package must be installed in the active Python environment
+- Sidecar subprocess spawned automatically on page load
+- If sidecar is unavailable, the page shows diagnostics and recovery steps
+
+#### Usage Examples
+
+- Query the database schema: "Show me all tables and row counts"
+- Find recent activities: "List my last 10 running activities with distance and duration"
+- Analyze health trends: "Plot my resting heart rate trend over the last month"
+- Retrieve daily metrics: "Get my stress and body battery for the past 7 days"
+- Execute custom SQL: Use preset queries or write custom SELECT queries
+
+#### Features
+
+- **Dual-mode interface:** MCP tool runner or raw SQL mode
+- **Extensible tools:** type any installed `garmin_mcp` tool name
+- **Error handling:** Timeouts, retries, and clear error messages
+- **Read-only enforcement:** SQL validation blocks INSERT, DELETE, DROP, and DDL
+
+#### Troubleshooting
+
+If MCP Query shows "sidecar unavailable":
+1. Verify garmin_mcp is installed: `pip list | grep garmin-mcp`
+2. Test sidecar manually: `python -m garmin_mcp`
+3. Restart Garmin Data Hub
+
+---
 
 ## Quick Start (Developers)
 
@@ -44,36 +185,86 @@ python -m venv .venv
 .\.venv\Scripts\activate
 pip install -U pip
 pip install -e .[dev]
-streamlit run src/garmin_data_hub/ui_streamlit/app.py
+garmin-data-hub
 ```
 
 ## Launch Options
 
-### Streamlit UI
+### Primary NiceGUI desktop UI
 
 ```powershell
-streamlit run src/garmin_data_hub/ui_streamlit/app.py
+garmin-data-hub
 ```
+
+NiceGUI opens in a native Windows window and uses the active database by default.
+Use `--browser` for a normal browser window or `--sandbox` to copy the active
+database to `%LOCALAPPDATA%\GarminDataHub\nicegui-preview\garmin-preview.db`.
+Browser mode remains bound to `127.0.0.1`; this desktop app is not exposed as a
+remote web service.
+
+```powershell
+garmin-data-hub --sandbox
+garmin-data-hub --browser
+```
+
+`--source-db` selects an explicit live SQLite path; `--preview-db` selects an
+explicit sandbox copy. Codex generation runs in a cancellable background worker,
+while stale-response checks, locked settings, the local training policy, exact
+database changes, and explicit acknowledgement remain mandatory.
 
 ### Sync CLI
 
 ```powershell
-garmin-sync --visible --chrome
+garmin-sync --visible
 ```
 
 or:
 
 ```powershell
-python -m garmin_data_hub.cli_backup_ingest --visible --chrome
+python -m garmin_data_hub.cli_backup_ingest --visible
 ```
 
 Helpful sync options:
 
 - `--days <N>` — limit sync window
-- `--skip-trackpoints` — skip FIT trackpoint extraction
-- `--rebuild-trackpoints` — rebuild all trackpoints
-- `--trackpoints-max <N>` — cap processed activities
 - `--db <path>` — use a custom SQLite path
+
+### Garmin Login and MFA
+
+On first use, the Garmin Sync page opens a one-time login editor. Enter the
+Garmin Connect email and password and leave **Remember on this Windows account**
+selected to protect them in Windows Credential Manager for the current Windows
+user. After the login is saved, the editor is hidden and the page reports that
+the Garmin session is ready.
+
+For later syncs, click **Run sync** without re-entering either value. The Garmin
+client restores its saved browser session first. The app silently retrieves the
+backup login from Windows Credential Manager because the sync helper requires a
+credential pair even when that browser session is still valid; it is used only
+if Garmin requires a fresh sign-in. The password is never filled back into the
+page or added to command-line arguments or sync logs.
+
+Choose **Update login** only when the Garmin email or password changes. Saving an
+updated login asks for confirmation before resetting the old browser session so
+that its cookies cannot take precedence. The new login is not saved or used if
+that reset is cancelled or fails. The same safeguard applies when **Run sync** is
+used directly from the login editor. If a fresh sign-in triggers MFA, enter the
+separate code in the Chrome window; the sync continues after Garmin accepts it.
+Garmin Data Hub does not collect or save the MFA code.
+
+Choose **Forget saved login** to remove the saved email/password credential.
+This does not remove the separate Garmin browser profile or revoke an already
+active Garmin session. It also does not delete a legacy plaintext
+`%LOCALAPPDATA%\GarminDataHub\.env` created by direct CLI use. Credentials are
+passed to the sync helper through its process environment, not through
+command-line arguments or sync logs.
+
+The one-time editor also permits a sync without saving the login by clearing
+**Remember on this Windows account**, but the editor will be needed again when no
+saved credential is available. Garmin's browser session can persist separately.
+Use the confirmed **Reset browser login** action to remove the local browser
+profile and session-cookie backup before a fresh sign-in. Use a separate
+database when changing Garmin accounts so activity data is not mixed.
 
 ## Tests
 
@@ -93,39 +284,42 @@ python -m pytest tests/test_sync_progress.py tests/test_metrics_refresh.py
 
 The Windows packaging pipeline lives in `packaging/build.ps1`.
 
+Install its pinned build toolchain with `.venv\Scripts\python.exe -m pip install -e ".[dev]"`.
+
 Example build command:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 0.1.0
+powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 1.0.0
 ```
 
-`garmin-givemydata` source selection:
+`garmin-givemydata` packaging behavior:
 
-- Default mode is `pypi` (no extra args needed)
-- Use `-GivemydataSource local` to package against your local sibling repo copy
-- Use `-GivemydataPypiSpec` to pin a specific PyPI version
+- Build uses PyPI package install/upgrade into `.venv`
+- Use `-GivemydataPypiSpec` to pin a specific PyPI version when needed
 
 Examples:
 
 ```powershell
-# Default PyPI mode
-powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 0.1.0
+# Reproducible release build
+powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 1.0.0 -GivemydataPypiSpec "garmin-givemydata==0.1.12"
 
-# Local repo mode
-powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 0.1.0 -GivemydataSource local
-
-# PyPI mode with explicit version
-powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 0.1.0 -GivemydataSource pypi -GivemydataPypiSpec "garmin-givemydata==0.1.10"
+# Validate the already-installed upstream version without updating it
+powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 1.0.0 -SkipGivemydataUpdate
 ```
 
 It will:
 
-- build the Streamlit app directory (`GarminDataHub`)
+- build the NiceGUI desktop app directory (`GarminDataHub`)
 - build the CLI directory (`cli_backup_ingest`)
-- print a source-mode banner (`LOCAL` or `PYPI`) in build logs
-- bundle `garmin-givemydata.exe` from project `.venv` with the release artifacts
+- bundle the `garmin-givemydata` runtime inside the frozen sync CLI
 - copy outputs under `release/<version>/`
+- build a complete portable ZIP, corresponding-source archives, and SHA-256 checksums
 - optionally build the installer via Inno Setup when available
+
+Distribute `GarminDataHub-<version>-installer.exe` or the complete portable ZIP,
+not an individual executable. Public binary releases include AGPL-covered
+`garmin-givemydata` code; retain the bundled license, notices, and corresponding
+source files.
 
 ## Project Requirements
 
@@ -134,7 +328,9 @@ It will:
 
 Core dependencies are defined in `pyproject.toml`, including:
 
-- `streamlit`
+- `nicegui`
+- `pywebview`
+- `plotly`
 - `pandas`
 - `numpy`
 - `fitparse`

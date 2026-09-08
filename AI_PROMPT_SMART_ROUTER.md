@@ -9,7 +9,7 @@ You are updating Garmin Data Hub.
 Project context:
 - Python >= 3.10
 - Package root: src/garmin_data_hub
-- Streamlit app entry: src/garmin_data_hub/ui_streamlit/app.py
+- NiceGUI app entry: src/garmin_data_hub/ui_nicegui/app.py
 - CLI sync entry: src/garmin_data_hub/cli_backup_ingest.py
 - DB layer: src/garmin_data_hub/db
 - Ingest pipeline: src/garmin_data_hub/ingest
@@ -58,7 +58,7 @@ Global engineering rules:
 
 Validation command options:
 - python -m garmin_data_hub.cli_backup_ingest --help
-- streamlit run src/garmin_data_hub/ui_streamlit/app.py
+- garmin-data-hub
 - pytest
 - powershell -ExecutionPolicy Bypass -File packaging/build.ps1 -Version <x.y.z>
 

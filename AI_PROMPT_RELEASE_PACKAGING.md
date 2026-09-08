@@ -10,7 +10,7 @@ You are preparing a Garmin Data Hub release/package update.
 Project context:
 - Version source: pyproject.toml
 - Build script: packaging/build.ps1
-- Streamlit artifact: GarminDataHub
+- NiceGUI desktop artifact: GarminDataHub
 - CLI artifact: cli_backup_ingest
 - Release output target: release/<version>/
 

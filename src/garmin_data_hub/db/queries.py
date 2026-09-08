@@ -944,14 +944,15 @@ def insert_planned_workout(
     planned_distance_m,
     planned_duration_s,
     planned_tss,
+    structure_json=None,
 ) -> None:
     try:
         conn.execute(
             """
             INSERT INTO planned_workout(
                 scheduled_date, workout_name, description, 
-                planned_distance_m, planned_duration_s, planned_tss
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                planned_distance_m, planned_duration_s, planned_tss, structure_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 scheduled_date,
@@ -960,6 +961,7 @@ def insert_planned_workout(
                 planned_distance_m,
                 planned_duration_s,
                 planned_tss,
+                structure_json,
             ),
         )
         conn.commit()
@@ -1115,6 +1117,7 @@ def list_recent_activities(conn, limit: int = 200) -> list[dict[str, Any]]:
                 start_time_gmt AS start_time_utc,
                 distance_meters,
                 elapsed_duration_seconds,
+                average_speed,
                 average_hr,
                 max_hr,
                 start_latitude,
@@ -1143,6 +1146,7 @@ def list_recent_activities(conn, limit: int = 200) -> list[dict[str, Any]]:
                     "start_utc": start_iso,
                     "distance_km": (dist / 1000.0) if dist is not None else None,
                     "elapsed_min": (elapsed / 60.0) if elapsed is not None else None,
+                    "speed_mps": r["average_speed"],
                     "avg_hr": r["average_hr"],
                     "max_hr": r["max_hr"],
                     "start_latitude": r["start_latitude"],

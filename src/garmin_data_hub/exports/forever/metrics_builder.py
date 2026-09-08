@@ -48,13 +48,20 @@ def build_weekly_metrics(day_plans):
         # The workout_db uses "Rest Day" for OFF.
         # We should check if the workout name implies a run or if it's explicitly NOT a rest day.
         
-        is_rest = dp.workout in ("OFF", "Rest Day", "Rest") or "Rest" in dp.workout
+        typed_sport = str(getattr(dp, "sport", "") or "").lower()
+        is_rest = (
+            typed_sport == "rest"
+            if typed_sport
+            else dp.workout in ("OFF", "Rest Day", "Rest") or "Rest" in dp.workout
+        )
+        is_run = typed_sport == "run" if typed_sport else not is_rest
         
-        if not is_rest:
+        if is_run:
             w["Run Days"] += 1
 
-        # Strength days are often on OFF days, but can be standalone
-        if is_rest and "Strength" in (dp.notes or ""):
+        if typed_sport == "strength" or (
+            is_rest and "Strength" in (dp.notes or "")
+        ):
             w["Strength Days"] += 1
 
         if "LT Intervals" in (dp.workout or "") or "Hill Strength" in (dp.workout or "") or "Tempo" in (dp.workout or "") or "Cruise" in (dp.workout or ""):
@@ -62,7 +69,7 @@ def build_weekly_metrics(day_plans):
 
         mins = _mins_from_notes(dp.notes or "")
         # Only add to run hours if it's a run day
-        if not is_rest:
+        if is_run:
             w["Run Hours (est)"] += mins / 60.0
 
         if dp.day == "Saturday" and "Long Trail" in (dp.workout or ""):

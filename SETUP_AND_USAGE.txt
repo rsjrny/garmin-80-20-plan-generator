@@ -12,18 +12,39 @@ Quick Start
 -----------
 Option 1: GUI (recommended)
 1. Run GarminDataHub.exe.
-2. When the browser opens, go to Garmin Sync in the sidebar.
-3. Click Run sync and complete Garmin login in the external browser window.
-4. Review data in Activities, Charts, Build Plan, and Compliance pages.
+2. In the native window, open Garmin Sync from the navigation drawer.
+3. In the one-time login editor, enter your Garmin Connect email and password.
+4. Leave Remember on this Windows account selected to save the login securely
+   in Windows Credential Manager, or clear it to avoid saving the password there.
+5. Click Run sync. If Garmin requests MFA, enter the code in the Garmin Chrome
+   window. Sync resumes automatically after Garmin accepts the login.
+6. Review data in Activities, Charts, Plan, and Compliance pages.
+
+Run sync saves a newly entered login when Remember is selected. Save login can
+store it without starting a sync. After setup, the editor is hidden and the page
+reports Garmin session ready. For later GUI syncs, click Run sync; no email or
+password entry is needed. The saved password is never filled back into the page.
+
+Use Update login only when the Garmin email or password changes. Saving an
+updated login asks for confirmation before resetting the old browser session;
+the new login is not saved or used if the reset is cancelled or fails. Use
+Forget saved login to remove the saved email and password from Windows Credential
+Manager and reopen the editor.
+
+Garmin's browser session may persist even when Remember is cleared. An existing
+browser session can take precedence over newly entered credentials. Use Reset
+browser login to remove the local Garmin browser profile and session-cookie
+backup before a fresh sign-in. Use a separate database for a different Garmin
+account so activity data is not mixed.
 
 Option 2: CLI (automation/scheduled tasks)
 Basic usage:
 
-cli_backup_ingest.exe --visible --chrome
+cli_backup_ingest.exe --visible
 
 Example:
 
-cli_backup_ingest.exe --visible --chrome --days 30
+cli_backup_ingest.exe --visible --days 30
 
 This will:
 1. Sync Garmin activity and health data with garmin-givemydata.
@@ -36,33 +57,73 @@ GUI Pages (Current)
 - Activities
 - Build Plan
 - Charts
+- Codex Coach
 - Compliance
-- 80/20 Help
+- Help & About
 
 Notes:
 - MCP Query exists but may be hidden depending on filename/config.
+
+Offline Plan Builder
+--------------------
+The Plan page can build a deterministic training baseline without Node.js, npm,
+Codex, a Codex login, or an internet connection.
+
+1. Open Plan and configure the athlete, event, schedule, and workbook fields.
+2. Choose Save settings if you only want to retain the entries.
+3. Choose Generate offline baseline to replace the active schedule without
+   creating a workbook, or Generate baseline + workbook to also create the
+   configured .xlsx file.
+4. Review the date range and workbook destination, select the acknowledgement,
+   and confirm. Only workouts from the plan start through the event date are
+   replaced; schedule rows outside that range remain intact.
+5. After a successful export, choose Download last workbook to open or copy it.
+
+The same local training-policy checks used for Codex plans run before the
+baseline is saved. A policy failure, workbook-preparation failure, or failed
+database transaction leaves the active plan unchanged.
+
+Codex Coach Setup (Optional)
+----------------------------
+Node.js, npm, and Codex are needed only for AI plan generation on Codex Coach.
+The rest of Garmin Data Hub continues to work when they are not installed.
+
+1. Open Codex Coach. The page checks node, npm, codex, and the saved Codex login.
+2. If tools are missing, choose Install missing tools and review the consent
+   dialog. Nothing is downloaded until the consent checkbox is selected.
+3. Working installations are retained. If needed, the app installs Node.js LTS
+   (including npm) with Windows Package Manager and Codex with npm.
+4. Choose Sign in to Codex. Complete the official Codex login in the separate
+   terminal/browser, return to Garmin Data Hub, and choose Check again.
+
+Garmin Data Hub does not collect or store the Codex account password or browser
+MFA response. Codex manages its own saved login; this is separate from the
+Garmin Connect credential stored in Windows Credential Manager.
+
+Manual setup or recovery:
+  winget install --id OpenJS.NodeJS.LTS --exact --source winget
+  npm install --global @openai/codex
+  codex login
+  codex login status
+
+Official help:
+- https://learn.chatgpt.com/docs/codex/cli
+- https://learn.chatgpt.com/docs/auth
+- https://nodejs.org/en/download
 
 CLI Reference
 -------------
 Common flags:
 - --visible
   Shows browser login flow (recommended).
-- --chrome
-  Uses Chrome engine for login stability.
 - --days <N>
   Limits sync range by number of days.
-- --skip-trackpoints
-  Skips FIT trackpoint extraction.
-- --rebuild-trackpoints
-  Rebuilds all trackpoints (delete/reinsert per activity).
-- --trackpoints-max <N>
-  Caps number of activities for trackpoint ingestion.
 - --db <path>
   Custom DB path.
 
 Developer module form:
 
-python -m garmin_data_hub.cli_backup_ingest --visible --chrome --days 30
+python -m garmin_data_hub.cli_backup_ingest --visible --days 30
 
 Data Storage
 ------------
@@ -76,23 +137,42 @@ Operational Notes
 -----------------
 - First-time sync can take longer because historical data is downloaded.
 - Subsequent syncs are faster and process deltas.
-- MFA is handled in the browser login flow.
-- During GUI sync, live detailed logs are shown in the terminal running Streamlit.
+- Garmin may request MFA in the visible Chrome login flow. Enter the code in
+  that browser window, not in Garmin Data Hub.
+- Forget saved login removes the Windows credential. It does not remove the
+  existing Garmin browser profile, revoke an active Garmin session, or delete
+  a legacy %LOCALAPPDATA%\GarminDataHub\.env file created by direct CLI use.
+- Reset browser login removes the local Garmin browser profile and session
+  cookie backup, but retains the Windows credential and database.
+- During GUI sync, live detailed logs are shown on the Garmin Sync page.
 
 Troubleshooting
 ---------------
 GUI does not start:
-- Ensure no other instance is occupying the same Streamlit port.
+- Ensure no other instance is occupying the configured NiceGUI port.
 - Retry by launching GarminDataHub.exe again.
 
 Sync/login issues:
-- Always run with --visible and --chrome.
-- Complete login and MFA in the external browser window.
+- If no saved login is available, use the one-time editor and enter a complete
+  email/password pair.
+- If the saved login is stale, choose Update login, enter the current
+  credentials, save it, and confirm the browser-session reset.
+- Complete MFA in the visible Chrome window when Garmin requests it.
+- For direct CLI use, run with --visible when interactive login is needed.
 - Verify internet connectivity.
 
+Codex Coach setup or login issues:
+- Choose Check again to verify each command and the saved login.
+- Review the status shown for node, npm, codex, and Codex account separately.
+- If WinGet is unavailable, install Node.js LTS from the Node.js download link,
+  restart Garmin Data Hub, and choose Check again.
+- If npm is blocked by a proxy or administrator, use the official Codex install
+  guide or ask the administrator to allow @openai/codex.
+- Complete codex login in the separate terminal/browser. Garmin Data Hub never
+  asks for the Codex password or MFA response.
+
 No new trackpoints after sync:
-- Run a full rebuild once:
-  cli_backup_ingest.exe --rebuild-trackpoints
+- Rerun sync and check the sync log for garmin-givemydata errors.
 
 No activities visible:
 - Confirm sync completed with exit code 0.
@@ -100,28 +180,44 @@ No activities visible:
 
 Security Notes
 --------------
-- Credentials are handled via interactive browser login.
+- When Remember on this Windows account is selected, the Garmin login is stored
+  in Windows Credential Manager for the current Windows user. It is not stored
+  in the Garmin database or a tracked project file.
+- The password is not placed in command-line arguments or sync logs and is not
+  filled back into the Sync page. After setup, its editor is hidden. The saved
+  credential is supplied only to the launched sync process through its
+  environment; the Garmin client restores its browser session before using it
+  for a fresh sign-in.
+- MFA codes are entered on Garmin's browser page and are not saved by Garmin
+  Data Hub.
+- Forget saved login does not delete a legacy plaintext .env file. If an older
+  CLI setup saved one under %LOCALAPPDATA%\GarminDataHub, remove it separately
+  when it is no longer needed.
 - Do not store session cookies or passwords in tracked files.
 - Local data remains on your machine unless you export it.
+- Prerequisite detection runs version and login-status checks but does not
+  invoke installers. Downloads occur only after explicit consent, and working
+  Node.js, npm, and Codex commands are not replaced.
+- Codex account authentication is handled by the official Codex CLI. Garmin
+  Data Hub does not read or save the CLI authentication file.
 
 System Requirements
 -------------------
 - Windows 10 or later
 - Internet connection for Garmin sync
 - Modern browser (Chrome recommended)
+- Optional for Codex Coach: Node.js LTS/npm and Codex CLI. The Coach page can
+  install missing tools with consent when Windows Package Manager is available.
 
 Versioning and Build
 --------------------
 - Packaging/build script: packaging/build.ps1
 - Build script updates pyproject version from the provided build version.
-- Build defaults to PyPI source mode for garmin-givemydata.
-- Use local source mode when validating unreleased changes:
-  powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version <x.y.z> -GivemydataSource local
+- Build uses PyPI install/upgrade for garmin-givemydata in `.venv`.
 - Use explicit PyPI version pin when needed:
-  powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version <x.y.z> -GivemydataSource pypi -GivemydataPypiSpec "garmin-givemydata==<version>"
-- Build output includes a mode banner showing LOCAL or PYPI.
+  powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version <x.y.z> -GivemydataPypiSpec "garmin-givemydata==<version>"
 
 End
 ---
-If sync hangs, stop and rerun with --visible --chrome.
-If data appears stale, run one sync with --rebuild-trackpoints.
+If sync hangs, stop and rerun with --visible.
+If data appears stale, run sync again and then use Repair Derived Metrics.

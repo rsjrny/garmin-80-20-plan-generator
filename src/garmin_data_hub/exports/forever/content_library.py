@@ -89,10 +89,10 @@ def nutrition_sections(sodium_hot: int | None, distance: str = "50K"):
     # Calculate Carb Targets based on distance/duration
     # Short/Fast (<2h): 30-60g
     # Ultra (>3h): 60-90g
-    if distance in ["5K", "10K", "HM"]:
+    if distance in ["5K", "10K", "10M", "HM"]:
         carb_target = "30–50 g"
         carb_note = "(shorter duration)"
-    elif distance == "MAR":
+    elif distance in ["20M", "MAR"]:
         carb_target = "50–70 g"
         carb_note = "(marathon intensity)"
     else: # Ultras (50K+)

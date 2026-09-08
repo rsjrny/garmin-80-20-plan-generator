@@ -50,8 +50,6 @@ def generate_plan_data(
         event=event,
         garmin_files=garmin_files or [],
         output_dir=out_dir or Path.cwd(),
-        use_llm=False,
-        openai_api_key=None
     )
     
     # Generate calendar (returns DayPlan objects)

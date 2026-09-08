@@ -45,8 +45,8 @@ When asked to package:
 - Suggest improvements to reduce binary size.
 - Validate that all required assets are included.
 
-## STREAMLIT APPS
-When working with Streamlit:
+## NICEGUI APPS
+When working with NiceGUI:
 - Keep UI responsive.
 - Avoid expensive operations in the main thread.
 - Cache expensive computations.

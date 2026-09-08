@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import sqlite3
 from garmin_data_hub.db.sqlite import connect_sqlite
 from datetime import date, datetime, timezone, timedelta
@@ -8,10 +9,11 @@ from pathlib import Path
 import json
 import re
 
-import streamlit as st
-
 from garmin_data_hub.db import queries as db_queries
 import garmin_data_hub.exports.master_export as master_export
+
+
+logger = logging.getLogger(__name__)
 
 
 def _utc_now_iso() -> str:
@@ -191,7 +193,7 @@ def save_generated_plan(db_path: Path, inputs, analysis, day_plans, weekly_rows)
                     planned_dist = float(km_match.group(1)) * 1000  # meters
 
             except Exception as e:
-                st.warning(f"Could not parse workout string: {dp.workout} - {e}")
+                logger.warning("Could not parse workout string %r: %s", dp.workout, e)
 
             db_queries.insert_planned_workout(
                 conn,

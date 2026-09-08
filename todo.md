@@ -1,0 +1,110 @@
+- [ ] **Training app improvement backlog from repo review (captured 2026-09-06).**
+	- [ ] **Current app improvements: make the shipped NiceGUI app easier to use and trust.**
+		- [ ] Data Query: return MCP and SQL results in structured tables when the response is a list of objects, with a raw JSON/text fallback for nested or non-tabular payloads.
+		- [ ] Data Query: add saved query/tool presets for common athlete questions such as recent long runs, weekly load, missing metrics, recovery trends, and upcoming workouts.
+		- [ ] Data Query: surface sidecar status, timeout/retry count, and last error inline near the Run button instead of only through notifications/logs.
+		- [ ] Dashboard: turn diagnostics into action cards, especially "missing derived metrics" -> one-click repair, "no upcoming plan" -> Plan, and "sync stale" -> Garmin Sync.
+		- [ ] Dashboard: add a compact "Today / next 7 days" training card with planned session, recent compliance, and recovery signal instead of only grid rows.
+		- [ ] Plan page: add a calendar/week view alongside the AG Grid so training density, hard-day spacing, long-run placement, strength sessions, and race week are visually obvious.
+		- [ ] Plan page: add import-history review/restore controls using the existing `plan_import_history` archive so an accepted plan can be inspected or rolled back from the UI.
+		- [ ] Codex Coach: show the privacy-minimized packet preview in a friendlier summary before generation, with expandable raw packet JSON for advanced review.
+		- [ ] Codex Coach: add "regenerate with feedback" controls that append athlete notes while preserving locked hashes, policy checks, and explicit approval.
+		- [ ] Compliance: classify each day/session as completed, partial, missed, extra, or moved, and summarize streaks plus weekly distance/duration variance.
+		- [ ] Compliance: match planned workouts to completed activities by date window, sport, duration, and distance so moved workouts do not look like simple misses.
+		- [ ] Activities: add best-effort personal-record and benchmark badges for longest recent run, fastest common distances, highest TSS, and highest elevation gain.
+		- [ ] Activities: add route/trackpoint quality indicators so missing FIT trackpoints, sparse GPS, or map-render gaps are visible before analysis.
+		- [ ] Charts: add synchronized filters across charts and an "explain this point/week" drill-down linking back to the source activities.
+		- [ ] Sleep & Recovery: promote the current deep-dive from Data Query into a first-class Recovery page or Dashboard panel, since it is now product-level functionality.
+		- [ ] Settings: add database health tools for backup location, current DB size, last successful sync, last derived-metrics refresh, and quick export.
+		- [ ] UI polish: reduce card nesting and tighten card radius to match the desktop-tool surface; reserve large headings for page-level context.
+		- [ ] UI polish: verify mobile/narrow-window layouts for dashboard, plan, coach review, and query results so grid/table controls do not overflow.
+		- [ ] Reliability: replace broad silent exception fallbacks in data/query/ingest paths with logged warnings and user-visible data-quality messages where missing data changes conclusions.
+		- [ ] Reliability: add regression tests around Data Query tabular rendering, compliance classification, plan rollback, and recovery/dashboard integration.
+		- [ ] Documentation: prune stale completed MCP/NiceGUI migration bullets or move them to a changelog so `todo.md` stays focused on actionable work.
+	- [ ] **Future improvements: make the app a smarter long-term training companion.**
+		- [ ] Adaptive replanning: after each sync, compare completed load, missed workouts, recovery trends, and event timeline, then suggest a conservative plan adjustment for approval.
+		- [ ] Readiness-aware coaching: combine sleep, HRV, resting HR, stress, recent load, and subjective athlete notes into daily guidance without auto-changing the plan.
+		- [ ] Subjective wellness log: add quick local check-ins for soreness, mood, sleep quality, illness, pain, and perceived exertion to complement Garmin-only data.
+		- [ ] Workout library: build reusable structured workouts with intent, target zones, progression rules, and export-friendly structure for future device/calendar integrations.
+		- [ ] Periodization templates: support multiple plan philosophies beyond the current conservative baseline, such as base rebuild, maintenance, race-specific build, return from injury, and post-race recovery.
+		- [ ] Route and terrain intelligence: use trackpoints to summarize climb distribution, surface hints when available, heat/humidity context when available, and course-specific preparation needs.
+		- [ ] Goal forecasting: estimate whether the current trend supports the event date, flag schedule risk early, and show what would need to change to stay on track.
+		- [ ] Fueling planner: turn stored macro ranges and sodium settings into workout-duration-specific fueling reminders while keeping medical/diet claims out of scope.
+		- [ ] Plan quality explainability: show exactly which evidence drove each major plan change, including recent load, long-run history, recovery signals, and policy constraints.
+		- [ ] Scenario planning: let the athlete compare "conservative", "standard", and "ambitious" proposals side by side before accepting one.
+		- [ ] Multi-sport expansion: generalize planning and compliance beyond run-first assumptions for cycling, triathlon, hiking/ultra, and strength-focused blocks.
+		- [ ] Interoperability: add calendar export, structured-workout export, and richer workbook/PDF reporting from the accepted active plan.
+		- [ ] Data provenance view: expose source tables, derived metric formulas, refresh timestamps, and confidence/coverage scores so advanced users can audit conclusions.
+		- [ ] Release confidence: add automated packaged-app smoke tests that launch the frozen NiceGUI app, visit every route, and verify non-empty key panels.
+		- [ ] Privacy controls: add a dedicated privacy/export screen for reviewing exactly what is sent to Codex, what stays local, and how to delete local credentials/logs/browser sessions.
+		- [ ] Onboarding: guide first-time users through sync, metric refresh, plan setup, baseline generation, and optional Codex sign-in without requiring README context.
+
+- [x] **MCP query workstream: promote existing MCP console and harden for production (do later).**
+	- [x] Findings captured (2026-05-14):
+		- [x] An MCP query implementation already exists in test_pages/_1_MCP_Query.py (not in active production pages).
+		- [x] Main app text references "MCP Query", but production page list currently does not include an MCP page.
+		- [x] MCP sidecar integration already exists in src/garmin_data_hub/mcp_sidecar_client.py and calls python -m garmin_mcp.
+		- [x] Existing tool coverage in MCP page: garmin_schema, garmin_query, garmin_health_summary, garmin_activities, garmin_trends, garmin_sync.
+	- [x] Recommendation captured:
+		- [x] Do not build a net-new page first; reuse the existing MCP console as baseline.
+		- [x] Prioritize reliability hardening (timeout, retry, sidecar-unavailable UX) before expanding features.
+		- [x] Keep read-only SQL guardrails and define explicit argument bounds/result limits for each MCP tool.
+	- [x] **Phase 1 Complete (2026-05-15): Promote/adapt MCP page into production**
+		- [x] Promoted the original experimental MCP query page into the production UI (legacy implementation subsequently removed).
+		- [x] Updated app.py guidance to reference MCP Query as available advanced page
+		- [x] Moved to Phase 2 hardening work
+	- [x] **Phase 2 Complete (2026-05-15): Add reliability controls**
+		- [x] Added timeout wrapper around call_tool_via_sidecar() with 30s default (configurable)
+		- [x] Added retry logic with exponential backoff (up to 2 retries on transient failures)
+		- [x] Improved error messages: distinguish TimeoutError, RuntimeError, and generic exceptions
+		- [x] Graceful degradation when sidecar unavailable: show diagnostics + recovery steps, disable Run buttons
+		- [x] Added safeguards in both MCP tools and Raw SQL modes
+		- [x] Updated check_sidecar_available() to use retry logic
+	- [x] **Phase 3 (Next): Finalize contract/docs for tool inputs/outputs/errors**
+		- [x] Document each MCP tool's input schema, output schema, and error conditions.
+		- [x] Add inline help text for each tool parameter in the UI.
+		- [x] Update README or inline docs with MCP Query use cases and examples.
+	- [x] **Phase 3 Complete (2026-05-15): Add comprehensive tool documentation**
+		- [x] Created TOOL_DOCS dictionary with full schema for all 6 MCP tools (description, inputs, outputs, examples, error cases)
+		- [x] Added expandable documentation panel in MCP Query page
+		- [x] Added detailed help text to all tool parameter inputs (tool selector, query, health summary, activities, trends)
+		- [x] Updated README.md with dedicated MCP Query Page section (requirements, troubleshooting, examples, features)
+	- [x] Phase 4: Expose all 53 garmin_mcp tools in UI + 28-test validation suite (commit f3e4b79).
+	- [x] Ready-to-start decisions required:
+		- [x] MCP page always visible in sidebar (tool selector is on-page, not per-tool sidebar item).
+		- [x] Background threading implemented: Run button is non-blocking, UI shows elapsed-time ticker, result persists on next rerun (commit 09f0297).
+		- [x] Rotating-file logging added to mcp_sidecar_client.py: CALL/OK/RETRY/TIMEOUT/ERROR lines written to %LOCALAPPDATA%\GarminDataHub\logs\mcp_calls.log, 5 MB rotating, 3 backups (commit 09f0297).
+
+- [ ] ***can the mcp page return results in a table not in raw and json***
+
+- [x] **NiceGUI interface migration (branch: `test_other_interfaces`).**
+	- [x] Investigation complete: NiceGUI selected for the first vertical slice.
+	- [x] **Phase 1 implementation complete (2026-08-23): Codex Plan Workspace prototype**
+		- [x] Add an initially separate NiceGUI entry point for safe evaluation.
+		- [x] Reuse SQLite, coaching packet, parser, training policy, and atomic persistence services.
+		- [x] Run Codex generation as a background task with elapsed time and cancellation.
+		- [x] Preview rationale, warnings, policy results, workouts, macros, and exact database changes.
+		- [x] Require explicit acknowledgement before applying a proposal.
+	- [ ] **Phase 1 acceptance gates**
+		- [x] Never write a proposal automatically.
+		- [x] Reject stale context/plan hashes and locked-input changes.
+		- [x] Test against an isolated copied or temporary SQLite database.
+		- [ ] Complete a hands-on Codex generation in the responsive Windows-native window (native smoke launch completed 2026-08-23; no quota-consuming generation started automatically).
+		- [x] Add a source launcher and documented Windows packaging path.
+		- [x] Keep the active test suite green after removing legacy-only tests (105 passed on 2026-08-23).
+	- [x] **Phase 2 complete (2026-08-23): Activities vertical slice**
+		- [x] Add AG Grid filtering, selection, date/sport filters, and a bounded 5,000-row query.
+		- [x] Port activity overview, splits, local GPS-track visualization, metrics, and complete JSON download.
+	- [x] **Phase 3 complete (2026-08-23): Garmin Sync vertical slice**
+		- [x] Stream logs and progress without blocking navigation.
+		- [x] Support safe process-tree stop/cancel and completion notifications.
+	- [x] Add persistent NiceGUI interface settings for distance units and reusable activity, chart, dashboard, and sync defaults.
+	- [x] **Cutover decision**
+		- [x] Compare startup, packaging size, responsiveness, and workflow parity (all 10 Streamlit-free packaged routes healthy; Windows distribution 263.5 MB).
+		- [x] User approved NiceGUI replacement on 2026-08-23; NiceGUI is the sole source and packaged interface, and the legacy implementation was removed after a rollback commit.
+
+- [x] **Delivery prerequisite bootstrap complete (2026-08-24): install Node.js/npm and Codex CLI when missing.**
+	- [x] On first use of Codex Coach, detect existing Node.js, npm, and Codex CLI installations without replacing working versions.
+	- [x] With explicit user consent, install Node.js LTS (including npm) through WinGet and then install `@openai/codex` through npm only when required.
+	- [x] Verify the installed commands, launch the official Codex sign-in flow, and show clear manual recovery guidance for installation or authentication failures.
+	- [x] Keep setup asynchronous and covered by mocked failure-path, security, packaging, and full-suite tests (184 passed on 2026-08-24).
