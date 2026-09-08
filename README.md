@@ -292,6 +292,12 @@ Example build command:
 powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 1.0.0
 ```
 
+Signed installer-only release:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 1.0.0 -InstallerOnly -SignInstaller -CertificateThumbprint "<cert-sha1-thumbprint>"
+```
+
 `garmin-givemydata` packaging behavior:
 
 - Build uses PyPI package install/upgrade into `.venv`
@@ -315,6 +321,7 @@ It will:
 - copy outputs under `release/<version>/`
 - build a complete portable ZIP, corresponding-source archives, and SHA-256 checksums
 - optionally build the installer via Inno Setup when available
+- optionally sign the installer with Authenticode
 
 Distribute `GarminDataHub-<version>-installer.exe` or the complete portable ZIP,
 not an individual executable. Public binary releases include AGPL-covered

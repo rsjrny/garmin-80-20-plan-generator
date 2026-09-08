@@ -10,6 +10,7 @@ Before packaging, ensure:
 - project virtual environment exists at `.venv` (build uses `.venv\\Scripts\\python.exe`)
 - `garmin-givemydata` is available on PyPI (build upgrades/installs it in `.venv`)
 - optional: `ISCC.exe` is installed if you want the Inno Setup installer built
+- optional but recommended for distribution: Windows SDK `signtool.exe` and a trusted code-signing certificate for installer signing
 
 ## 2. Build Command
 
@@ -17,6 +18,22 @@ From the repository root:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 1.0.0 -GivemydataPypiSpec "garmin-givemydata==0.1.12"
+```
+
+Installer-only signed release:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 1.0.0 -InstallerOnly -SignInstaller -CertificateThumbprint "<cert-sha1-thumbprint>"
+```
+
+Signing alternatives:
+
+```powershell
+# Certificate selected by subject name from the Windows certificate store
+powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 1.0.0 -InstallerOnly -SignInstaller -CertificateSubject "Your Publisher Name"
+
+# PFX certificate file
+powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 1.0.0 -InstallerOnly -SignInstaller -CertificateFile ".\certs\publisher.pfx"
 ```
 
 Common variants:
@@ -55,7 +72,9 @@ powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 1.0.0 -S
 7. Copies the final outputs to `release/<version>/`
 8. Builds portable and corresponding-source ZIP files
 9. Optionally builds the installer from `packaging/installer/GarminDataHub.iss`
-10. Writes `SHA256SUMS.txt`
+10. Optionally signs the installer with Authenticode when `-SignInstaller` is supplied
+11. Optionally removes staging/portable artifacts after installer creation when `-InstallerOnly` is supplied
+12. Writes `SHA256SUMS.txt`
 
 ## 4. Expected Release Outputs
 
@@ -85,7 +104,7 @@ Before publishing a release, confirm:
 - `pyproject.toml` must be written back as **UTF-8 without BOM** or `pytest`/packaging tools may fail to parse it correctly
 - `schema.sql` must be included via PyInstaller `--add-data` or the packaged app will fail to initialize the DB schema
 - the packaging flow is currently **Windows-first**; the examples here are not intended for Unix shell usage
-- the installer is unsigned unless a trusted code-signing certificate is supplied separately
+- the installer is unsigned unless `-SignInstaller` is used with a trusted code-signing certificate
 - `garmin-givemydata` is AGPL-3.0-only; public binary releases must retain the included license, notices, and corresponding source
 - `pyinstaller-hooks-contrib >= 2026.3` is required for the compiled `charset-normalizer >= 3.4.5` runtime; the `dev` extra pins a tested version
 

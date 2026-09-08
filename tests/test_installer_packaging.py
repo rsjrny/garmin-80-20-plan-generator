@@ -51,7 +51,7 @@ def test_setup_guide_is_in_release_portable_archive_and_installer():
         "-Destination $ReleaseSetupUsageFile -Force"
     ) in build_script
     portable_line = next(
-        line for line in build_script.splitlines() if line.startswith("Compress-Archive")
+        line for line in build_script.splitlines() if line.strip().startswith("Compress-Archive")
         and "$PortableArchive" in line
     )
     assert "$ReleaseSetupUsageFile" in portable_line
@@ -59,3 +59,32 @@ def test_setup_guide_is_in_release_portable_archive_and_installer():
         'Source: "{#SourcePath}\\SETUP_AND_USAGE.txt"; '
         'DestDir: "{app}"; Flags: ignoreversion'
     ) in installer
+
+
+def test_build_script_supports_signed_installer_only_release():
+    build_script = (PROJECT_ROOT / "packaging" / "build.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert "[switch]$InstallerOnly" in build_script
+    assert "[switch]$SignInstaller" in build_script
+    assert "function Resolve-SignTool" in build_script
+    assert "function Invoke-AuthenticodeSign" in build_script
+    assert "Signing installer..." in build_script
+    assert "Removing installer staging artifacts..." in build_script
+    assert 'throw "Inno Setup Compiler (ISCC.exe) is required when -InstallerOnly is used."' in build_script
+
+
+def test_signed_installer_path_runs_before_checksums():
+    build_script = (PROJECT_ROOT / "packaging" / "build.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        build_script.index("Invoke-AuthenticodeSign")
+        < build_script.index("# --- CHECKSUMS AND SUMMARY ---")
+    )
+    assert (
+        build_script.index("Removing installer staging artifacts...")
+        < build_script.index("# --- CHECKSUMS AND SUMMARY ---")
+    )

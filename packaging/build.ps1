@@ -6,7 +6,15 @@ param(
     [ValidatePattern('^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$')]
     [string]$Version,
     [switch]$SkipGivemydataUpdate,
-    [string]$GivemydataPypiSpec = "garmin-givemydata==0.1.12"
+    [string]$GivemydataPypiSpec = "garmin-givemydata==0.1.12",
+    [switch]$InstallerOnly,
+    [switch]$SignInstaller,
+    [string]$SignToolPath = "",
+    [string]$CertificateThumbprint = "",
+    [string]$CertificateSubject = "",
+    [string]$CertificateFile = "",
+    [string]$CertificatePassword = "",
+    [string]$TimestampUrl = "http://timestamp.digicert.com"
 )
 
 # Set error action preference to stop on errors
@@ -260,6 +268,90 @@ function Invoke-PackagedSmokeTest {
     }
 }
 
+function Resolve-SignTool {
+    param([string]$RequestedPath)
+
+    if (-not [string]::IsNullOrWhiteSpace($RequestedPath)) {
+        if (-not (Test-Path -LiteralPath $RequestedPath -PathType Leaf)) {
+            throw "SignTool was not found at: $RequestedPath"
+        }
+        return (Resolve-Path -LiteralPath $RequestedPath).Path
+    }
+
+    $command = Get-Command signtool.exe -ErrorAction SilentlyContinue
+    if ($null -ne $command) {
+        return $command.Source
+    }
+
+    $kitsRoot = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin"
+    if (Test-Path -LiteralPath $kitsRoot -PathType Container) {
+        $candidate = Get-ChildItem -LiteralPath $kitsRoot -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\x64\\signtool\.exe$' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+        if ($null -ne $candidate) {
+            return $candidate.FullName
+        }
+    }
+
+    throw "signtool.exe was not found. Install the Windows SDK or pass -SignToolPath."
+}
+
+function Invoke-AuthenticodeSign {
+    param(
+        [string]$FilePath,
+        [string]$ToolPath,
+        [string]$Thumbprint,
+        [string]$Subject,
+        [string]$PfxFile,
+        [string]$PfxPassword,
+        [string]$TimestampServer
+    )
+
+    if (-not (Test-Path -LiteralPath $FilePath -PathType Leaf)) {
+        throw "Cannot sign missing file: $FilePath"
+    }
+
+    $identityOptions = 0
+    if (-not [string]::IsNullOrWhiteSpace($Thumbprint)) { $identityOptions++ }
+    if (-not [string]::IsNullOrWhiteSpace($Subject)) { $identityOptions++ }
+    if (-not [string]::IsNullOrWhiteSpace($PfxFile)) { $identityOptions++ }
+    if ($identityOptions -ne 1) {
+        throw "Pass exactly one signing identity: -CertificateThumbprint, -CertificateSubject, or -CertificateFile."
+    }
+
+    $signArgs = @("sign", "/fd", "SHA256")
+    if (-not [string]::IsNullOrWhiteSpace($TimestampServer)) {
+        $signArgs += @("/tr", $TimestampServer, "/td", "SHA256")
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Thumbprint)) {
+        $signArgs += @("/sha1", $Thumbprint)
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($Subject)) {
+        $signArgs += @("/n", $Subject)
+    }
+    else {
+        if (-not (Test-Path -LiteralPath $PfxFile -PathType Leaf)) {
+            throw "Certificate file was not found: $PfxFile"
+        }
+        $signArgs += @("/f", $PfxFile)
+        if (-not [string]::IsNullOrWhiteSpace($PfxPassword)) {
+            $signArgs += @("/p", $PfxPassword)
+        }
+    }
+    $signArgs += $FilePath
+
+    & $ToolPath @signArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "SignTool failed with exit code $LASTEXITCODE for: $FilePath"
+    }
+
+    $signature = Get-AuthenticodeSignature -LiteralPath $FilePath
+    if ($signature.Status -ne "Valid") {
+        throw "Signed file did not verify as Valid: $FilePath ($($signature.Status))"
+    }
+}
+
 # --- SETUP ---
 Write-Host "###################################################" -ForegroundColor Magenta
 Write-Host "# GarminDataHub Build Pipeline                    #" -ForegroundColor Magenta
@@ -501,8 +593,13 @@ Invoke-PackagedSmokeTest -Executable $ExpectedCliExePath -Arguments @("--_run-bu
 Write-Host "  Packaged CLI smoke tests passed." -ForegroundColor Green
 
 $PortableArchive = Join-Path $ReleaseDir "GarminDataHub-$Version-portable.zip"
-Compress-Archive -Path $DestinationAppDir, $DestinationCliDir, $ReleaseLicenseFile, $ReleaseNoticesFile, $ReleaseSetupUsageFile, $GivemydataLicenseFile, $ReleaseSourceDir, $SourceArchive, $SourceInfoFile -DestinationPath $PortableArchive -CompressionLevel Optimal -Force
-Write-Host "  Portable archive: $PortableArchive" -ForegroundColor Green
+if (-not $InstallerOnly) {
+    Compress-Archive -Path $DestinationAppDir, $DestinationCliDir, $ReleaseLicenseFile, $ReleaseNoticesFile, $ReleaseSetupUsageFile, $GivemydataLicenseFile, $ReleaseSourceDir, $SourceArchive, $SourceInfoFile -DestinationPath $PortableArchive -CompressionLevel Optimal -Force
+    Write-Host "  Portable archive: $PortableArchive" -ForegroundColor Green
+}
+else {
+    Write-Host "  Skipped portable archive because -InstallerOnly was supplied." -ForegroundColor Cyan
+}
 
 # --- BUILD INSTALLER ---
 Write-Host ""
@@ -513,6 +610,9 @@ Write-Host "---------------------------------------------------"
 $InstallerFile = $null
 $iscc = Get-Command ISCC.exe -ErrorAction SilentlyContinue
 if ($null -eq $iscc) {
+    if ($InstallerOnly) {
+        throw "Inno Setup Compiler (ISCC.exe) is required when -InstallerOnly is used."
+    }
     Write-Host "[WARNING] Inno Setup Compiler (ISCC.exe) not found in PATH; installer build skipped." -ForegroundColor Yellow
 }
 else {
@@ -537,6 +637,20 @@ else {
         }
         Write-Host "[SUCCESS] Installer built: $InstallerFile" -ForegroundColor Green
 
+        if ($SignInstaller) {
+            Write-Host "Signing installer..." -ForegroundColor Cyan
+            $resolvedSignTool = Resolve-SignTool -RequestedPath $SignToolPath
+            Invoke-AuthenticodeSign `
+                -FilePath $InstallerFile `
+                -ToolPath $resolvedSignTool `
+                -Thumbprint $CertificateThumbprint `
+                -Subject $CertificateSubject `
+                -PfxFile $CertificateFile `
+                -PfxPassword $CertificatePassword `
+                -TimestampServer $TimestampUrl
+            Write-Host "[SUCCESS] Installer signature verified." -ForegroundColor Green
+        }
+
         $signature = Get-AuthenticodeSignature -LiteralPath $InstallerFile
         if ($signature.Status -ne "Valid") {
             Write-Host "[WARNING] Installer is not Authenticode-signed; Windows SmartScreen may warn recipients." -ForegroundColor Yellow
@@ -548,8 +662,33 @@ else {
     }
 }
 
+# Remove staging artifacts after Inno Setup has embedded them when the installer
+# is the only distributable artifact for this release.
+if ($InstallerOnly) {
+    if ($null -eq $InstallerFile) {
+        throw "Installer-only release requested, but no installer was produced."
+    }
+    Write-Host "Removing installer staging artifacts..." -ForegroundColor Cyan
+    $stagingArtifacts = @(
+        $DestinationAppDir,
+        $DestinationCliDir,
+        $ReleaseLicenseFile,
+        $ReleaseNoticesFile,
+        $ReleaseSetupUsageFile,
+        $GivemydataLicenseFile,
+        $ReleaseSourceDir,
+        $SourceArchive,
+        $SourceInfoFile
+    )
+    foreach ($artifact in $stagingArtifacts) {
+        if (Test-Path -LiteralPath $artifact) {
+            Remove-Item -LiteralPath $artifact -Recurse -Force
+        }
+    }
+}
+
 # --- CHECKSUMS AND SUMMARY ---
-$ChecksumTargets = @($PortableArchive, $SourceArchive)
+$ChecksumTargets = if ($InstallerOnly) { @() } else { @($PortableArchive, $SourceArchive) }
 if ($null -ne $InstallerFile) {
     $ChecksumTargets += $InstallerFile
 }
@@ -573,7 +712,9 @@ Get-ChildItem -LiteralPath $ReleaseDir | ForEach-Object {
 }
 Write-Host "SHA-256 checksums: $ChecksumFile" -ForegroundColor Cyan
 Write-Host ""
-Write-Host "Portable app: extract the complete archive and run '$GuiAppName\$GuiAppName.exe'."
+if (-not $InstallerOnly) {
+    Write-Host "Portable app: extract the complete archive and run '$GuiAppName\$GuiAppName.exe'."
+}
 if ($null -ne $InstallerFile) {
     Write-Host "Installer: '$InstallerFile'"
 }
