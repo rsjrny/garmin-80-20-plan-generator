@@ -39,11 +39,22 @@ from garmin_data_hub.ui_nicegui.data import (
 )
 from garmin_data_hub.ui_nicegui.pages import (
     CHART_OPTIONS,
+    TRACK_MAP_FALLBACK_TILE_URL,
+    TRACK_MAP_TILE_ATTRIBUTION,
+    TRACK_MAP_TILE_URL,
+    TRANSPARENT_TILE_URL,
     _chart_ids_from_labels,
+    _climb_summary_rows,
+    _downhill_summary_rows,
+    _elevation_profile_figure,
     _fit_leaflet_route,
+    _gradient_distribution_figure,
+    _gradient_distribution_rows,
     _show_activity_detail,
     _split_rows,
+    _terrain_summary,
     _training_chart_figures,
+    _use_track_map_tiles,
 )
 
 
@@ -172,6 +183,50 @@ def test_route_fit_does_not_wait_for_javascript_response():
     assert route_map.commands == [
         ("invalidateSize", ()),
         ("fitBounds", (coordinates, {"padding": [24, 24]})),
+    ]
+
+
+def test_route_map_replaces_default_osm_tile_endpoint():
+    class RouteMap:
+        def __init__(self):
+            self.layers_cleared = False
+            self.tile_layers = []
+
+        def clear_layers(self):
+            self.layers_cleared = True
+
+        def tile_layer(self, *, url_template, options):
+            self.tile_layers.append(
+                {"url_template": url_template, "options": options}
+            )
+
+    route_map = RouteMap()
+
+    _use_track_map_tiles(route_map)
+
+    assert route_map.layers_cleared is True
+    assert "openstreetmap.org" not in TRACK_MAP_TILE_URL
+    assert "tile.osm.org" not in TRACK_MAP_TILE_URL
+    assert "openstreetmap.org" not in TRACK_MAP_FALLBACK_TILE_URL
+    assert "tile.osm.org" not in TRACK_MAP_FALLBACK_TILE_URL
+    assert route_map.tile_layers == [
+        {
+            "url_template": TRACK_MAP_FALLBACK_TILE_URL,
+            "options": {
+                "attribution": TRACK_MAP_TILE_ATTRIBUTION,
+                "maxZoom": 19,
+                "zIndex": 1,
+            },
+        },
+        {
+            "url_template": TRACK_MAP_TILE_URL,
+            "options": {
+                "attribution": TRACK_MAP_TILE_ATTRIBUTION,
+                "errorTileUrl": TRANSPARENT_TILE_URL,
+                "maxZoom": 19,
+                "zIndex": 2,
+            },
+        }
     ]
 
 
@@ -324,6 +379,98 @@ def test_split_rows_show_configured_pace_or_speed():
     assert speed_rows == [
         {"split_number": 1, "distance_mi": 1.0, "split_speed_mph": 6.22}
     ]
+
+
+def test_elevation_profile_identifies_climbs_with_grade_scores():
+    points = pd.DataFrame(
+        [
+            {"distance_m": 0, "altitude_m": 100, "speed_mps": 2.4},
+            {"distance_m": 100, "altitude_m": 106, "speed_mps": 2.5},
+            {"distance_m": 200, "altitude_m": 113, "speed_mps": 2.3},
+            {"distance_m": 300, "altitude_m": 121, "speed_mps": 2.2},
+            {"distance_m": 400, "altitude_m": 122, "speed_mps": 2.6},
+            {"distance_m": 500, "altitude_m": 116, "speed_mps": 2.8},
+            {"distance_m": 600, "altitude_m": 116, "speed_mps": 2.9},
+            {"distance_m": 700, "altitude_m": 122, "speed_mps": 2.4},
+            {"distance_m": 800, "altitude_m": 131, "speed_mps": 2.2},
+            {"distance_m": 900, "altitude_m": 143, "speed_mps": 2.0},
+            {"distance_m": 1000, "altitude_m": 143, "speed_mps": 2.5},
+        ]
+    )
+
+    climbs = _climb_summary_rows(points, "Metric")
+    downhill = _downhill_summary_rows(points, "Metric")
+    summary = _terrain_summary(points, climbs, "Metric")
+
+    assert climbs == [
+        {
+            "climb": 1,
+            "start_km": 0.0,
+            "end_km": 0.4,
+            "distance_km": 0.4,
+            "gain_m": 18.0,
+            "avg_grade_pct": 4.5,
+            "category": "Unclassified",
+            "fiets": 0.2,
+            "duration": "2:47",
+            "pace": "6:58 min/km",
+            "vam_m_per_h": 387,
+        },
+        {
+            "climb": 2,
+            "start_km": 0.6,
+            "end_km": 1.0,
+            "distance_km": 0.4,
+            "gain_m": 27.0,
+            "avg_grade_pct": 6.8,
+            "category": "5",
+            "fiets": 0.46,
+            "duration": "2:57",
+            "pace": "7:23 min/km",
+            "vam_m_per_h": 549,
+        },
+    ]
+    assert downhill == [
+        {
+            "climb": 1,
+            "start_km": 0.4,
+            "end_km": 0.6,
+            "distance_km": 0.2,
+            "avg_grade_pct": -2.5,
+            "category": "Unclassified",
+            "fiets": 0.03,
+            "duration": "1:10",
+            "pace": "5:51 min/km",
+            "vam_m_per_h": 256,
+            "drop_m": 5.0,
+        },
+    ]
+    assert summary == {
+        "gdh_terrain_score": 4.3,
+        "distance_km": 1.0,
+        "gain_m": 33.0,
+        "hilly_pct": 90,
+        "flat_pct": 10,
+    }
+    figure = _elevation_profile_figure(points, climbs, "Metric")
+    assert figure is not None
+    assert figure.layout.title.text == "GDH terrain score"
+    assert len(figure.layout.shapes) == 2
+    assert not figure.layout.annotations
+    distribution_rows = _gradient_distribution_rows(points, "Metric")
+    assert [row["gradient"] for row in distribution_rows] == [
+        "Flat",
+        "Ascending > +2%",
+        "Descending < -2%",
+    ]
+    distribution_figure = _gradient_distribution_figure(points, "Metric")
+    assert distribution_figure is not None
+    assert distribution_figure.layout.title.text == "Gradient distribution"
+    assert len(distribution_figure.data[0].x) == 25
+    assert distribution_figure.data[0].x[0] == "-12%"
+    assert distribution_figure.data[0].x[-1] == "12%"
+    assert distribution_figure.layout.plot_bgcolor == "white"
+    assert distribution_figure.layout.xaxis.tickvals[0] == "-12%"
 
 
 def test_chart_selection_labels_map_to_stable_ids():

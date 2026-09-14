@@ -602,6 +602,519 @@ def _split_rows(
     return converted
 
 
+def _fiets_index(gain_m: float, distance_m: float, summit_altitude_m: float) -> float:
+    if gain_m <= 0 or distance_m <= 0:
+        return 0.0
+    altitude_bonus = max(0.0, (summit_altitude_m - 1000) / 1000)
+    return gain_m * gain_m / (distance_m * 4) + altitude_bonus
+
+
+def _fiets_category(fiets: float) -> str:
+    if fiets >= 6.5:
+        return "HC"
+    if fiets >= 5.0:
+        return "1"
+    if fiets >= 3.5:
+        return "2"
+    if fiets >= 2.0:
+        return "3"
+    if fiets >= 0.5:
+        return "4"
+    if fiets >= 0.25:
+        return "5"
+    return "Unclassified"
+
+
+def _duration_text(seconds: float) -> str:
+    total_seconds = max(0, int(round(seconds)))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes}:{seconds:02d}"
+
+
+def _pace_tick_text(minutes: float, unit_system: str) -> str:
+    whole_minutes = int(minutes)
+    seconds = int(round((minutes - whole_minutes) * 60))
+    if seconds == 60:
+        whole_minutes += 1
+        seconds = 0
+    return f"{whole_minutes}:{seconds:02d}"
+
+
+def _pace_axis_ticks(values: pd.Series) -> dict[str, list[float] | list[str]]:
+    numeric = pd.to_numeric(values, errors="coerce").dropna()
+    if numeric.empty:
+        return {}
+    low = math.floor(float(numeric.min()) * 2) / 2
+    high = math.ceil(float(numeric.max()) * 2) / 2
+    if high <= low:
+        high = low + 0.5
+    tick_values = [low + index * 0.5 for index in range(int((high - low) / 0.5) + 1)]
+    return {
+        "tickvals": tick_values,
+        "ticktext": [_pace_tick_text(value, "Metric") for value in tick_values],
+    }
+
+
+def _climb_summary_rows(
+    points: pd.DataFrame,
+    unit_system: str,
+    *,
+    min_distance_m: float = 100.0,
+    min_gain_m: float = 10.0,
+    min_grade_pct: float = 2.0,
+) -> list[dict[str, Any]]:
+    """Identify sustained climbs and classify them with a FIETS-style index."""
+    if points.empty or not {"distance_m", "altitude_m"}.issubset(points.columns):
+        return []
+
+    columns = [
+        column
+        for column in (
+            "distance_m",
+            "altitude_m",
+            "speed_mps",
+            "power_w",
+            "heart_rate_bpm",
+        )
+        if column in points.columns
+    ]
+    frame = points[columns].copy()
+    for column in columns:
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    frame = frame.dropna(subset=["distance_m", "altitude_m"])
+    frame = frame.sort_values("distance_m")
+    frame = frame[frame["distance_m"].diff().fillna(0) >= 0].reset_index(drop=True)
+    if len(frame) < 2:
+        return []
+
+    frame["altitude_smooth_m"] = (
+        frame["altitude_m"].rolling(window=3, min_periods=1, center=True).median()
+    )
+    climbs: list[dict[str, Any]] = []
+    start_idx: int | None = None
+    descent_m = 0.0
+    previous_altitude = float(frame.loc[0, "altitude_smooth_m"])
+
+    def close_climb(end_idx: int) -> None:
+        nonlocal start_idx
+        if start_idx is None or end_idx <= start_idx:
+            start_idx = None
+            return
+        start_distance = float(frame.loc[start_idx, "distance_m"])
+        end_distance = float(frame.loc[end_idx, "distance_m"])
+        segment = frame.iloc[start_idx : end_idx + 1]
+        distance_m = end_distance - start_distance
+        gain_m = float(segment["altitude_smooth_m"].diff().clip(lower=0).sum())
+        if distance_m <= 0:
+            start_idx = None
+            return
+        grade_pct = gain_m / distance_m * 100
+        if (
+            distance_m >= min_distance_m
+            and gain_m >= min_gain_m
+            and grade_pct >= min_grade_pct
+        ):
+            segment_steps = segment.copy()
+            segment_steps["step_distance_m"] = segment_steps["distance_m"].diff()
+            duration_s = None
+            if (
+                "speed_mps" in segment_steps.columns
+                and segment_steps["speed_mps"].notna().any()
+            ):
+                step_seconds = (
+                    segment_steps["step_distance_m"]
+                    / segment_steps["speed_mps"].replace(0, pd.NA)
+                )
+                duration_s = float(step_seconds.dropna().sum()) or None
+            avg_speed_mps = distance_m / duration_s if duration_s else None
+            summit_altitude_m = float(segment["altitude_smooth_m"].max())
+            fiets = _fiets_index(gain_m, distance_m, summit_altitude_m)
+            row: dict[str, Any] = {
+                "climb": len(climbs) + 1,
+                "start": distance_from_km(start_distance / 1000, unit_system),
+                "end": distance_from_km(end_distance / 1000, unit_system),
+                "distance": distance_from_km(distance_m / 1000, unit_system),
+                "gain": round(
+                    gain_m * (3.2808398950131 if unit_system == "Imperial" else 1),
+                    0,
+                ),
+                "avg_grade_pct": round(grade_pct, 1),
+                "category": _fiets_category(fiets),
+                "fiets": round(fiets, 2),
+            }
+            if duration_s is not None:
+                row["duration"] = _duration_text(duration_s)
+                row["pace"] = pace_text_from_mps(avg_speed_mps, unit_system)
+                row["vam"] = round(gain_m / (duration_s / 3600))
+            if "power_w" in segment.columns and segment["power_w"].notna().any():
+                row["avg_power_w"] = round(float(segment["power_w"].mean()))
+            if (
+                "heart_rate_bpm" in segment.columns
+                and segment["heart_rate_bpm"].notna().any()
+            ):
+                row["avg_hr_bpm"] = round(float(segment["heart_rate_bpm"].mean()))
+            climbs.append(row)
+        start_idx = None
+
+    for idx in range(1, len(frame)):
+        altitude = float(frame.loc[idx, "altitude_smooth_m"])
+        delta = altitude - previous_altitude
+        if delta > 0.4:
+            if start_idx is None:
+                start_idx = idx - 1
+            descent_m = 0.0
+        elif start_idx is not None and delta < -0.8:
+            descent_m += abs(delta)
+            if descent_m >= 4.0:
+                close_climb(idx - 1)
+                descent_m = 0.0
+        previous_altitude = altitude
+    close_climb(len(frame) - 1)
+    unit = distance_unit(unit_system)
+    ascent_unit = "ft" if unit_system == "Imperial" else "m"
+    return [
+        {
+            "climb": row["climb"],
+            f"start_{unit}": row["start"],
+            f"end_{unit}": row["end"],
+            f"distance_{unit}": row["distance"],
+            f"gain_{ascent_unit}": row["gain"],
+            "avg_grade_pct": row["avg_grade_pct"],
+            "category": row["category"],
+            "fiets": row["fiets"],
+            **({"duration": row["duration"]} if row.get("duration") else {}),
+            **({"pace": row["pace"]} if row.get("pace") else {}),
+            **(
+                {f"vam_{ascent_unit}_per_h": round(row["vam"] * (3.2808398950131 if unit_system == "Imperial" else 1))}
+                if row.get("vam") is not None
+                else {}
+            ),
+            **(
+                {"avg_power_w": row["avg_power_w"]}
+                if row.get("avg_power_w") is not None
+                else {}
+            ),
+            **(
+                {"avg_hr_bpm": row["avg_hr_bpm"]}
+                if row.get("avg_hr_bpm") is not None
+                else {}
+            ),
+        }
+        for row in climbs
+    ]
+
+
+def _downhill_summary_rows(
+    points: pd.DataFrame,
+    unit_system: str,
+    *,
+    min_distance_m: float = 100.0,
+    min_drop_m: float = 5.0,
+    min_grade_pct: float = 2.0,
+) -> list[dict[str, Any]]:
+    """Identify sustained downhill segments using the same thresholds as climbs."""
+    if points.empty or not {"distance_m", "altitude_m"}.issubset(points.columns):
+        return []
+    inverted = points.copy()
+    inverted["altitude_m"] = -pd.to_numeric(inverted["altitude_m"], errors="coerce")
+    rows = _climb_summary_rows(
+        inverted,
+        unit_system,
+        min_distance_m=min_distance_m,
+        min_gain_m=min_drop_m,
+        min_grade_pct=min_grade_pct,
+    )
+    ascent_unit = "ft" if unit_system == "Imperial" else "m"
+    for row in rows:
+        row[f"drop_{ascent_unit}"] = row.pop(f"gain_{ascent_unit}")
+        row["avg_grade_pct"] = -row["avg_grade_pct"]
+    return rows
+
+
+def _terrain_segments(points: pd.DataFrame) -> pd.DataFrame:
+    if points.empty or not {"distance_m", "altitude_m"}.issubset(points.columns):
+        return pd.DataFrame()
+    columns = [
+        column
+        for column in (
+            "distance_m",
+            "altitude_m",
+            "speed_mps",
+            "power_w",
+            "heart_rate_bpm",
+        )
+        if column in points.columns
+    ]
+    frame = points[columns].copy()
+    for column in columns:
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    frame = frame.dropna(subset=["distance_m", "altitude_m"])
+    frame = frame.sort_values("distance_m")
+    frame = frame[frame["distance_m"].diff().fillna(0) >= 0].reset_index(drop=True)
+    if len(frame) < 2:
+        return pd.DataFrame()
+    frame["altitude_smooth_m"] = (
+        frame["altitude_m"].rolling(window=5, min_periods=1, center=True).mean()
+    )
+    segments = pd.DataFrame(
+        {
+            "distance_m": frame["distance_m"].diff(),
+            "start_m": frame["distance_m"].shift(),
+            "end_m": frame["distance_m"],
+            "elevation_delta_m": frame["altitude_smooth_m"].diff(),
+        }
+    )
+    segments = segments.dropna(subset=["distance_m", "elevation_delta_m"])
+    segments = segments[segments["distance_m"] > 0].copy()
+    if segments.empty:
+        return segments
+    segments["grade_pct"] = segments["elevation_delta_m"] / segments["distance_m"] * 100
+    for column in ("speed_mps", "power_w", "heart_rate_bpm"):
+        if column in frame.columns:
+            segments[column] = frame[column]
+    return segments
+
+
+def _terrain_summary(points: pd.DataFrame, climb_rows: list[dict[str, Any]], unit_system: str) -> dict[str, Any]:
+    segments = _terrain_segments(points)
+    unit = distance_unit(unit_system)
+    ascent_unit = "ft" if unit_system == "Imperial" else "m"
+    distance_factor = 0.000621371192237334 if unit_system == "Imperial" else 0.001
+    ascent_factor = 3.2808398950131 if unit_system == "Imperial" else 1.0
+    if segments.empty:
+        return {
+            "gdh_terrain_score": 0.0,
+            f"distance_{unit}": 0.0,
+            f"gain_{ascent_unit}": 0.0,
+            "hilly_pct": 0,
+            "flat_pct": 0,
+        }
+    total_distance_m = float(segments["distance_m"].sum())
+    gain_m = float(segments["elevation_delta_m"].clip(lower=0).sum())
+    hilly_distance_m = float(
+        segments.loc[segments["grade_pct"].abs() >= 2, "distance_m"].sum()
+    )
+    hilly_pct = round(hilly_distance_m / total_distance_m * 100) if total_distance_m else 0
+    total_fiets = sum(float(row.get("fiets") or 0) for row in climb_rows)
+    terrain_score = min(10.0, (hilly_pct / 100 * 4) + min(6.0, total_fiets))
+    return {
+        "gdh_terrain_score": round(terrain_score, 1),
+        f"distance_{unit}": round(total_distance_m * distance_factor, 2),
+        f"gain_{ascent_unit}": round(gain_m * ascent_factor, 0),
+        "hilly_pct": hilly_pct,
+        "flat_pct": max(0, 100 - hilly_pct),
+    }
+
+
+def _gradient_distribution_rows(
+    points: pd.DataFrame,
+    unit_system: str,
+) -> list[dict[str, Any]]:
+    segments = _terrain_segments(points)
+    unit = distance_unit(unit_system)
+    if segments.empty:
+        return []
+    total_distance_m = float(segments["distance_m"].sum())
+    categories = (
+        ("Flat", segments["grade_pct"].abs() < 2),
+        ("Ascending > +2%", segments["grade_pct"] >= 2),
+        ("Descending < -2%", segments["grade_pct"] <= -2),
+    )
+    rows: list[dict[str, Any]] = []
+    for label, mask in categories:
+        category = segments.loc[mask].copy()
+        distance_m = float(category["distance_m"].sum()) if not category.empty else 0
+        percent = round(distance_m / total_distance_m * 100) if total_distance_m else 0
+        row: dict[str, Any] = {
+            "gradient": label,
+            f"distance_{unit}": distance_from_km(distance_m / 1000, unit_system),
+            "share_pct": percent,
+        }
+        if "speed_mps" in category.columns and category["speed_mps"].notna().any():
+            row["avg_pace"] = pace_text_from_mps(
+                category["speed_mps"].mean(),
+                unit_system,
+            )
+        if "power_w" in category.columns and category["power_w"].notna().any():
+            row["avg_power_w"] = round(float(category["power_w"].mean()))
+        rows.append(row)
+    return rows
+
+
+def _elevation_profile_figure(
+    points: pd.DataFrame,
+    climb_rows: list[dict[str, Any]],
+    unit_system: str,
+) -> go.Figure | None:
+    if points.empty or not {"distance_m", "altitude_m"}.issubset(points.columns):
+        return None
+    frame = points[["distance_m", "altitude_m"]].copy()
+    frame["distance_m"] = pd.to_numeric(frame["distance_m"], errors="coerce")
+    frame["altitude_m"] = pd.to_numeric(frame["altitude_m"], errors="coerce")
+    frame = frame.dropna(subset=["distance_m", "altitude_m"])
+    if frame.empty:
+        return None
+
+    unit = distance_unit(unit_system)
+    altitude_unit = "ft" if unit_system == "Imperial" else "m"
+    distance_factor = 0.000621371192237334 if unit_system == "Imperial" else 0.001
+    altitude_factor = 3.2808398950131 if unit_system == "Imperial" else 1.0
+    plot_frame = frame.assign(
+        display_distance=frame["distance_m"] * distance_factor,
+        display_altitude=frame["altitude_m"] * altitude_factor,
+    )
+    figure = go.Figure()
+    figure.add_trace(
+        go.Scatter(
+            x=plot_frame["display_distance"],
+            y=plot_frame["display_altitude"],
+            mode="lines",
+            line={"color": "#d8c89c", "width": 2},
+            fill="tozeroy",
+            fillcolor="rgba(216, 200, 156, 0.28)",
+            name="Elevation",
+        )
+    )
+    for row in climb_rows:
+        start = row.get(f"start_{unit}")
+        end = row.get(f"end_{unit}")
+        if start is None or end is None:
+            continue
+        figure.add_vrect(
+            x0=start,
+            x1=end,
+            fillcolor="rgba(245, 158, 11, 0.20)",
+            line_width=0,
+            layer="below",
+        )
+        figure.add_trace(
+            go.Scatter(
+                x=[(float(start) + float(end)) / 2],
+                y=[plot_frame["display_altitude"].max()],
+                mode="markers+text",
+                marker={"color": "#cf5265", "size": 11},
+                text=[str(row.get("climb"))],
+                textposition="middle center",
+                textfont={"color": "white", "size": 9},
+                hovertemplate=(
+                    f"FIETS {row.get('fiets')}<br>"
+                    f"Category {row.get('category')}<extra></extra>"
+                ),
+                showlegend=False,
+            )
+        )
+    figure.update_layout(
+        title="GDH terrain score",
+        xaxis_title=f"Distance ({unit})",
+        yaxis_title=f"Elevation ({altitude_unit})",
+        margin={"l": 48, "r": 24, "t": 56, "b": 48},
+        showlegend=False,
+    )
+    return figure
+
+
+def _gradient_distribution_figure(
+    points: pd.DataFrame,
+    unit_system: str,
+) -> go.Figure | None:
+    segments = _terrain_segments(points)
+    if segments.empty:
+        return None
+    segments = segments[
+        (segments["grade_pct"] >= -12) & (segments["grade_pct"] <= 12)
+    ].copy()
+    if segments.empty:
+        return None
+    bins = list(range(-12, 14))
+    labels = [f"{left}%" for left in bins[:-1]]
+    segments["grade_bin"] = pd.cut(
+        segments["grade_pct"],
+        bins=bins,
+        labels=labels,
+        include_lowest=True,
+        right=False,
+    )
+    total_distance_m = float(segments["distance_m"].sum())
+    distribution = (
+        segments.groupby("grade_bin", observed=False)["distance_m"].sum().reset_index()
+    )
+    distribution["share_pct"] = distribution["distance_m"] / total_distance_m * 100
+    max_share = float(distribution["share_pct"].max() or 0)
+    figure = go.Figure()
+    figure.add_trace(
+        go.Bar(
+            x=distribution["grade_bin"].astype(str),
+            y=distribution["share_pct"],
+            marker_color="#6ab04c",
+            name="Distance",
+            width=0.82,
+            hovertemplate="%{x}: %{y:.1f}%<extra></extra>",
+        )
+    )
+    pace_axis: dict[str, Any] = {}
+    if "speed_mps" in segments.columns and segments["speed_mps"].notna().any():
+        pace_segments = segments.dropna(subset=["speed_mps"]).copy()
+        pace_segments["speed_distance"] = (
+            pace_segments["speed_mps"] * pace_segments["distance_m"]
+        )
+        pace_by_bin = pace_segments.groupby("grade_bin", observed=False).agg(
+            distance_m=("distance_m", "sum"),
+            speed_distance=("speed_distance", "sum"),
+        )
+        pace_by_bin["speed_mps"] = (
+            pace_by_bin["speed_distance"] / pace_by_bin["distance_m"].replace(0, pd.NA)
+        )
+        pace_by_bin = pace_by_bin.reset_index().dropna(subset=["speed_mps"])
+        pace_by_bin["pace"] = pace_by_bin["speed_mps"].apply(
+            lambda value: pace_minutes_from_mps(value, unit_system)
+        )
+        pace_axis = _pace_axis_ticks(pace_by_bin["pace"])
+        figure.add_trace(
+            go.Scatter(
+                x=pace_by_bin["grade_bin"].astype(str),
+                y=pace_by_bin["pace"],
+                yaxis="y2",
+                mode="lines",
+                line={"color": "#8fc6d6", "width": 2, "shape": "spline"},
+                name="Pace",
+                connectgaps=True,
+            )
+        )
+    figure.update_layout(
+        title="Gradient distribution",
+        xaxis_title="Gradient",
+        xaxis={
+            "tickmode": "array",
+            "tickvals": [f"{value}%" for value in range(-12, 13, 2)],
+            "showgrid": False,
+        },
+        yaxis={
+            "title": "Distance share",
+            "ticksuffix": "%",
+            "range": [0, max(20, math.ceil(max_share / 5) * 5)],
+            "gridcolor": "#edf0f2",
+            "zeroline": False,
+        },
+        yaxis2={
+            "title": f"Pace ({pace_unit(unit_system)})",
+            "overlaying": "y",
+            "side": "right",
+            "autorange": "reversed",
+            "showgrid": False,
+            **pace_axis,
+        },
+        bargap=0.08,
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        margin={"l": 48, "r": 56, "t": 56, "b": 48},
+        legend={"orientation": "h", "x": 1, "xanchor": "right", "y": 1.12},
+    )
+    return figure
+
+
 def _show_activity_detail(
     state: dict[str, Any],
     selected_id: int,
@@ -631,6 +1144,47 @@ async def _fit_leaflet_route(route_map: Any, coordinates: list[list[float]]) -> 
         "fitBounds",
         coordinates,
         {"padding": [24, 24]},
+    )
+
+
+TRACK_MAP_TILE_URL = (
+    "https://server.arcgisonline.com/ArcGIS/rest/services/"
+    "World_Street_Map/MapServer/tile/{z}/{y}/{x}"
+)
+TRACK_MAP_FALLBACK_TILE_URL = (
+    "https://server.arcgisonline.com/ArcGIS/rest/services/"
+    "World_Topo_Map/MapServer/tile/{z}/{y}/{x}"
+)
+TRACK_MAP_TILE_ATTRIBUTION = (
+    "Tiles &copy; Esri &mdash; Sources: Esri, HERE, Garmin, USGS, "
+    "Intermap, INCREMENT P, NRCan, Esri Japan, METI, Esri China "
+    "(Hong Kong), Esri Korea, Esri (Thailand), NGCC, "
+    "&copy; OpenStreetMap contributors, and the GIS User Community"
+)
+TRANSPARENT_TILE_URL = (
+    "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
+)
+
+
+def _use_track_map_tiles(route_map: Any) -> None:
+    """Replace NiceGUI's default OSM tile endpoint with the configured basemap."""
+    route_map.clear_layers()
+    route_map.tile_layer(
+        url_template=TRACK_MAP_FALLBACK_TILE_URL,
+        options={
+            "attribution": TRACK_MAP_TILE_ATTRIBUTION,
+            "maxZoom": 19,
+            "zIndex": 1,
+        },
+    )
+    route_map.tile_layer(
+        url_template=TRACK_MAP_TILE_URL,
+        options={
+            "attribution": TRACK_MAP_TILE_ATTRIBUTION,
+            "errorTileUrl": TRANSPARENT_TILE_URL,
+            "maxZoom": 19,
+            "zIndex": 2,
+        },
     )
 
 
@@ -850,6 +1404,7 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                 with tabs:
                     overview_tab = ui.tab("Overview")
                     splits_tab = ui.tab("Splits")
+                    elevation_tab = ui.tab("Elevation")
                     track_tab = ui.tab("Track")
                     raw_tab = ui.tab("All fields")
                 with ui.tab_panels(tabs, value=overview_tab).classes("w-full"):
@@ -863,6 +1418,78 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                                 velocity_display,
                             )
                         )
+                    with ui.tab_panel(elevation_tab):
+                        points = pd.DataFrame(detail["trackpoints"])
+                        climb_rows = _climb_summary_rows(points, unit_system)
+                        downhill_rows = _downhill_summary_rows(points, unit_system)
+                        summary = _terrain_summary(points, climb_rows, unit_system)
+                        elevation_figure = _elevation_profile_figure(
+                            points,
+                            climb_rows,
+                            unit_system,
+                        )
+                        gradient_figure = _gradient_distribution_figure(
+                            points,
+                            unit_system,
+                        )
+                        if elevation_figure is None:
+                            ui.label(
+                                "No elevation trackpoints are stored for this activity."
+                            ).classes("text-grey-7")
+                        else:
+                            with ui.row().classes("w-full gap-4 items-stretch"):
+                                with ui.column().classes("min-w-[420px] flex-[1.1] gap-3"):
+                                    ui.plotly(elevation_figure).classes(
+                                        "w-full h-[22rem]"
+                                    )
+                                    with ui.row().classes("w-full gap-3 flex-wrap"):
+                                        metric_card(
+                                            "GDH terrain score",
+                                            summary["gdh_terrain_score"],
+                                            icon="terrain",
+                                        )
+                                        metric_card(
+                                            "Distance",
+                                            f"{summary[f'distance_{unit}']:,g} {unit}",
+                                            icon="route",
+                                        )
+                                        ascent_unit = (
+                                            "ft" if unit_system == "Imperial" else "m"
+                                        )
+                                        metric_card(
+                                            "Elevation gain",
+                                            f"{summary[f'gain_{ascent_unit}']:,g} {ascent_unit}",
+                                            icon="trending_up",
+                                        )
+                                        metric_card(
+                                            "Terrain mix",
+                                            (
+                                                f"{summary['hilly_pct']}% hilly / "
+                                                f"{summary['flat_pct']}% flat"
+                                            ),
+                                            icon="stacked_bar_chart",
+                                        )
+                                    ui.label(
+                                        "FIETS-style categories use published category bands; "
+                                        "GDH terrain score is a local 0-10 estimate "
+                                        "from hilly percentage and climb difficulty totals."
+                                    ).classes("text-xs text-grey-7")
+                                with ui.column().classes("min-w-[420px] flex-1 gap-3"):
+                                    if gradient_figure is not None:
+                                        ui.plotly(gradient_figure).classes(
+                                            "w-full h-[22rem]"
+                                        )
+                                    data_grid(
+                                        _gradient_distribution_rows(
+                                            points,
+                                            unit_system,
+                                        ),
+                                        height="12rem",
+                                    )
+                            ui.label("Climbs").classes("text-xl font-semibold mt-5")
+                            data_grid(climb_rows, height="16rem")
+                            ui.label("Downhill").classes("text-xl font-semibold mt-5")
+                            data_grid(downhill_rows, height="16rem")
                     with ui.tab_panel(track_tab):
                         points = pd.DataFrame(detail["trackpoints"])
                         if not points.empty and {"lon_deg", "lat_deg"}.issubset(points.columns):
@@ -889,6 +1516,7 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                                 route_map = ui.leaflet(center=center, zoom=13).classes(
                                     "w-full h-[34rem]"
                                 )
+                                _use_track_map_tiles(route_map)
                                 route_map.generic_layer(
                                     name="polyline",
                                     args=[
