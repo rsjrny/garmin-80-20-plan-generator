@@ -3,7 +3,10 @@ from __future__ import annotations
 from datetime import date
 from types import SimpleNamespace
 
-from garmin_data_hub.services.training_policy import evaluate_training_policy
+from garmin_data_hub.services.training_policy import (
+    evaluate_training_policy,
+    training_policy_constraints,
+)
 
 
 def _session(day: str, **changes):
@@ -81,6 +84,37 @@ def test_policy_warns_when_known_duration_is_not_80_20():
     )
 
     assert any(issue.code == "intensity_distribution" for issue in report.warnings)
+
+
+def test_policy_flags_maffetone_non_race_hard_endurance():
+    sessions = [
+        _session("2026-09-01", duration_minutes=100),
+        _session("2026-09-03", intensity="hard", duration_minutes=30),
+        _session("2026-09-07", workout="Race", intensity="race", phase="Race"),
+    ]
+    report = evaluate_training_policy(
+        sessions,
+        start=date(2026, 9, 1),
+        event_date=date(2026, 9, 7),
+        age=42,
+        run_days_per_week=4,
+        training_method="maffetone",
+    )
+
+    assert any(issue.code == "training_method_intensity" for issue in report.errors)
+    assert any(issue.code == "intensity_distribution" for issue in report.warnings)
+
+
+def test_maffetone_policy_constraints_include_maf_cap():
+    constraints = training_policy_constraints(
+        42,
+        4,
+        training_method="maffetone",
+    )
+
+    assert constraints["training_method"] == "maffetone"
+    assert constraints["target_easy_endurance_duration_fraction"] == 1.0
+    assert constraints["maf_hr_cap_bpm"] == 138
 
 
 def test_policy_can_require_strength_in_full_training_weeks():

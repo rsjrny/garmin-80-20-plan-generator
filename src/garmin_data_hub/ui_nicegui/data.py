@@ -39,6 +39,7 @@ from garmin_data_hub.services.plan_persistence import (
     load_plan_settings,
 )
 from garmin_data_hub.services.sync_status import progress_from_log
+from garmin_data_hub.services.training_policy import normalize_training_method
 from garmin_data_hub.ui_nicegui.process_tree import (
     ProcessTree,
     attach_process_tree,
@@ -532,6 +533,7 @@ PLAN_SETTING_KEYS = {
     "sodium_mg_per_hour": "plan_sodium",
     "plan_start": "plan_start_date",
     "event_date": "plan_event_date",
+    "training_method": "plan_training_method",
 }
 
 PLAN_OUTPUT_SETTING_KEYS = {
@@ -552,6 +554,12 @@ def planning_settings(db_path: Path) -> dict[str, Any]:
             for friendly, setting in PLAN_OUTPUT_SETTING_KEYS.items()
         }
     )
+    try:
+        result["training_method"] = normalize_training_method(
+            result.get("training_method")
+        )
+    except ValueError:
+        result["training_method"] = "eighty_twenty"
     result["metrics"] = get_athlete_metrics(db_path)
     return result
 
@@ -574,6 +582,7 @@ def _prepared_planning_settings(
         raise ValueError("Sodium must be between 0 and 3,000 mg/hour")
     if not str(values["distance"]).strip():
         raise ValueError("Race distance cannot be blank")
+    training_method = normalize_training_method(values.get("training_method"))
     output_directory: str | None = None
     if "output_directory" in values:
         output_directory = str(values["output_directory"] or "").strip()
@@ -594,7 +603,9 @@ def _prepared_planning_settings(
     persisted_values = {
         setting: values[friendly]
         for friendly, setting in PLAN_SETTING_KEYS.items()
+        if friendly != "training_method"
     }
+    persisted_values["plan_training_method"] = training_method
     if output_directory is not None:
         persisted_values[PLAN_OUTPUT_SETTING_KEYS["output_directory"]] = (
             output_directory

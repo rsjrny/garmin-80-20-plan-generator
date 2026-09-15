@@ -12,9 +12,11 @@ from garmin_data_hub.exports.forever.excel_writer import write_master_workbook
 from garmin_data_hub.exports.master_export import generate_plan_data
 from garmin_data_hub.services.plan_persistence import save_generated_plan
 from garmin_data_hub.services.training_policy import (
+    DEFAULT_TRAINING_METHOD,
     TrainingPolicyReport,
     evaluate_training_policy,
     normalize_policy_sessions,
+    normalize_training_method,
 )
 
 
@@ -87,6 +89,7 @@ class BaselinePlanRequest:
     event_date: str
     run_days_per_week: int
     long_run_day: str
+    training_method: str = DEFAULT_TRAINING_METHOD
 
 
 @dataclass(frozen=True)
@@ -117,6 +120,7 @@ def _validated_request(
 ) -> tuple[BaselinePlanRequest, date, date]:
     athlete_name = str(request.athlete_name or "").strip() or "Runner"
     distance = normalize_baseline_distance(request.distance)
+    training_method = normalize_training_method(request.training_method)
     event_name = str(request.event_name or "").strip() or f"{distance} Training Plan"
     long_run_day = str(request.long_run_day or "").strip()
     if long_run_day not in {
@@ -170,6 +174,7 @@ def _validated_request(
             event_date=event.isoformat(),
             run_days_per_week=int(request.run_days_per_week),
             long_run_day=long_run_day,
+            training_method=training_method,
         ),
         start,
         event,
@@ -242,6 +247,7 @@ def build_and_save_baseline(
         event_date_iso=validated.event_date,
         run_days_per_week=validated.run_days_per_week,
         long_run_day=validated.long_run_day,
+        training_method=validated.training_method,
         garmin_files=[],
         out_dir=target.parent if target is not None else None,
     )
@@ -253,6 +259,7 @@ def build_and_save_baseline(
         run_days_per_week=validated.run_days_per_week,
         preferred_long_session_day=validated.long_run_day,
         minimum_strength_sessions_per_week=1,
+        training_method=validated.training_method,
     )
     if policy.errors:
         raise BaselinePolicyError(policy)

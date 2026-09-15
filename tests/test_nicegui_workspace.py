@@ -11,6 +11,7 @@ from garmin_data_hub.db.migrate import apply_schema
 from garmin_data_hub.db.sqlite import connect_sqlite
 from garmin_data_hub.paths import schema_sql_path
 from garmin_data_hub.services.codex_plan_generator import CodexCliCancelledError
+from garmin_data_hub.services.ai_plan_import import PlanSafetyError
 from garmin_data_hub.services.plan_persistence import save_plan_setting
 from garmin_data_hub.ui_nicegui import workspace
 
@@ -282,6 +283,75 @@ def test_future_plan_start_keeps_training_history_as_of_today(monkeypatch, tmp_p
     assert workspace.build_workspace_packet(future) == {"packet": True}
     assert captured["as_of"] == date.today()
     assert captured["plan_start"] == future_start
+    assert captured["plan_context"]["training_method"] == "eighty_twenty"
+
+
+def test_workspace_context_includes_training_method(tmp_path):
+    db_path = _database(tmp_path)
+    save_plan_setting(db_path, "plan_training_method", "maffetone")
+
+    context = workspace.load_workspace_context(db_path, sandboxed=True)
+    packet = workspace.build_workspace_packet(context)
+
+    assert context.training_method == "maffetone"
+    assert packet["context"]["training_constraints"]["training_method"] == "maffetone"
+
+
+def test_workspace_review_rejects_maffetone_hard_endurance(tmp_path):
+    db_path = _database(tmp_path)
+    save_plan_setting(db_path, "plan_training_method", "maffetone")
+    save_plan_setting(
+        db_path,
+        "plan_event_date",
+        (date.today() + timedelta(days=8)).isoformat(),
+    )
+    context = workspace.load_workspace_context(db_path, sandboxed=True)
+    packet = workspace.build_workspace_packet(context)
+    response = _response_for(packet)
+    start = date.fromisoformat(packet["context"]["current_plan"]["window_start"])
+    end = date.fromisoformat(packet["context"]["current_plan"]["window_end"])
+    nutrition_template = response["nutrition_targets"][0]
+    response["nutrition_targets"] = [
+        {
+            **nutrition_template,
+            "date": (start + timedelta(days=offset)).isoformat(),
+            "day_type": "race" if start + timedelta(days=offset) == end else "easy",
+        }
+        for offset in range((end - start).days + 1)
+    ]
+    response["workouts"].insert(
+        0,
+        {
+            "date": packet["context"]["current_plan"]["window_start"],
+            "sport": "run",
+            "phase": "Base",
+            "workout": "Tempo",
+            "notes": "Hard tempo session.",
+            "flags": [],
+            "intensity": "hard",
+            "duration_minutes": 30,
+            "distance_km": 5,
+            "tss": 50,
+        },
+    )
+    response["workouts"].insert(
+        1,
+        {
+            "date": (start + timedelta(days=1)).isoformat(),
+            "sport": "strength",
+            "phase": "Base",
+            "workout": "Strength A",
+            "notes": "General strength support.",
+            "flags": [],
+            "intensity": "moderate",
+            "duration_minutes": 30,
+            "distance_km": None,
+            "tss": 20,
+        },
+    )
+
+    with pytest.raises(PlanSafetyError, match="Maffetone"):
+        workspace.review_proposal(context, packet, json.dumps(response))
 
 
 def test_workspace_context_validation_catches_contract_bounds(tmp_path):

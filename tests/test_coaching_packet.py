@@ -199,7 +199,11 @@ def test_build_packet_is_deterministic_and_privacy_minimized(tmp_path):
         context["training_constraints"]["max_heart_rate_source"]
         == "athlete_override"
     )
+    assert context["training_constraints"]["training_method"] == "eighty_twenty"
+    assert context["training_constraints"]["training_method_label"] == "80/20"
     assert context["training_constraints"]["local_acceptance_policy"] == {
+        "training_method": "eighty_twenty",
+        "training_method_label": "80/20",
         "max_sessions_per_day": 3,
         "max_run_days_per_week": 5,
         "max_hard_or_race_sessions_per_week": 2,
@@ -282,6 +286,7 @@ def test_packet_contains_copyable_prompt_and_explicit_output_schema(tmp_path):
     assert packet["active_plan_sha256"] in chatgpt["copyable_prompt"]
     assert "Return only one JSON object" in chatgpt["copyable_prompt"]
     assert "context.runner_profile" in chatgpt["copyable_prompt"]
+    assert "context.training_constraints.training_method" in chatgpt["copyable_prompt"]
     assert "uploaded Garmin coaching packet" not in chatgpt["copyable_prompt"]
     assert "chatgpt.requested_output_schema" not in chatgpt["copyable_prompt"]
     assert output_schema["additionalProperties"] is False
@@ -385,6 +390,7 @@ def test_live_plan_context_overrides_unpersisted_defaults(tmp_path):
             "distance": "HM",
             "long_run_day": "Sunday",
             "sodium_mg_per_hour": 750,
+            "training_method": "maffetone",
         },
     )
 
@@ -409,6 +415,10 @@ def test_live_plan_context_overrides_unpersisted_defaults(tmp_path):
         packet["context"]["training_constraints"]["preferred_long_session_day"]
         == "Sunday"
     )
+    assert packet["context"]["training_constraints"]["training_method"] == "maffetone"
+    assert packet["context"]["training_constraints"]["local_acceptance_policy"][
+        "maf_hr_cap_bpm"
+    ] == 123
 
 
 def test_packet_can_be_built_before_first_garmin_sync(tmp_path):

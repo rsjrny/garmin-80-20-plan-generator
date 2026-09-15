@@ -129,6 +129,45 @@ def test_baseline_generates_once_persists_and_exports_validated_workbook(
     assert plan_rows(db_path)[-1]["intensity"] == "race"
 
 
+def test_eighty_twenty_baseline_preserves_quality_sessions(tmp_path: Path):
+    db_path = _database(tmp_path)
+
+    builder.build_and_save_baseline(
+        db_path,
+        _request(distance="Half Marathon"),
+    )
+
+    rows = plan_rows(db_path)
+    assert any(
+        row["sport"] == "run" and row["intensity"] == "hard"
+        for row in rows
+    )
+
+
+def test_maffetone_baseline_replaces_quality_runs_with_maf_capped_easy_runs(
+    tmp_path: Path,
+):
+    db_path = _database(tmp_path)
+    request = builder.BaselinePlanRequest(
+        **{**_request(distance="Half Marathon").__dict__, "training_method": "maffetone"}
+    )
+
+    builder.build_and_save_baseline(db_path, request)
+
+    rows = plan_rows(db_path)
+    assert all(
+        row["intensity"] != "hard" or row["date"] == request.event_date
+        for row in rows
+        if row["sport"] == "run"
+    )
+    assert any(
+        row["sport"] == "run"
+        and row["intensity"] in {"easy", "recovery"}
+        and "MAF cap: 138 bpm" in str(row["notes"])
+        for row in rows
+    )
+
+
 def test_policy_error_writes_neither_database_nor_workbook(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

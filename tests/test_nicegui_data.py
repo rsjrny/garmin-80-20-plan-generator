@@ -242,6 +242,7 @@ def test_plan_configuration_persists_for_codex_workspace(tmp_path):
         "sodium_mg_per_hour": 750,
         "plan_start": "2026-08-23",
         "event_date": "2026-10-18",
+        "training_method": "maffetone",
         "output_directory": str(tmp_path / "exports"),
         "output_filename": "autumn-20.xlsx",
     }
@@ -250,6 +251,33 @@ def test_plan_configuration_persists_for_codex_workspace(tmp_path):
     saved = planning_settings(db_path)
 
     assert {key: saved[key] for key in values} == values
+
+
+def test_plan_configuration_defaults_to_eighty_twenty(tmp_path):
+    db_path = _database(tmp_path)
+
+    saved = planning_settings(db_path)
+
+    assert saved["training_method"] == "eighty_twenty"
+
+
+def test_plan_configuration_rejects_unknown_training_method(tmp_path):
+    db_path = _database(tmp_path)
+    values = {
+        "athlete_name": "Runner",
+        "age": 48,
+        "distance": "10K",
+        "event_name": "Autumn 10K",
+        "run_days_per_week": 5,
+        "long_run_day": "Sunday",
+        "sodium_mg_per_hour": 750,
+        "plan_start": "2026-08-23",
+        "event_date": "2026-10-18",
+        "training_method": "mystery",
+    }
+
+    with pytest.raises(ValueError, match="Unsupported training philosophy"):
+        save_planning_settings(db_path, values)
 
 
 @pytest.mark.parametrize(

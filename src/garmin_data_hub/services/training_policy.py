@@ -13,21 +13,96 @@ MAX_SESSIONS_PER_DAY = 3
 MAX_STRENGTH_SESSIONS_PER_WEEK = 3
 MAX_WEEKLY_RUN_INCREASE_FRACTION = 0.10
 TARGET_EASY_DURATION_FRACTION = 0.80
+DEFAULT_TRAINING_METHOD = "eighty_twenty"
 
 
-def training_policy_constraints(age: int, run_days_per_week: int) -> dict[str, Any]:
+@dataclass(frozen=True)
+class TrainingMethod:
+    key: str
+    label: str
+    target_easy_duration_fraction: float
+    allow_non_race_hard_endurance: bool
+    description: str
+
+
+TRAINING_METHODS: dict[str, TrainingMethod] = {
+    "eighty_twenty": TrainingMethod(
+        key="eighty_twenty",
+        label="80/20",
+        target_easy_duration_fraction=TARGET_EASY_DURATION_FRACTION,
+        allow_non_race_hard_endurance=True,
+        description="About 80% easy endurance duration with age-based hard-day caps.",
+    ),
+    "maffetone": TrainingMethod(
+        key="maffetone",
+        label="Maffetone",
+        target_easy_duration_fraction=1.0,
+        allow_non_race_hard_endurance=False,
+        description="Aerobic-first training capped by the simple MAF heart-rate ceiling.",
+    ),
+}
+
+
+def normalize_training_method(value: object) -> str:
+    """Return a supported training-method key."""
+    normalized = " ".join(str(value or "").strip().casefold().split())
+    aliases = {
+        "": DEFAULT_TRAINING_METHOD,
+        "80/20": "eighty_twenty",
+        "8020": "eighty_twenty",
+        "80 20": "eighty_twenty",
+        "eighty_twenty": "eighty_twenty",
+        "eighty twenty": "eighty_twenty",
+        "maf": "maffetone",
+        "maff": "maffetone",
+        "maffetone": "maffetone",
+    }
+    try:
+        return aliases[normalized]
+    except KeyError as exc:
+        allowed = ", ".join(method.label for method in TRAINING_METHODS.values())
+        raise ValueError(f"Unsupported training philosophy. Choose one of: {allowed}") from exc
+
+
+def maffetone_hr_cap(age: int) -> int:
+    """Return the simple MAF ceiling used by this first implementation."""
+    return max(0, 180 - int(age))
+
+
+def training_policy_constraints(
+    age: int,
+    run_days_per_week: int,
+    training_method: object = DEFAULT_TRAINING_METHOD,
+) -> dict[str, Any]:
     """Return the stable policy limits shared with plan authors and reviewers."""
-    return {
+    method_key = normalize_training_method(training_method)
+    method = TRAINING_METHODS[method_key]
+    hard_cap = (
+        get_intensity_cap(int(age))
+        if method.allow_non_race_hard_endurance
+        else 1
+    )
+    constraints: dict[str, Any] = {
+        "training_method": method.key,
+        "training_method_label": method.label,
         "max_sessions_per_day": MAX_SESSIONS_PER_DAY,
         "max_run_days_per_week": int(run_days_per_week),
-        "max_hard_or_race_sessions_per_week": get_intensity_cap(int(age)),
+        "max_hard_or_race_sessions_per_week": hard_cap,
         "max_strength_sessions_per_week": MAX_STRENGTH_SESSIONS_PER_WEEK,
         "min_strength_sessions_per_full_base_build_week": 1,
         "max_weekly_run_distance_increase_fraction": MAX_WEEKLY_RUN_INCREASE_FRACTION,
-        "target_easy_endurance_duration_fraction": TARGET_EASY_DURATION_FRACTION,
+        "target_easy_endurance_duration_fraction": method.target_easy_duration_fraction,
         "consecutive_hard_days_allowed": False,
         "rest_and_active_sessions_same_day_allowed": False,
     }
+    if method.key == "maffetone":
+        constraints.update(
+            {
+                "maf_hr_cap_bpm": maffetone_hr_cap(int(age)),
+                "non_race_moderate_or_hard_endurance_allowed": False,
+            }
+        )
+    return constraints
 
 
 @dataclass(frozen=True)
@@ -179,8 +254,11 @@ def evaluate_training_policy(
     run_days_per_week: int,
     preferred_long_session_day: str | None = None,
     minimum_strength_sessions_per_week: int = 0,
+    training_method: object = DEFAULT_TRAINING_METHOD,
 ) -> TrainingPolicyReport:
     """Evaluate common safety invariants without generating or changing a plan."""
+    method_key = normalize_training_method(training_method)
+    method = TRAINING_METHODS[method_key]
     sessions = normalize_policy_sessions(items)
     issues: list[PolicyIssue] = []
     by_date: dict[date, list[PolicySession]] = {}
@@ -262,7 +340,11 @@ def evaluate_training_policy(
         week = ((session_date - start).days // 7) + 1
         by_week.setdefault(week, []).append(session)
 
-    hard_cap = get_intensity_cap(age)
+    hard_cap = (
+        get_intensity_cap(age)
+        if method.allow_non_race_hard_endurance
+        else 1
+    )
     baseline_run_km: float | None = None
     easy_minutes = 0.0
     hard_minutes = 0.0
@@ -383,6 +465,22 @@ def evaluate_training_policy(
             if entry.sport not in {"run", "cycle", "swim", "hike", "cross_training"}:
                 continue
             minutes = entry.duration_minutes or 0
+            if (
+                not method.allow_non_race_hard_endurance
+                and entry.intensity in {"moderate", "hard"}
+            ):
+                issues.append(
+                    PolicyIssue(
+                        "error",
+                        "training_method_intensity",
+                        (
+                            f"{entry.iso_date} {entry.workout} is {entry.intensity}; "
+                            f"{method.label} allows only easy/recovery endurance outside race day."
+                        ),
+                        week=week,
+                        iso_date=entry.iso_date,
+                    )
+                )
             if entry.intensity in {"easy", "recovery"}:
                 easy_minutes += minutes
             elif entry.intensity in {"moderate", "hard"}:
@@ -416,16 +514,22 @@ def evaluate_training_policy(
             )
 
     intensity_total = easy_minutes + hard_minutes
+    target_easy_fraction = method.target_easy_duration_fraction
     if (
         intensity_total >= 120
-        and easy_minutes / intensity_total < TARGET_EASY_DURATION_FRACTION - 0.05
+        and easy_minutes / intensity_total < target_easy_fraction - 0.05
     ):
         hard_percent = hard_minutes / intensity_total * 100
+        target_label = (
+            "Maffetone aerobic target"
+            if method.key == "maffetone"
+            else "80/20 target"
+        )
         issues.append(
             PolicyIssue(
                 "warning",
                 "intensity_distribution",
-                f"Known endurance duration is {hard_percent:.0f}% moderate/hard; review the 80/20 target.",
+                f"Known endurance duration is {hard_percent:.0f}% moderate/hard; review the {target_label}.",
             )
         )
 

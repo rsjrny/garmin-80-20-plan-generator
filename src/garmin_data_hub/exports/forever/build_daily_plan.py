@@ -246,6 +246,7 @@ def build_and_store_plan(
     event_date_iso: str,
     run_days_per_week: int = 5,
     long_run_day: str = "Saturday",
+    training_method: object = "eighty_twenty",
     garmin_files: list[Path] | None = None,
     db_path: Path | None = None,
 ):
@@ -265,6 +266,7 @@ def build_and_store_plan(
         event_date_iso=event_date_iso,
         run_days_per_week=run_days_per_week,
         long_run_day=long_run_day,
+        training_method=training_method,
         garmin_files=garmin_files,
     )
 
@@ -282,6 +284,7 @@ def build_and_store_plan(
         event_date_iso=event_date_iso,
         run_days_per_week=run_days_per_week,
         long_run_day=long_run_day,
+        training_method=training_method,
         garmin_files=garmin_files,
         out_dir=out_path.parent if out_path else None,
     )

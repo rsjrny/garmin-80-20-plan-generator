@@ -34,8 +34,10 @@ from garmin_data_hub.services.plan_persistence import (
     save_plan_setting,
 )
 from garmin_data_hub.services.training_policy import (
+    DEFAULT_TRAINING_METHOD,
     TrainingPolicyReport,
     evaluate_training_policy,
+    normalize_training_method,
 )
 
 
@@ -74,6 +76,7 @@ class WorkspaceContext:
     event_date: date
     age: int
     distance: str
+    training_method: str
     run_days_per_week: int
     long_run_day: str
     sodium_mg_per_hour: int | None
@@ -238,12 +241,17 @@ def load_workspace_context(db_path: Path, *, sandboxed: bool = True) -> Workspac
     if lookback not in {4, 8, 12, 16, 24, 52}:
         lookback = 12
     sodium = _as_int(settings.get("plan_sodium"), 0)
+    try:
+        training_method = normalize_training_method(settings.get("plan_training_method"))
+    except ValueError:
+        training_method = DEFAULT_TRAINING_METHOD
     return WorkspaceContext(
         db_path=Path(db_path),
         plan_start=start,
         event_date=event,
         age=_as_int(settings.get("plan_age"), 50),
         distance=str(settings.get("plan_distance") or "50K"),
+        training_method=training_method,
         run_days_per_week=_as_int(settings.get("plan_run_days"), 5),
         long_run_day=str(settings.get("plan_long_run_day") or "Saturday"),
         sodium_mg_per_hour=sodium if sodium > 0 else None,
@@ -271,6 +279,10 @@ def validate_workspace_context(context: WorkspaceContext) -> tuple[str, ...]:
         errors.append("Run days per week must be between 1 and 7.")
     if not context.distance.strip():
         errors.append("Race distance cannot be blank.")
+    try:
+        normalize_training_method(context.training_method)
+    except ValueError as exc:
+        errors.append(str(exc))
     if context.sodium_mg_per_hour is not None:
         if not 0 <= context.sodium_mg_per_hour <= 3_000:
             errors.append("Sodium must be between 0 and 3,000 mg/hour.")
@@ -304,6 +316,7 @@ def build_workspace_packet(context: WorkspaceContext) -> dict[str, Any]:
             "age": context.age,
             "run_days_per_week": context.run_days_per_week,
             "distance": context.distance,
+            "training_method": context.training_method,
             "long_run_day": context.long_run_day,
             "sodium_mg_per_hour": context.sodium_mg_per_hour,
         },
@@ -553,6 +566,7 @@ def review_proposal(
         expected_request_id=packet["request_id"],
         expected_active_plan_sha256=packet["active_plan_sha256"],
         minimum_strength_sessions_per_week=1,
+        training_method=context.training_method,
     )
     errors = _locked_context_errors(plan, packet)
     policy = evaluate_training_policy(
@@ -563,6 +577,7 @@ def review_proposal(
         run_days_per_week=context.run_days_per_week,
         preferred_long_session_day=context.long_run_day,
         minimum_strength_sessions_per_week=1,
+        training_method=context.training_method,
     )
     errors.extend(f"Local policy: {issue.message}" for issue in policy.errors)
     warnings = list(plan.warnings)

@@ -2,6 +2,11 @@ from datetime import date, timedelta
 from dataclasses import dataclass
 from .workout_db import WORKOUTS, Workout
 from .training_rules import build_weekly_schedule
+from garmin_data_hub.services.training_policy import (
+    DEFAULT_TRAINING_METHOD,
+    maffetone_hr_cap,
+    normalize_training_method,
+)
 
 @dataclass
 class DayPlan:
@@ -37,10 +42,21 @@ def _get_phase(d: date, race_date: date, total_weeks: int) -> str:
         return "Build"
     return "Base"
 
-def build_calendar(start_iso: str, end_iso: str, race_iso: str, run_days_per_week: int = 5, age: int = 40, race_distance: str = "50K", long_run_day: str = "Saturday"):
+def build_calendar(
+    start_iso: str,
+    end_iso: str,
+    race_iso: str,
+    run_days_per_week: int = 5,
+    age: int = 40,
+    race_distance: str = "50K",
+    long_run_day: str = "Saturday",
+    training_method: object = DEFAULT_TRAINING_METHOD,
+):
     start = date.fromisoformat(start_iso)
     end = date.fromisoformat(end_iso)
     race = date.fromisoformat(race_iso)
+    method_key = normalize_training_method(training_method)
+    maf_cap = maffetone_hr_cap(age) if method_key == "maffetone" else None
     total_weeks = max(1, (race - start).days // 7)
 
     # Convert long_run_day to weekday number (Monday=0, Sunday=6)
@@ -85,8 +101,6 @@ def build_calendar(start_iso: str, end_iso: str, race_iso: str, run_days_per_wee
 
     def get_workout_for_day(d: date, phase: str, week_of_plan: int, is_cutback: bool) -> tuple[Workout, str]:
         dow = d.weekday()  # Monday is 0, Sunday is 6
-        day_name = days_of_week[dow]
-
         # Race day always wins over the recurring weekday/rest template.
         if d == race:
             return WORKOUTS["LONG_TRAIL"], f"RACE DAY: {race_distance}!"
@@ -181,6 +195,20 @@ def build_calendar(start_iso: str, end_iso: str, race_iso: str, run_days_per_wee
             flags.append("RACE")
         
         workout, notes = get_workout_for_day(d, phase, week_of_plan, is_cutback)
+        if (
+            method_key == "maffetone"
+            and d != race
+            and workout.id
+            in {
+                "STRIDES",
+                "TEMPO_STEADY",
+                "CRUISE_INTERVALS",
+                "PROGRESSION",
+                "HILL_REPEATS",
+            }
+        ):
+            workout = WORKOUTS["EASY_Z2"]
+            notes = WORKOUTS["EASY_Z2"].description
         
         if d == race:
             sport, intensity = "run", "race"
@@ -199,6 +227,9 @@ def build_calendar(start_iso: str, end_iso: str, race_iso: str, run_days_per_wee
             sport, intensity = "run", "hard"
         else:
             sport, intensity = "run", "easy"
+
+        if method_key == "maffetone" and sport == "run" and intensity != "race":
+            notes = f"{notes} Keep HR at or below MAF cap: {maf_cap} bpm."
 
         plans.append(DayPlan(
             iso_date=d.isoformat(),

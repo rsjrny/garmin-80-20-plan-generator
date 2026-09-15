@@ -315,6 +315,7 @@ def parse_chatgpt_plan(
     expected_request_id: str | None = None,
     expected_active_plan_sha256: str | None = None,
     minimum_strength_sessions_per_week: int = 0,
+    training_method: object = "eighty_twenty",
 ) -> ImportedTrainingPlan:
     """Parse, strictly validate, and normalize a ChatGPT plan response.
 
@@ -374,6 +375,7 @@ def parse_chatgpt_plan(
         start,
         event_date,
         minimum_strength_sessions_per_week,
+        training_method,
     )
 
     nutrition_guidance = _guidance(
@@ -994,6 +996,7 @@ def _validate_schedule(
     start: date,
     event_date: date,
     minimum_strength_sessions_per_week: int,
+    training_method: object,
 ) -> None:
     report = evaluate_training_policy(
         workouts,
@@ -1002,6 +1005,7 @@ def _validate_schedule(
         age=age,
         run_days_per_week=run_days_per_week,
         minimum_strength_sessions_per_week=minimum_strength_sessions_per_week,
+        training_method=training_method,
     )
     if report.errors:
         raise PlanSafetyError(report.errors[0].message)

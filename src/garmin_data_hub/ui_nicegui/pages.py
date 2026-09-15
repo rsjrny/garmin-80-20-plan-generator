@@ -47,6 +47,7 @@ from garmin_data_hub.services.garmin_credentials import (
     save_credentials,
 )
 from garmin_data_hub.services.plan_persistence import get_active_plan_sha256
+from garmin_data_hub.services.training_policy import TRAINING_METHODS
 from garmin_data_hub.ui_nicegui.data import (
     INTERFACE_SETTING_DEFAULTS,
     activity_detail,
@@ -1681,6 +1682,14 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                         min=1,
                         max=7,
                     ).props("outlined")
+                    fields["training_method"] = ui.select(
+                        {
+                            key: method.label
+                            for key, method in TRAINING_METHODS.items()
+                        },
+                        value=settings["training_method"],
+                        label="Training philosophy",
+                    ).props("outlined")
                     fields["long_run_day"] = ui.select(
                         [
                             "Monday",
@@ -1854,6 +1863,7 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                             event_date=str(values["event_date"]),
                             run_days_per_week=int(values["run_days_per_week"]),
                             long_run_day=str(values["long_run_day"]),
+                            training_method=str(values["training_method"]),
                         )
                         workbook_path = (
                             Path(str(values["output_directory"]))

@@ -19,6 +19,7 @@ def generate_plan_data(
     event_date_iso: str,
     run_days_per_week: int = 5,
     long_run_day: str = "Saturday",
+    training_method: object = "eighty_twenty",
     garmin_files: list[Path] | None = None,
     out_dir: Path | None = None,
 ):
@@ -60,7 +61,8 @@ def generate_plan_data(
         run_days_per_week=run_days_per_week,
         long_run_day=long_run_day,
         age=age,
-        race_distance=distance
+        race_distance=distance,
+        training_method=training_method,
     )
     
     # Build weekly metrics (uses DayPlan objects)
@@ -98,6 +100,7 @@ def generate_master_workbook(
     event_date_iso: str,
     run_days_per_week: int = 5,
     long_run_day: str = "Saturday",
+    training_method: object = "eighty_twenty",
     garmin_files: list[Path] | None = None,
     out_path: Path | None = None,
 ) -> Path:
@@ -115,6 +118,7 @@ def generate_master_workbook(
         event_date_iso=event_date_iso,
         run_days_per_week=run_days_per_week,
         long_run_day=long_run_day,
+        training_method=training_method,
         garmin_files=garmin_files,
         out_dir=out_path.parent if out_path else None
     )
