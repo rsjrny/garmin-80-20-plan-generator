@@ -17,7 +17,8 @@ from plotly.subplots import make_subplots
 
 from garmin_data_hub import __version__
 from garmin_data_hub.analytics.sleep_recovery import analyze_sleep_recovery
-from garmin_data_hub.mcp_sidecar_client import call_tool_via_sidecar
+from garmin_data_hub.mcp_sidecar_client import call_tool_via_sidecar, describe_readonly_tools, call_readonly_tools
+from garmin_data_hub.ui_nicegui.mcp_results import render_mcp_result
 from garmin_data_hub.services.baseline_plan_builder import (
     BASELINE_DISTANCE_OPTIONS,
     BaselinePlanRequest,
@@ -3195,15 +3196,64 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                     ui.button("Run query", icon="play_arrow", on_click=execute_sql)
                     sql_results()
                 with ui.tab_panel(mcp_tab):
-                    ui.label("MCP calls run in a worker so the interface remains responsive.").classes("text-grey-7")
+                    catalog: dict[str, dict] = {}
+                    connection_status = ui.label("Loading Garmin tools...").classes("text-grey-7")
                     tool = ui.select(
-                        ["garmin_schema", "garmin_query", "garmin_health_summary", "garmin_activities", "garmin_trends", "garmin_sync"],
-                        value="garmin_schema",
-                        label="Tool (type any garmin_mcp tool name)",
-                    ).props("outlined use-input new-value-mode=add-unique").classes("w-96")
+                        [], label="Garmin tool",
+                    ).props("outlined use-input").classes("w-full")
+                    description = ui.label("").classes("whitespace-pre-wrap")
+                    with ui.expansion("Tool arguments", icon="data_object").classes("w-full"):
+                        input_schema = ui.code("{}", language="json").classes("w-full")
                     arguments = ui.textarea("Arguments JSON", value="{}").props("outlined autogrow").classes("w-full")
-                    result_box = ui.textarea("Result", value="").props("outlined readonly").classes("w-full").style("height: 30rem")
+                    allow_sync = ui.checkbox("Pull fresh data from Garmin", value=False)
+                    allow_sync.set_visibility(False)
                     run_button = ui.button("Run MCP tool", icon="play_arrow")
+                    run_button.disable()
+                    result_area = ui.column().classes("w-full min-w-0 gap-3")
+
+                    def select_tool() -> None:
+                        result_area.clear()
+                        spec = catalog.get(tool.value, {})
+                        description.set_text(spec.get("description", ""))
+                        schema = spec.get("input_schema", {})
+                        input_schema.set_content(json.dumps(schema, indent=2))
+                        defaults = {name: value["default"] for name, value in schema.get("properties", {}).items() if "default" in value}
+                        if tool.value == "garmin_sync":
+                            defaults["refresh"] = False
+                        arguments.set_value(json.dumps(defaults, indent=2))
+                        allow_sync.set_value(False)
+                        allow_sync.set_visibility(tool.value == "garmin_sync")
+
+                    tool.on_value_change(lambda _: select_tool())
+
+                    async def discover_tools() -> None:
+                        run_button.disable()
+                        refresh_tools.disable()
+                        tool.disable()
+                        arguments.disable()
+                        allow_sync.disable()
+                        result_area.clear()
+                        with result_area:
+                            ui.spinner(size="sm")
+                        try:
+                            discovered = await run.io_bound(describe_readonly_tools, db_path)
+                            catalog.clear()
+                            catalog.update(discovered)
+                            tool.set_options(sorted(catalog), value="garmin_schema" if "garmin_schema" in catalog else next(iter(catalog), None))
+                            select_tool()
+                            connection_status.set_text(f"Connected: {len(catalog)} Garmin tools")
+                            run_button.set_enabled(bool(catalog))
+                        except Exception:
+                            connection_status.set_text("Garmin MCP unavailable. Check the garmin-givemydata installation and database.")
+                        finally:
+                            result_area.clear()
+                            refresh_tools.enable()
+                            tool.enable()
+                            arguments.enable()
+                            allow_sync.enable()
+
+                    refresh_tools = ui.button("Refresh tools", icon="refresh", on_click=discover_tools).props("flat")
+                    ui.timer(0.1, discover_tools, once=True)
 
                     async def execute_mcp() -> None:
                         try:
@@ -3214,17 +3264,38 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                             _notify_error(exc)
                             return
                         run_button.disable()
+                        refresh_tools.disable()
+                        tool.disable()
+                        arguments.disable()
+                        allow_sync.disable()
+                        result_area.clear()
+                        with result_area:
+                            ui.spinner(size="sm")
                         try:
-                            result_box.value = await run.io_bound(
-                                call_tool_via_sidecar,
-                                str(tool.value),
-                                parsed,
-                                db_path,
-                            )
+                            name = str(tool.value)
+                            if name == "garmin_sync":
+                                parsed["refresh"] = bool(allow_sync.value)
+                            if name == "garmin_sync" and allow_sync.value:
+                                raw = await run.io_bound(call_tool_via_sidecar, name, parsed, db_path)
+                                is_error = False
+                            else:
+                                outputs = await run.io_bound(call_readonly_tools, db_path, [(name, parsed)])
+                                raw = outputs[name]["text"]
+                                is_error = outputs[name]["is_error"]
+                            result_area.clear()
+                            with result_area:
+                                render_mcp_result(name, raw, is_error=is_error)
                         except Exception as exc:
+                            result_area.clear()
+                            with result_area:
+                                ui.label("The tool could not return a result. Please retry.").classes("text-negative")
                             _notify_error(exc)
                         finally:
                             run_button.enable()
+                            refresh_tools.enable()
+                            tool.enable()
+                            arguments.enable()
+                            allow_sync.enable()
 
                     run_button.on("click", execute_mcp)
 

@@ -12,6 +12,7 @@ NAVIGATION = (
     ("Charts", "/charts", "monitoring"),
     ("Plan", "/plan", "event_note"),
     ("Codex Coach", "/coach", "auto_awesome"),
+    ("Ask Coach", "/ask-coach", "chat"),
     ("Compliance", "/compliance", "fact_check"),
     ("Data Query", "/query", "database"),
     ("Settings", "/settings", "settings"),

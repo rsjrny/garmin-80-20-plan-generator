@@ -77,7 +77,54 @@ INITIAL_BACKOFF_SEC = 1.0
 def _sidecar_command() -> tuple[str, list[str]]:
     if getattr(sys, "frozen", False):
         return sys.executable, ["--mcp-sidecar"]
-    return sys.executable, ["-m", "garmin_mcp"]
+    return sys.executable, ["-m", "garmin_data_hub.mcp_server"]
+
+
+def _server_parameters(db_path: Path, *, read_only: bool = False) -> StdioServerParameters:
+    path = db_path.resolve(strict=True)
+    command, args = _sidecar_command()
+    return StdioServerParameters(command=command, args=args, env={
+        **os.environ,
+        "GARMIN_DATA_DIR": str(path.parent),
+        "GARMIN_DATA_HUB_MCP_DB": str(path),
+        "GARMIN_DATA_HUB_MCP_READ_ONLY": "1" if read_only else "0",
+    })
+
+
+async def _readonly_session(db_path: Path, calls: list[tuple[str, dict]] | None) -> Any:
+    with anyio.fail_after(DEFAULT_TIMEOUT_SEC):
+        async with stdio_client(_server_parameters(db_path, read_only=True)) as (reader, writer):
+            async with ClientSession(reader, writer) as session:
+                await session.initialize()
+                if calls is None:
+                    result = await session.list_tools()
+                    return {tool.name: {"description": tool.description or "",
+                                        "input_schema": tool.inputSchema} for tool in result.tools}
+                outputs = {}
+                for name, arguments in calls:
+                    result = await session.call_tool(name, arguments)
+                    outputs[name] = {
+                        "is_error": bool(result.isError),
+                        "text": _extract_text_payload(result),
+                    }
+                return outputs
+
+
+def list_readonly_tools(db_path: Path) -> set[str]:
+    """Discover tools from the installed upstream server without schema writes."""
+    return set(describe_readonly_tools(db_path))
+
+
+def describe_readonly_tools(db_path: Path) -> dict:
+    """Return installed tool descriptions and input schemas."""
+    return anyio.run(_readonly_session, db_path, None)
+
+
+def call_readonly_tools(db_path: Path, calls: list[tuple[str, dict]]) -> dict:
+    """Execute a bounded batch on one read-only upstream MCP connection."""
+    if any(name == "garmin_sync" and arguments.get("refresh", True) for name, arguments in calls):
+        raise ValueError("Read-only MCP calls cannot start Garmin sync")
+    return anyio.run(_readonly_session, db_path, calls)
 
 
 def _extract_text_payload(call_result: Any) -> str:
@@ -107,16 +154,7 @@ async def _call_tool_async(
         TimeoutError: If the tool call exceeds the timeout
         RuntimeError: If the MCP tool returns an error
     """
-    env = {
-        **os.environ,
-        "GARMIN_DATA_DIR": str(db_path.parent),
-    }
-    server_command, server_args = _sidecar_command()
-    server = StdioServerParameters(
-        command=server_command,
-        args=server_args,
-        env=env,
-    )
+    server = _server_parameters(db_path)
 
     try:
         with anyio.fail_after(timeout_sec):
@@ -160,6 +198,8 @@ def call_tool_via_sidecar(
         RuntimeError: If tool returns error that isn't retryable
         Exception: If sidecar cannot be started or other critical failures
     """
+    if tool_name == "garmin_sync" and (arguments or {}).get("refresh", True) and db_path.name != "garmin.db":
+        raise ValueError("Upstream Garmin sync requires a database named garmin.db; this custom database supports lookups only.")
     log = _get_logger()
     last_error = None
     t_start = time.monotonic()

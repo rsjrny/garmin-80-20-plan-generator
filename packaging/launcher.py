@@ -18,7 +18,8 @@ def _write_startup_error() -> None:
 def _run() -> None:
     try:
         if "--mcp-sidecar" in sys.argv:
-            runpy.run_module("garmin_mcp", run_name="__main__")
+            from garmin_data_hub.mcp_server import main as mcp_main
+            mcp_main()
             return
         from garmin_data_hub.ui_nicegui.app import main
 

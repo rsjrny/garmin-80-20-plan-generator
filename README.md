@@ -135,8 +135,16 @@ The primary desktop interface is implemented under `src/garmin_data_hub/ui_niceg
 ## Data Query Page (Advanced)
 
 The NiceGUI **Data Query** page provides guarded read-only SQLite access and an
-advanced Model Context Protocol (MCP) tool runner. Six common tools are offered
-initially, and any installed `garmin_mcp` tool name can be entered directly:
+advanced Model Context Protocol (MCP) tool browser. It discovers the installed
+`garmin-givemydata` server's tools, descriptions, argument schemas, and defaults.
+Use **Refresh tools** to reconnect. The list depends on the installed version;
+common tools include:
+
+Results are summarized locally into labeled metrics, returned status messages,
+and record tables. Dated numeric records include selectable charts with latest,
+average, and range statistics. Missing values are excluded from statistics.
+The complete response remains available under **Raw JSON**; no AI call is needed
+to produce these summaries.
 
 #### Available MCP Tools
 
@@ -149,7 +157,7 @@ initially, and any installed `garmin_mcp` tool name can be entered directly:
 
 #### Requirements
 
-- **garmin_mcp** package must be installed in the active Python environment
+- **garmin-givemydata** must be installed in the active Python environment (included in app dependencies)
 - Sidecar subprocess spawned automatically on page load
 - If sidecar is unavailable, the page shows diagnostics and recovery steps
 
@@ -164,18 +172,39 @@ initially, and any installed `garmin_mcp` tool name can be entered directly:
 #### Features
 
 - **Dual-mode interface:** MCP tool runner or raw SQL mode
-- **Extensible tools:** type any installed `garmin_mcp` tool name
+- **Tool discovery:** searchable installed tools with descriptions and JSON argument schemas
 - **Error handling:** Timeouts, retries, and clear error messages
-- **Read-only enforcement:** SQL validation blocks INSERT, DELETE, DROP, and DDL
+- **Read-only enforcement:** lookups use SQLite read-only connections and skip upstream startup migrations
+- **Exact database selection:** custom filenames and sandbox databases are supported
+- **Sync:** `garmin_sync` checks freshness unless **Pull fresh data from Garmin** is selected
+  (upstream sync requires the standard `garmin.db` filename)
 
 #### Troubleshooting
 
 If MCP Query shows "sidecar unavailable":
-1. Verify garmin_mcp is installed: `pip list | grep garmin-mcp`
-2. Test sidecar manually: `python -m garmin_mcp`
+1. Verify the dependency is installed: `python -m pip show garmin-givemydata`
+2. Use **Refresh tools** and verify the selected database exists
 3. Restart Garmin Data Hub
 
 ---
+
+## Ask Coach Garmin Lookups
+
+On **Ask Coach**, enable **Look up additional Garmin data** to let Codex select
+up to three relevant MCP lookups per question. Supported lookups include recent
+training status, race predictions, endurance scores, and hill scores. Enabling
+**Share sleep & recovery summaries** also permits sleep, HRV, body battery,
+resting heart rate, and stress lookups. Tool results are sent to Codex alongside
+the existing plan context and can be inspected under the context expansion.
+
+The app uses the upstream server's stdio transport automatically; no global
+Claude or Codex configuration is required. Chat cannot request sync, arbitrary
+SQL, profile/device data, or GPS tools. Failed or oversized lookups are reported
+as data gaps. Changing either sharing switch clears the conversation. Ordinary
+summary-only chat remains available with additional lookups off.
+
+See the [upstream MCP instructions](https://github.com/nrvim/garmin-givemydata#connect-ai)
+for connecting other MCP clients.
 
 ## Quick Start (Developers)
 

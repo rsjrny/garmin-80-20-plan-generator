@@ -31,6 +31,7 @@ from garmin_data_hub.services.plan_persistence import (
 from garmin_data_hub.ui_nicegui.data import cancel_all_sync_jobs
 from garmin_data_hub.ui_nicegui.layout import render_shell
 from garmin_data_hub.ui_nicegui.pages import register_core_pages
+from garmin_data_hub.ui_nicegui.ask_coach import register_ask_coach_page
 from garmin_data_hub.ui_nicegui.workspace import (
     GenerationJob,
     ProposalReview,
@@ -148,6 +149,7 @@ def create_ui(db_path: Path, *, sandboxed: bool) -> None:
     from nicegui import run, ui
 
     register_core_pages(db_path, sandboxed=sandboxed)
+    register_ask_coach_page(db_path, sandboxed=sandboxed)
 
     @ui.page("/coach")
     def codex_workspace() -> None:
