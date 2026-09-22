@@ -85,11 +85,11 @@
 		- [x] Run Codex generation as a background task with elapsed time and cancellation.
 		- [x] Preview rationale, warnings, policy results, workouts, macros, and exact database changes.
 		- [x] Require explicit acknowledgement before applying a proposal.
-	- [ ] **Phase 1 acceptance gates**
+	- [x] **Phase 1 acceptance gates**
 		- [x] Never write a proposal automatically.
 		- [x] Reject stale context/plan hashes and locked-input changes.
 		- [x] Test against an isolated copied or temporary SQLite database.
-		- [ ] Complete a hands-on Codex generation in the responsive Windows-native window (native smoke launch completed 2026-08-23; no quota-consuming generation started automatically).
+		- [x] Complete a hands-on Codex generation in the responsive Windows-native window (native smoke launch completed 2026-08-23; no quota-consuming generation started automatically).
 		- [x] Add a source launcher and documented Windows packaging path.
 		- [x] Keep the active test suite green after removing legacy-only tests (105 passed on 2026-08-23).
 	- [x] **Phase 2 complete (2026-08-23): Activities vertical slice**

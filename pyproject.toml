@@ -12,7 +12,7 @@ dependencies = [
   "openpyxl>=3.1.5",
   "fitparse>=1.2.0",
   "gpxpy>=1.6.2",
-  "garmin-givemydata>=0.1.10",
+  "garmin-givemydata==0.1.12",
 ]
 
 [project.optional-dependencies]
