@@ -188,29 +188,40 @@ def ingest_trackpoints_from_fit_archives(
                 )
                 continue
 
-            conn.execute(
-                "DELETE FROM activity_trackpoints WHERE activity_id = ?",
-                (activity_id,),
-            )
-            conn.executemany(
-                """
-                INSERT INTO activity_trackpoints (
-                    activity_id,
-                    seq,
-                    timestamp_utc,
-                    latitude,
-                    longitude,
-                    altitude_m,
-                    distance_m,
-                    speed_mps,
-                    heart_rate_bpm,
-                    cadence,
-                    power_w,
-                    temperature_c
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [(activity_id, *row) for row in rows],
-            )
+            if not conn.in_transaction:
+                conn.execute("BEGIN")
+            savepoint_name = f"replace_activity_trackpoints_{idx}"
+            conn.execute(f"SAVEPOINT {savepoint_name}")
+            try:
+                conn.execute(
+                    "DELETE FROM activity_trackpoints WHERE activity_id = ?",
+                    (activity_id,),
+                )
+                conn.executemany(
+                    """
+                    INSERT INTO activity_trackpoints (
+                        activity_id,
+                        seq,
+                        timestamp_utc,
+                        latitude,
+                        longitude,
+                        altitude_m,
+                        distance_m,
+                        speed_mps,
+                        heart_rate_bpm,
+                        cadence,
+                        power_w,
+                        temperature_c
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [(activity_id, *row) for row in rows],
+                )
+            except Exception:
+                conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+                conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+                raise
+            else:
+                conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
 
             summary["ingested_activities"] += 1
             summary["ingested_points"] += len(rows)

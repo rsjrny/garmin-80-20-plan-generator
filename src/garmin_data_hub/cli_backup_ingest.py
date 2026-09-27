@@ -120,6 +120,13 @@ def run_sync(
 
     Returns process exit code (0 = success).
     """
+    if db_path.name != "garmin.db":
+        print(
+            f"[ERROR] Unsupported synchronization database filename "
+            f"'{db_path.name}'; the filename must be exactly 'garmin.db'."
+        )
+        return 2
+
     ensure_app_dirs()
 
     print("=" * 60)
@@ -137,11 +144,6 @@ def run_sync(
             return 1
 
     data_dir = db_path.parent
-    if db_path.name != "garmin.db":
-        print(
-            f"[WARN] garmin-givemydata writes to 'garmin.db' in GARMIN_DATA_DIR; "
-            f"custom filename '{db_path.name}' is ignored."
-        )
 
     env = os.environ.copy()
     env["GARMIN_DATA_DIR"] = str(data_dir)
@@ -191,7 +193,7 @@ def run_sync(
         from garmin_data_hub.analytics.post_sync_refresh import refresh_post_sync_tables
         from garmin_data_hub.paths import schema_sql_path
 
-        conn = connect_sqlite(data_dir / "garmin.db")
+        conn = connect_sqlite(db_path)
         apply_schema(conn, schema_sql_path())
         print("[OK] App schema applied")
 

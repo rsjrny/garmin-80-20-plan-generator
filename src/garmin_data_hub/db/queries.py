@@ -91,7 +91,7 @@ def get_athlete_profile(conn):
         return None
 
 
-def get_effective_lthr(conn) -> int | None:
+def get_effective_lthr(conn, *, commit: bool = True) -> int | None:
     """Return LTHR override/calculated value, with robust fallback from activities."""
     try:
         profile = get_athlete_profile(conn)
@@ -107,10 +107,12 @@ def get_effective_lthr(conn) -> int | None:
         cutoff_iso = "1970-01-01T00:00:00Z"
         hrmax, lthr = get_hrmax_robust_and_lthr(conn, cutoff_iso, percentile=0.995)
         if hrmax and lthr:
-            ensure_athlete_profile_table(conn)
-            set_calculated_metrics(conn, int(hrmax), int(lthr))
+            ensure_athlete_profile_table(conn, commit=commit)
+            set_calculated_metrics(conn, int(hrmax), int(lthr), commit=commit)
             return int(lthr)
     except Exception:
+        if not commit:
+            raise
         pass
     return None
 
@@ -182,7 +184,7 @@ def _estimate_ftp_from_recent_power(conn, days_back: int = 180) -> int | None:
         return None
 
 
-def get_effective_ftp(conn) -> int | None:
+def get_effective_ftp(conn, *, commit: bool = True) -> int | None:
     """Return FTP override/calculated value, with fallback estimation from power data."""
     try:
         profile = get_athlete_profile(conn)
@@ -196,10 +198,12 @@ def get_effective_ftp(conn) -> int | None:
     try:
         ftp_est = _estimate_ftp_from_recent_power(conn)
         if ftp_est and int(ftp_est) > 0:
-            ensure_athlete_profile_table(conn)
-            set_calculated_ftp(conn, int(ftp_est))
+            ensure_athlete_profile_table(conn, commit=commit)
+            set_calculated_ftp(conn, int(ftp_est), commit=commit)
             return int(ftp_est)
     except Exception:
+        if not commit:
+            raise
         pass
 
     return None
@@ -713,7 +717,7 @@ def _refresh_trackpoint_derived_metrics(
             )
 
 
-def ensure_athlete_profile_table(conn) -> None:
+def ensure_athlete_profile_table(conn, *, commit: bool = True) -> None:
     """Create `athlete_profile` if it does not exist and ensure a row exists."""
     try:
         conn.execute(
@@ -743,8 +747,11 @@ def ensure_athlete_profile_table(conn) -> None:
                     f"ALTER TABLE athlete_profile ADD COLUMN {column_name} {column_sql}"
                 )
         conn.execute("INSERT OR IGNORE INTO athlete_profile(profile_id) VALUES (1)")
-        conn.commit()
+        if commit:
+            conn.commit()
     except Exception:
+        if not commit:
+            raise
         return
 
 
@@ -861,27 +868,35 @@ def get_athlete_metrics(conn) -> dict:
         }
 
 
-def set_calculated_metrics(conn, hrmax: int | None, lthr: int | None) -> None:
+def set_calculated_metrics(
+    conn, hrmax: int | None, lthr: int | None, *, commit: bool = True
+) -> None:
     try:
         conn.execute(
             "UPDATE athlete_profile SET hrmax_calc=?, lthr_calc=?, calc_updated_utc=? WHERE profile_id=1",
             (hrmax, lthr, _utc_now_iso()),
         )
-        conn.commit()
+        if commit:
+            conn.commit()
     except Exception:
+        if not commit:
+            raise
         return
 
 
-def set_calculated_ftp(conn, ftp: int | None) -> None:
+def set_calculated_ftp(conn, ftp: int | None, *, commit: bool = True) -> None:
     """Persist a calculated FTP estimate when the newer athlete-profile columns exist."""
     try:
-        ensure_athlete_profile_table(conn)
+        ensure_athlete_profile_table(conn, commit=commit)
         conn.execute(
             "UPDATE athlete_profile SET ftp_calc=?, calc_updated_utc=? WHERE profile_id=1",
             (ftp, _utc_now_iso()),
         )
-        conn.commit()
+        if commit:
+            conn.commit()
     except Exception:
+        if not commit:
+            raise
         return
 
 
@@ -1493,6 +1508,47 @@ def refresh_persisted_activity_metrics(
         "zones_updated": 0,
         "errors": 0,
     }
+    caller_owns_transaction = bool(conn.in_transaction)
+    savepoint_name = f"refresh_persisted_activity_metrics_{id(summary):x}"
+    refresh_boundary_active = False
+
+    def _discard_refresh_changes() -> None:
+        nonlocal refresh_boundary_active
+        if not refresh_boundary_active:
+            return
+        if caller_owns_transaction:
+            try:
+                conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+            finally:
+                conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+        else:
+            conn.rollback()
+        refresh_boundary_active = False
+
+    def _persist_top_level_error_summary() -> None:
+        if caller_owns_transaction or conn.in_transaction:
+            return
+        try:
+            conn.execute(
+                UPSERT_SETTING_SQL,
+                (
+                    ACTIVITY_METRICS_LAST_REFRESH_SUMMARY_KEY,
+                    json.dumps(summary),
+                ),
+            )
+            conn.commit()
+        except Exception:
+            logger.warning(
+                "Failed to persist activity metrics refresh error summary",
+                exc_info=True,
+            )
+            if conn.in_transaction:
+                try:
+                    conn.rollback()
+                except Exception:
+                    logger.exception(
+                        "Failed to clean up activity metrics error-summary transaction"
+                    )
 
     try:
         candidate_ids: list[int] = []
@@ -1520,22 +1576,30 @@ def refresh_persisted_activity_metrics(
 
         summary["target_activities"] = len(candidate_ids)
 
+        if caller_owns_transaction:
+            conn.execute(f"SAVEPOINT {savepoint_name}")
+        else:
+            conn.execute("BEGIN")
+        refresh_boundary_active = True
+
+        profile = get_athlete_profile(conn) or {}
+        effective_lthr = (
+            int(lthr)
+            if lthr and int(lthr) > 0
+            else get_effective_lthr(conn, commit=False)
+        )
+        effective_ftp = (
+            int(profile.get("ftp_override") or profile.get("ftp_calc"))
+            if (profile.get("ftp_override") or profile.get("ftp_calc"))
+            else get_effective_ftp(conn, commit=False)
+        )
+        resting_hr = int(profile.get("resting_hr") or 60)
+
         # Ensure target rows exist.
         conn.executemany(
             "INSERT OR IGNORE INTO activity_metrics(activity_id) VALUES (?)",
             [(aid,) for aid in candidate_ids],
         )
-
-        profile = get_athlete_profile(conn) or {}
-        effective_lthr = (
-            int(lthr) if lthr and int(lthr) > 0 else get_effective_lthr(conn)
-        )
-        effective_ftp = (
-            int(profile.get("ftp_override") or profile.get("ftp_calc"))
-            if (profile.get("ftp_override") or profile.get("ftp_calc"))
-            else get_effective_ftp(conn)
-        )
-        resting_hr = int(profile.get("resting_hr") or 60)
 
         _refresh_scalar_activity_metrics(
             conn,
@@ -1629,20 +1693,45 @@ def refresh_persisted_activity_metrics(
             summary["zones_updated"] = len(update_rows)
 
         summary["rows_upserted"] = len(candidate_ids)
-        set_setting(conn, ACTIVITY_METRICS_LAST_REFRESH_KEY, _utc_now_iso())
-        set_setting(conn, ACTIVITY_METRICS_LAST_REFRESH_SUMMARY_KEY, summary)
-        conn.commit()
+        conn.execute(
+            UPSERT_SETTING_SQL,
+            (ACTIVITY_METRICS_LAST_REFRESH_KEY, json.dumps(_utc_now_iso())),
+        )
+        conn.execute(
+            UPSERT_SETTING_SQL,
+            (ACTIVITY_METRICS_LAST_REFRESH_SUMMARY_KEY, json.dumps(summary)),
+        )
+        if caller_owns_transaction:
+            conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+            refresh_boundary_active = False
+        else:
+            try:
+                conn.commit()
+            except Exception:
+                # A wrapper can raise after the underlying COMMIT succeeds.
+                # If SQLite no longer has a transaction, the refresh is durable
+                # and must not be reported as rolled back.
+                if not conn.in_transaction:
+                    refresh_boundary_active = False
+                    logger.warning(
+                        "Activity metric refresh commit completed but finalization "
+                        "reported an exception",
+                        exc_info=True,
+                    )
+                    return summary
+                raise
+            refresh_boundary_active = False
         return summary
-    except (sqlite3.Error, TypeError, ValueError):
+    except Exception:
         summary["errors"] += 1
+        summary["rows_upserted"] = 0
+        summary["zones_updated"] = 0
         logger.exception("Failed to refresh persisted activity metrics")
         try:
-            set_setting(conn, ACTIVITY_METRICS_LAST_REFRESH_SUMMARY_KEY, summary)
-        except (sqlite3.Error, TypeError, ValueError):
-            logger.warning(
-                "Failed to persist activity metrics refresh error summary",
-                exc_info=True,
-            )
+            _discard_refresh_changes()
+        except Exception:
+            logger.exception("Failed to roll back activity metric refresh boundary")
+        _persist_top_level_error_summary()
         return summary
 
 
