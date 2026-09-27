@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from garmin_data_hub.analytics.sleep_recovery import analyze_sleep_recovery
+from garmin_data_hub.db.activity_dates import activity_calendar_day_sql
 from garmin_data_hub.services.coaching_packet import build_coaching_packet
 from garmin_data_hub.services.codex_plan_generator import (
     CodexCliCancelledError,
@@ -53,13 +54,14 @@ def build_chat_context(
     start = today - timedelta(days=28)
     with closing(sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)) as conn:
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        activity_day = activity_calendar_day_sql(conn)
         comparison: dict[str, Any] = {
             "start": start.isoformat(), "end": (today - timedelta(days=1)).isoformat(),
             "method": "Calendar totals, not matched sessions; all sports combined.",
         }
         for label, table, day, duration, distance in (
             ("planned", "planned_workout", "scheduled_date", "planned_duration_s", "planned_distance_m"),
-            ("actual", "activity", "date(start_time_gmt)", "elapsed_duration_seconds", "distance_meters"),
+            ("actual", "activity", activity_day, "elapsed_duration_seconds", "distance_meters"),
         ):
             if table not in tables:
                 comparison[label] = None

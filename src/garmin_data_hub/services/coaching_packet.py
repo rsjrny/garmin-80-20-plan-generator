@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from garmin_data_hub.db import queries as db_queries
+from garmin_data_hub.db.activity_dates import activity_calendar_day_sql
 from garmin_data_hub.services.ai_plan_import import (
     CHATGPT_PLAN_CONTRACT,
     CHATGPT_PLAN_VERSION,
@@ -391,10 +392,10 @@ TRAINING_PLAN_UPDATE_SCHEMA: dict[str, Any] = {
 }
 
 
-_ACTIVITY_SQL = """
+_ACTIVITY_SQL_TEMPLATE = """
     SELECT
         a.activity_id,
-        date(a.start_time_gmt) AS activity_date,
+        {activity_day} AS activity_date,
         a.activity_type AS sport,
         a.distance_meters,
         a.elapsed_duration_seconds,
@@ -440,9 +441,16 @@ _ACTIVITY_SQL = """
             ) AS hr_load_metrics_current
         FROM activity_metrics
     ) am ON am.activity_id = a.activity_id
-    WHERE date(a.start_time_gmt) BETWEEN ? AND ?
-    ORDER BY date(a.start_time_gmt) DESC, a.activity_id DESC
+    WHERE {activity_day} BETWEEN ? AND ?
+    ORDER BY activity_date DESC, a.activity_id DESC
 """
+
+
+def _activity_sql(conn: sqlite3.Connection) -> str:
+    return _ACTIVITY_SQL_TEMPLATE.format(
+        activity_day=activity_calendar_day_sql(conn, table_alias="a")
+    )
+
 
 def build_coaching_packet(
     db_path: Path | str,
@@ -496,7 +504,7 @@ def build_coaching_packet(
                 db_queries.get_activity_metric_threshold_management(conn)
             )
             activity_rows = conn.execute(
-                _ACTIVITY_SQL,
+                _activity_sql(conn),
                 (
                     db_queries.ACTIVITY_METRICS_PROVENANCE_VERSION,
                     int(lthr_is_managed),

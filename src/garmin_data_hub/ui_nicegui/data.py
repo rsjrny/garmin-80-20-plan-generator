@@ -20,6 +20,7 @@ import pandas as pd
 
 from garmin_data_hub.analytics.post_sync_refresh import refresh_post_sync_tables
 from garmin_data_hub.db import queries
+from garmin_data_hub.db.activity_dates import activity_calendar_day_sql
 from garmin_data_hub.db.migrate import apply_schema
 from garmin_data_hub.db.sqlite import connect_sqlite
 from garmin_data_hub.paths import schema_sql_path
@@ -288,25 +289,26 @@ def list_activities(
     end_date: str | None = None,
     limit: int = 1000,
 ) -> list[dict[str, Any]]:
-    clauses: list[str] = []
-    parameters: list[Any] = []
-    if sport:
-        clauses.append("activity_type = ?")
-        parameters.append(sport)
-    if start_date:
-        clauses.append("date(start_time_gmt) >= date(?)")
-        parameters.append(start_date)
-    if end_date:
-        clauses.append("date(start_time_gmt) <= date(?)")
-        parameters.append(end_date)
-    where = " WHERE " + " AND ".join(clauses) if clauses else ""
-    parameters.append(max(1, min(int(limit), 5000)))
     conn = connect_sqlite(db_path)
     try:
         try:
+            activity_day = activity_calendar_day_sql(conn)
+            clauses: list[str] = []
+            parameters: list[Any] = []
+            if sport:
+                clauses.append("activity_type = ?")
+                parameters.append(sport)
+            if start_date:
+                clauses.append(f"{activity_day} >= date(?)")
+                parameters.append(start_date)
+            if end_date:
+                clauses.append(f"{activity_day} <= date(?)")
+                parameters.append(end_date)
+            where = " WHERE " + " AND ".join(clauses) if clauses else ""
+            parameters.append(max(1, min(int(limit), 5000)))
             cursor = conn.execute(
                 f"""
-                SELECT activity_id AS id, date(start_time_gmt) AS date,
+                SELECT activity_id AS id, {activity_day} AS date,
                        activity_type AS sport,
                        ROUND(distance_meters / 1000.0, 2) AS distance_km,
                        ROUND(elapsed_duration_seconds / 60.0, 1) AS duration_min,
@@ -469,18 +471,19 @@ def compliance_data(db_path: Path) -> dict[str, Any]:
     conn = connect_sqlite(db_path)
     try:
         try:
+            activity_day = activity_calendar_day_sql(conn)
             cursor = conn.execute(
-                """
+                f"""
                 WITH planned AS (
                     SELECT scheduled_date AS day,
                            SUM(COALESCE(planned_distance_m, 0)) AS planned_distance_m,
                            SUM(COALESCE(planned_duration_s, 0)) AS planned_duration_s
                     FROM planned_workout GROUP BY scheduled_date
                 ), actual AS (
-                    SELECT date(start_time_gmt) AS day,
+                    SELECT {activity_day} AS day,
                            SUM(COALESCE(distance_meters, 0)) AS actual_distance_m,
                            SUM(COALESCE(elapsed_duration_seconds, 0)) AS actual_duration_s
-                    FROM activity GROUP BY date(start_time_gmt)
+                    FROM activity GROUP BY {activity_day}
                 ), days AS (
                     SELECT day FROM planned UNION SELECT day FROM actual
                 )

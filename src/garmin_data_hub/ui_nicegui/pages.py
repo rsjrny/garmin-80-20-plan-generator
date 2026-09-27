@@ -337,7 +337,8 @@ def _training_chart_figures(
         return []
 
     frame = frame.copy()
-    frame["date"] = pd.to_datetime(frame["start_time_utc"], errors="coerce")
+    date_source = "activity_date" if "activity_date" in frame else "start_time_utc"
+    frame["date"] = pd.to_datetime(frame[date_source], errors="coerce")
     frame = frame.dropna(subset=["date"])
     frame["distance"] = pd.to_numeric(frame["total_distance_m"], errors="coerce").fillna(0) / 1000
     if unit_system == "Imperial":

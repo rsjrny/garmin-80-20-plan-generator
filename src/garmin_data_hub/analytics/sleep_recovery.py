@@ -9,6 +9,8 @@ from pathlib import Path
 from statistics import fmean, pstdev
 from typing import Any, Iterable
 
+from garmin_data_hub.db.activity_dates import activity_calendar_day_sql
+
 
 MAX_ANALYSIS_DAYS = 730
 
@@ -125,12 +127,9 @@ def _fetch_activity_load(
     end_iso: str,
 ) -> tuple[dict[str, dict[str, Any]], bool]:
     columns = _table_columns(conn, "activity")
-    date_column = next(
-        (name for name in ("start_time_local", "start_time_gmt") if name in columns),
-        None,
-    )
-    if date_column is None:
+    if not {"start_time_local", "start_time_gmt"}.intersection(columns):
         return {}, False
+    activity_day = activity_calendar_day_sql(conn)
     load_parts = [
         name
         for name in ("training_load", "training_stress_score")
@@ -150,15 +149,15 @@ def _fetch_activity_load(
     duration_expression = duration_column or "0"
     cursor = conn.execute(
         f"""
-        SELECT DATE({date_column}) AS calendar_date,
+        SELECT {activity_day} AS calendar_date,
                COUNT(*) AS activity_sessions,
                ROUND(SUM({load_expression}), 1) AS activity_load,
                ROUND(SUM(COALESCE({duration_expression}, 0)) / 3600.0, 2)
                    AS activity_hours
         FROM activity
-        WHERE DATE({date_column}) BETWEEN ? AND ?
-        GROUP BY DATE({date_column})
-        ORDER BY DATE({date_column})
+        WHERE {activity_day} BETWEEN ? AND ?
+        GROUP BY {activity_day}
+        ORDER BY {activity_day}
         """,
         (start_iso, end_iso),
     )

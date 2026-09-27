@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from typing import Any, Iterable
 import pandas as pd
 
+from garmin_data_hub.db.activity_dates import activity_calendar_day_sql
+
 logger = logging.getLogger(__name__)
 
 GET_SETTING_SQL = "SELECT value FROM app_settings WHERE key = ?"
@@ -1396,9 +1398,11 @@ def get_activities_dataframe(
             """
             temp_join_sql = ""
 
+        activity_day = activity_calendar_day_sql(conn, table_alias="a")
         query = f"""
             SELECT
                 a.start_time_gmt          AS start_time_utc,
+                {activity_day}            AS activity_date,
                 a.activity_type           AS sport,
                 a.distance_meters         AS total_distance_m,
                 a.elapsed_duration_seconds AS total_elapsed_s,
@@ -1473,7 +1477,7 @@ def get_activities_dataframe(
                 FROM activity_metrics
             ) am ON am.activity_id = a.activity_id
             {temp_join_sql}
-            WHERE a.start_time_gmt >= ?
+            WHERE {activity_day} >= date(?)
         """
 
         params = [
@@ -1574,7 +1578,8 @@ def refresh_temp_activity_zone_metrics(
         z3_upper = float(lthr) * 0.85
         z4_upper = float(lthr) * 1.00
 
-        filter_sql = "AND a.start_time_gmt >= ?"
+        activity_day = activity_calendar_day_sql(conn, table_alias="a")
+        filter_sql = f"AND {activity_day} >= date(?)"
         params = []
         if sports_list:
             placeholders = ",".join("?" for _ in sports_list)

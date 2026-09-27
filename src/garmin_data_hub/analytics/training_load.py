@@ -2,17 +2,21 @@ from __future__ import annotations
 import pandas as pd
 import sqlite3
 
+from garmin_data_hub.db.activity_dates import activity_calendar_day_sql
+
 
 def get_daily_tss(conn: sqlite3.Connection, start_date_iso: str) -> pd.DataFrame:
     """
     Aggregates TSS for each day from the activity table (garmin-givemydata schema).
     """
-    query = """
+    activity_day = activity_calendar_day_sql(conn, table_alias="a")
+    query = f"""
         SELECT
-            date(a.start_time_gmt) as activity_date,
+            {activity_day} AS activity_date,
             SUM(a.training_stress_score) as tss
         FROM activity a
-        WHERE a.start_time_gmt >= ? AND a.training_stress_score IS NOT NULL
+        WHERE {activity_day} >= date(?)
+          AND a.training_stress_score IS NOT NULL
         GROUP BY activity_date
         ORDER BY activity_date ASC
     """
