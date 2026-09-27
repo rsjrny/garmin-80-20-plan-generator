@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 import pandas as pd
 
+from garmin_data_hub.db import queries
 from garmin_data_hub.db.migrate import apply_schema
 from garmin_data_hub.db.sqlite import connect_sqlite
 from garmin_data_hub.paths import schema_sql_path
@@ -132,6 +133,41 @@ def test_activity_detail_returns_stored_gps_track(tmp_path):
     assert len(detail["trackpoints"]) == 2
     assert detail["trackpoints"][0]["lat_deg"] == 40.0
     assert detail["trackpoints"][1]["lon_deg"] == -74.9995
+
+
+def test_chart_history_suppresses_noncurrent_temporal_metrics(tmp_path):
+    db_path = _database(tmp_path)
+    conn = connect_sqlite(db_path)
+    try:
+        for column_name in ("avg_cadence", "avg_power", "norm_power", "intensity_factor"):
+            conn.execute(f"ALTER TABLE activity ADD COLUMN {column_name} REAL")
+        conn.execute(
+            """
+            INSERT INTO activity_metrics(
+                activity_id, refresh_provenance_version,
+                aerobic_decoupling_pct, hr_drift_pct,
+                peak_power_5s_w, efficiency_factor
+            ) VALUES (1, ?, 77, 88, 999, 1.5)
+            """,
+            (queries.ACTIVITY_METRICS_PROVENANCE_VERSION - 1,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    frame = nicegui_data.chart_dataframe(db_path, start_date="2026-08-01")
+    assert len(frame.index) == 1
+    row = frame.iloc[0]
+    assert row["aerobic_decoupling_pct"] is None
+    assert row["hr_drift_pct"] is None
+    assert row["peak_power_5s_w"] is None
+    assert row["efficiency_factor"] == pytest.approx(1.5)
+
+    temporal_columns = set(queries.PHASE_2D_TEMPORAL_METRIC_COLUMNS)
+    assert temporal_columns.isdisjoint(list_activities(db_path)[0])
+    detail = activity_detail(db_path, 1)
+    assert detail is not None
+    assert temporal_columns.isdisjoint(detail["metrics"])
 
 
 def test_activity_selection_refreshes_and_navigates_to_detail_card():

@@ -428,7 +428,14 @@ def test_refresh_does_not_clear_schema_only_unowned_columns(db_conn):
     assert value == pytest.approx(4.5)
 
 
-@pytest.mark.parametrize("stored_version", [0, 2, 99])
+@pytest.mark.parametrize(
+    "stored_version",
+    [
+        0,
+        queries.ACTIVITY_METRICS_PROVENANCE_VERSION - 1,
+        queries.ACTIVITY_METRICS_PROVENANCE_VERSION + 1,
+    ],
+)
 def test_noncurrent_provenance_versions_are_always_stale(db_conn, stored_version):
     _insert_activity(db_conn, 219)
     _set_thresholds(db_conn)
@@ -591,6 +598,8 @@ def test_regular_metric_readers_hide_threshold_stale_values(db_conn):
     assert sum(row[f"power_zone_{index}_s"] for index in range(1, 8)) == 0
     assert row["tss"] == pytest.approx(42)
     assert row["trimp"] is None
+    assert row["hr_drift_pct"] == pytest.approx(25)
+    assert row["peak_power_5s_w"] == pytest.approx(300)
 
     detail_metrics = queries.get_activity_metrics(db_conn, 226)
     assert tuple(detail_metrics) == (None, None, None)

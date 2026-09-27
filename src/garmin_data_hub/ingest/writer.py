@@ -6,6 +6,7 @@ from datetime import datetime
 from .fingerprint import sha256_file, stat_signature
 
 from .parsers import parse_activity_file
+from garmin_data_hub.analytics.temporal_metrics import MAX_CONTIGUOUS_GAP_SECONDS
 from garmin_data_hub.db import queries as db_queries
 
 # Export for import in CLI and other modules
@@ -191,8 +192,8 @@ def calculate_hr_zones_from_records(
 
             duration = (curr_ts - prev_ts).total_seconds()
 
-            # Skip if duration is unreasonable (> 30 seconds between samples)
-            if duration <= 0 or duration > 30:
+            # A longer gap does not provide continuous temporal support.
+            if duration <= 0 or duration > MAX_CONTIGUOUS_GAP_SECONDS:
                 continue
 
             for zone_idx, (lower, upper) in enumerate(zone_thresholds, start=1):
@@ -246,7 +247,10 @@ def calculate_trimp(
 
             duration_min = (curr_ts - prev_ts).total_seconds() / 60.0
 
-            if duration_min <= 0 or duration_min > 0.5:
+            if (
+                duration_min <= 0
+                or duration_min > MAX_CONTIGUOUS_GAP_SECONDS / 60.0
+            ):
                 continue
 
             if max_hr <= resting_hr:
@@ -264,47 +268,10 @@ def calculate_trimp(
 def calculate_aerobic_decoupling(
     conn: sqlite3.Connection, activity_id: int
 ) -> float | None:
-    """Calculate aerobic decoupling."""
-    rows = db_queries.get_record_rows_for_activity(conn, activity_id)
-
-    if len(rows) < 20:
-        return None
-
-    mid = len(rows) // 2
-    first_half = rows[:mid]
-    second_half = rows[mid:]
-
-    def calc_efficiency(data):
-        hr_sum = 0
-        output_sum = 0
-        count = 0
-        for row in data:
-            # helper returns (timestamp_utc, heart_rate_bpm, speed_mps, power_w)
-            hr = _get_row_value(row, "heart_rate_bpm", 1)
-            speed = _get_row_value(row, "speed_mps", 2)
-            power = _get_row_value(row, "power_w", 3)
-            if hr and hr > 0:
-                output = (
-                    power
-                    if power and power > 0
-                    else (speed if speed and speed > 0 else None)
-                )
-                if output:
-                    hr_sum += hr
-                    output_sum += output
-                    count += 1
-        if count == 0 or hr_sum == 0:
-            return None
-        return output_sum / hr_sum
-
-    eff1 = calc_efficiency(first_half)
-    eff2 = calc_efficiency(second_half)
-
-    if not eff1 or not eff2 or eff1 == 0:
-        return None
-
-    decoupling = ((eff1 - eff2) / eff1) * 100
-    return round(decoupling, 2)
+    """Calculate aerobic decoupling with the canonical temporal algorithm."""
+    return db_queries.calculate_activity_temporal_metrics(
+        conn, activity_id
+    ).aerobic_decoupling_pct
 
 
 def calculate_hr_tss(

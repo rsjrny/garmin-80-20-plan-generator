@@ -6,6 +6,13 @@ from datetime import datetime, timezone
 from typing import Any, Iterable
 import pandas as pd
 
+from garmin_data_hub.analytics.temporal_metrics import (
+    MAX_CONTIGUOUS_GAP_SECONDS,
+    POWER_PEAK_DURATIONS_SECONDS,
+    TemporalMetricResult,
+    TemporalSample,
+    calculate_temporal_metrics,
+)
 from garmin_data_hub.db.activity_dates import activity_calendar_day_sql
 
 logger = logging.getLogger(__name__)
@@ -14,7 +21,43 @@ GET_SETTING_SQL = "SELECT value FROM app_settings WHERE key = ?"
 UPSERT_SETTING_SQL = "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)"
 ACTIVITY_METRICS_LAST_REFRESH_KEY = "activity_metrics_last_refresh_utc"
 ACTIVITY_METRICS_LAST_REFRESH_SUMMARY_KEY = "activity_metrics_last_refresh_summary"
-ACTIVITY_METRICS_PROVENANCE_VERSION = 1
+ACTIVITY_METRICS_PROVENANCE_VERSION = 2
+PHASE_2D_TEMPORAL_METRIC_COLUMNS = (
+    "aerobic_decoupling_pct",
+    "pace_decoupling_pct",
+    "hr_drift_pct",
+    "peak_power_5s_w",
+    "peak_power_30s_w",
+    "peak_power_60s_w",
+    "peak_power_300s_w",
+    "peak_power_1200s_w",
+)
+
+
+def current_temporal_metric_projection_sql(
+    table_alias: str = "activity_metrics",
+    columns: Iterable[str] = PHASE_2D_TEMPORAL_METRIC_COLUMNS,
+) -> str:
+    """Project Phase-2D metrics only when their algorithm provenance is current.
+
+    Stored stale values deliberately remain in SQLite after a failed or pending
+    refresh.  Normal readers use this projection so version 1, legacy NULL, and
+    unknown future versions are consistently exposed as unavailable.
+    """
+    if not table_alias.replace("_", "").isalnum():
+        raise ValueError(f"Invalid SQL table alias: {table_alias!r}")
+    requested_columns = tuple(columns)
+    unknown_columns = set(requested_columns) - set(PHASE_2D_TEMPORAL_METRIC_COLUMNS)
+    if unknown_columns:
+        raise ValueError(
+            f"Not a Phase-2D temporal metric: {sorted(unknown_columns)!r}"
+        )
+    return ",\n".join(
+        f"CASE WHEN {table_alias}.refresh_provenance_version = "
+        f"{ACTIVITY_METRICS_PROVENANCE_VERSION} THEN "
+        f"{table_alias}.{column_name} END AS {column_name}"
+        for column_name in requested_columns
+    )
 
 # Columns rebuilt by refresh_persisted_activity_metrics(). Schema-only/legacy
 # columns are intentionally absent so a refresh cannot erase data it does not own.
@@ -532,6 +575,31 @@ def _refresh_scalar_activity_metrics(
         )
 
 
+def calculate_activity_temporal_metrics(
+    conn, activity_id: int
+) -> TemporalMetricResult:
+    """Load one activity and calculate its canonical elapsed-time metrics."""
+    rows = conn.execute(
+        """
+        SELECT seq, timestamp_utc, speed_mps, heart_rate_bpm, power_w
+        FROM activity_trackpoints
+        WHERE activity_id = ?
+        ORDER BY timestamp_utc, seq
+        """,
+        (activity_id,),
+    ).fetchall()
+    return calculate_temporal_metrics(
+        TemporalSample(
+            seq=row[0],
+            timestamp_utc=row[1],
+            speed_mps=row[2],
+            heart_rate_bpm=row[3],
+            power_w=row[4],
+        )
+        for row in rows
+    )
+
+
 def _refresh_trackpoint_derived_metrics(
     conn,
     candidate_ids: list[int],
@@ -626,114 +694,35 @@ def _refresh_trackpoint_derived_metrics(
             [(row[1], row[2], row[0]) for row in ascent_rows],
         )
 
-    decoupling_rows = conn.execute(
-        f"""
-        WITH filtered AS (
-            SELECT
+    temporal_update_rows = []
+    for activity_id in candidate_ids:
+        metrics = calculate_activity_temporal_metrics(conn, activity_id)
+        peaks = metrics.power_peaks_w
+        temporal_update_rows.append(
+            (
+                metrics.aerobic_decoupling_pct,
+                metrics.hr_drift_pct,
+                metrics.pace_decoupling_pct,
+                *(peaks[duration] for duration in POWER_PEAK_DURATIONS_SECONDS),
                 activity_id,
-                heart_rate_bpm,
-                CASE WHEN power_w IS NOT NULL AND power_w > 0 THEN power_w END AS power_w,
-                CASE WHEN speed_mps IS NOT NULL AND speed_mps > 0 THEN speed_mps END AS speed_mps,
-                ROW_NUMBER() OVER (PARTITION BY activity_id ORDER BY seq) AS rn,
-                COUNT(*) OVER (PARTITION BY activity_id) AS total_points
-            FROM activity_trackpoints
-            WHERE activity_id IN ({placeholders})
-              AND heart_rate_bpm IS NOT NULL
-              AND heart_rate_bpm >= 35
-              AND heart_rate_bpm <= 220
-        ),
-        halves AS (
-            SELECT
-                activity_id,
-                AVG(CASE WHEN rn <= total_points / 2 THEN heart_rate_bpm END) AS hr_first,
-                AVG(CASE WHEN rn > total_points / 2 THEN heart_rate_bpm END) AS hr_second,
-                AVG(CASE WHEN rn <= total_points / 2 THEN COALESCE(power_w, speed_mps) END) AS output_first,
-                AVG(CASE WHEN rn > total_points / 2 THEN COALESCE(power_w, speed_mps) END) AS output_second,
-                AVG(CASE WHEN rn <= total_points / 2 THEN speed_mps END) AS speed_first,
-                AVG(CASE WHEN rn > total_points / 2 THEN speed_mps END) AS speed_second
-            FROM filtered
-            GROUP BY activity_id
+            )
         )
-        SELECT
-            activity_id,
-            CASE
-                WHEN hr_first > 0 AND hr_second > 0 AND output_first > 0 AND output_second > 0
-                THEN ROUND((((output_first / hr_first) - (output_second / hr_second)) / (output_first / hr_first)) * 100.0, 2)
-            END AS aerobic_decoupling_pct,
-            CASE
-                WHEN hr_first > 0 AND hr_second > 0
-                THEN ROUND(((hr_second - hr_first) / hr_first) * 100.0, 2)
-            END AS hr_drift_pct,
-            CASE
-                WHEN hr_first > 0 AND hr_second > 0 AND speed_first > 0 AND speed_second > 0
-                THEN ROUND((((speed_first / hr_first) - (speed_second / hr_second)) / (speed_first / hr_first)) * 100.0, 2)
-            END AS pace_decoupling_pct
-        FROM halves
-        WHERE hr_first IS NOT NULL AND hr_second IS NOT NULL
+
+    conn.executemany(
+        """
+        UPDATE activity_metrics
+        SET aerobic_decoupling_pct = ?,
+            hr_drift_pct = ?,
+            pace_decoupling_pct = ?,
+            peak_power_5s_w = ?,
+            peak_power_30s_w = ?,
+            peak_power_60s_w = ?,
+            peak_power_300s_w = ?,
+            peak_power_1200s_w = ?
+        WHERE activity_id = ?
         """,
-        tuple(candidate_ids),
-    ).fetchall()
-
-    if decoupling_rows:
-        conn.executemany(
-            """
-            UPDATE activity_metrics
-            SET aerobic_decoupling_pct = COALESCE(?, aerobic_decoupling_pct),
-                hr_drift_pct = COALESCE(?, hr_drift_pct),
-                pace_decoupling_pct = COALESCE(?, pace_decoupling_pct)
-            WHERE activity_id = ?
-            """,
-            [(row[1], row[2], row[3], row[0]) for row in decoupling_rows],
-        )
-
-    power_peak_rows = conn.execute(
-        f"""
-        WITH power_samples AS (
-            SELECT activity_id, seq, CAST(power_w AS REAL) AS power_w
-            FROM activity_trackpoints
-            WHERE activity_id IN ({placeholders})
-              AND power_w IS NOT NULL
-              AND power_w >= 0
-        ),
-        rolling AS (
-            SELECT
-                activity_id,
-                AVG(power_w) OVER (PARTITION BY activity_id ORDER BY seq ROWS BETWEEN 4 PRECEDING AND CURRENT ROW) AS peak_power_5s_w,
-                AVG(power_w) OVER (PARTITION BY activity_id ORDER BY seq ROWS BETWEEN 29 PRECEDING AND CURRENT ROW) AS peak_power_30s_w,
-                AVG(power_w) OVER (PARTITION BY activity_id ORDER BY seq ROWS BETWEEN 59 PRECEDING AND CURRENT ROW) AS peak_power_60s_w,
-                AVG(power_w) OVER (PARTITION BY activity_id ORDER BY seq ROWS BETWEEN 299 PRECEDING AND CURRENT ROW) AS peak_power_300s_w,
-                AVG(power_w) OVER (PARTITION BY activity_id ORDER BY seq ROWS BETWEEN 1199 PRECEDING AND CURRENT ROW) AS peak_power_1200s_w
-            FROM power_samples
-        )
-        SELECT
-            activity_id,
-            MAX(peak_power_5s_w),
-            MAX(peak_power_30s_w),
-            MAX(peak_power_60s_w),
-            MAX(peak_power_300s_w),
-            MAX(peak_power_1200s_w)
-        FROM rolling
-        GROUP BY activity_id
-        """,
-        tuple(candidate_ids),
-    ).fetchall()
-
-    if power_peak_rows:
-        conn.executemany(
-            """
-            UPDATE activity_metrics
-            SET peak_power_5s_w = COALESCE(?, peak_power_5s_w),
-                peak_power_30s_w = COALESCE(?, peak_power_30s_w),
-                peak_power_60s_w = COALESCE(?, peak_power_60s_w),
-                peak_power_300s_w = COALESCE(?, peak_power_300s_w),
-                peak_power_1200s_w = COALESCE(?, peak_power_1200s_w)
-            WHERE activity_id = ?
-            """,
-            [
-                (row[1], row[2], row[3], row[4], row[5], row[0])
-                for row in power_peak_rows
-            ],
-        )
+        temporal_update_rows,
+    )
 
     if ftp and int(ftp) > 0:
         z1_upper = float(ftp) * 0.55
@@ -768,7 +757,7 @@ def _refresh_trackpoint_derived_metrics(
                   AND tp.power_w >= 0
             ) x
             WHERE x.dt_s > 0
-              AND x.dt_s <= 30
+              AND x.dt_s <= ?
             GROUP BY x.activity_id
             """,
             (
@@ -785,6 +774,7 @@ def _refresh_trackpoint_derived_metrics(
                 z6_upper,
                 z6_upper,
                 *candidate_ids,
+                MAX_CONTIGUOUS_GAP_SECONDS,
             ),
         ).fetchall()
 
@@ -1399,6 +1389,18 @@ def get_activities_dataframe(
             temp_join_sql = ""
 
         activity_day = activity_calendar_day_sql(conn, table_alias="a")
+        temporal_metric_select_sql = current_temporal_metric_projection_sql(
+            "am",
+            (
+                "aerobic_decoupling_pct",
+                "hr_drift_pct",
+                "peak_power_5s_w",
+                "peak_power_30s_w",
+                "peak_power_60s_w",
+                "peak_power_300s_w",
+                "peak_power_1200s_w",
+            ),
+        )
         query = f"""
             SELECT
                 a.start_time_gmt          AS start_time_utc,
@@ -1421,15 +1423,9 @@ def get_activities_dataframe(
                     CASE WHEN am.hr_load_metrics_current THEN am.tss END,
                     a.training_stress_score
                 ) AS tss,
-                am.aerobic_decoupling_pct,
-                am.hr_drift_pct,
+                {temporal_metric_select_sql},
                 am.efficiency_factor,
                 am.variability_index,
-                am.peak_power_5s_w,
-                am.peak_power_30s_w,
-                am.peak_power_60s_w,
-                am.peak_power_300s_w,
-                am.peak_power_1200s_w,
                 CASE WHEN am.ftp_metrics_current THEN COALESCE(am.power_zone_1_s, 0) ELSE 0 END AS power_zone_1_s,
                 CASE WHEN am.ftp_metrics_current THEN COALESCE(am.power_zone_2_s, 0) ELSE 0 END AS power_zone_2_s,
                 CASE WHEN am.ftp_metrics_current THEN COALESCE(am.power_zone_3_s, 0) ELSE 0 END AS power_zone_3_s,
@@ -1621,7 +1617,7 @@ def refresh_temp_activity_zone_metrics(
             + """
             ) x
             WHERE x.dt_s > 0
-              AND x.dt_s <= 30
+              AND x.dt_s <= ?
             GROUP BY x.activity_id
             """,
             (
@@ -1635,6 +1631,7 @@ def refresh_temp_activity_zone_metrics(
                 z4_upper,
                 start_ts_iso,
                 *params,
+                MAX_CONTIGUOUS_GAP_SECONDS,
             ),
         )
 
@@ -1835,7 +1832,7 @@ def refresh_persisted_activity_metrics(
                       AND tp.activity_id IN ({placeholders})
                 ) x
                 WHERE x.dt_s > 0
-                  AND x.dt_s <= 30
+                  AND x.dt_s <= ?
                 GROUP BY x.activity_id
                 """,
                 (
@@ -1848,6 +1845,7 @@ def refresh_persisted_activity_metrics(
                     z4_upper,
                     z4_upper,
                     *candidate_ids,
+                    MAX_CONTIGUOUS_GAP_SECONDS,
                 ),
             ).fetchall()
 

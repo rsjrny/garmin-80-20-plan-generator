@@ -72,19 +72,46 @@ These live in `activity_metrics`, but their underlying values come from `activit
 | `hr_max_est_bpm` | `activity.max_hr` or LTHR-based fallback | App-normalized estimate |
 | `lthr_est_bpm` | `athlete_profile.lthr_override` / `lthr_calc` | Derived profile value |
 | `trimp` | duration + HR + estimated HR reserve | App-derived training load |
-| `aerobic_decoupling_pct` | first/second half `activity_trackpoint` efficiency | App-derived |
-| `hr_drift_pct` | first/second half HR drift from trackpoints | App-derived |
+| `aerobic_decoupling_pct` | elapsed-time first/second-half power-or-speed efficiency | App-derived; one workload signal is selected for the whole activity |
+| `hr_drift_pct` | elapsed-time first/second-half HR drift from trackpoints | App-derived |
 | `avg_hr_to_max_pct` | `average_hr / max_hr` | App-derived |
 | `zone_1_s` ... `zone_5_s` | HR trackpoints + effective LTHR | App-derived HR zone totals |
 | `variability_index` | `norm_power / avg_power` | App-derived |
 | `efficiency_factor` | `norm_power / average_hr` or `speed / average_hr` | App-derived |
-| `pace_decoupling_pct` | speed-vs-HR first/second half comparison | App-derived |
-| `peak_power_5s_w` | rolling average over `activity_trackpoint.power_w` | App-derived |
-| `peak_power_30s_w` | rolling average over `activity_trackpoint.power_w` | App-derived |
-| `peak_power_60s_w` | rolling average over `activity_trackpoint.power_w` | App-derived |
-| `peak_power_300s_w` | rolling average over `activity_trackpoint.power_w` | App-derived |
-| `peak_power_1200s_w` | rolling average over `activity_trackpoint.power_w` | App-derived |
+| `pace_decoupling_pct` | elapsed-time speed-vs-HR first/second half comparison | App-derived; always speed-based |
+| `peak_power_5s_w` | exact-duration time-weighted mean of `activity_trackpoint.power_w` | App-derived |
+| `peak_power_30s_w` | exact-duration time-weighted mean of `activity_trackpoint.power_w` | App-derived |
+| `peak_power_60s_w` | exact-duration time-weighted mean of `activity_trackpoint.power_w` | App-derived |
+| `peak_power_300s_w` | exact-duration time-weighted mean of `activity_trackpoint.power_w` | App-derived |
+| `peak_power_1200s_w` | exact-duration time-weighted mean of `activity_trackpoint.power_w` | App-derived |
 | `power_zone_1_s` ... `power_zone_7_s` | power trackpoints + effective FTP | App-derived power zone totals |
+
+#### Temporal support used by power peaks and decoupling
+
+Trackpoint values are left-held from their timestamp to the next distinct
+timestamp. No duration is inferred after the final trackpoint. Intervals of
+exactly 30 seconds are eligible; a gap greater than 30 seconds creates no
+support and breaks a continuous power run. Duplicate timestamps are resolved
+deterministically and never create duration.
+
+Measured zero power or speed is valid data. `NULL` is missing data. Power peaks
+require a complete contiguous interval of the requested real elapsed duration,
+and integrate measured watt-seconds over that duration; missing power and gaps
+cannot be compressed out of a window.
+
+Decoupling uses the wall-clock midpoint of the supported observed span and
+splits a crossing interval at that midpoint. Each half is time-weighted, and
+workload and HR are averaged over the same paired intervals. Pace decoupling
+always uses speed. Aerobic decoupling uses power when paired power coverage is
+at least 95%; otherwise it uses speed for the entire calculation. The coverage
+numerator is the duration of eligible (at most 30-second) intervals whose
+left-held HR is within 35--220 bpm and whose left-held power is measured and
+non-negative. The denominator is the duration of all eligible intervals whose
+left-held HR is within those bounds. Broken gaps and missing/invalid HR add to
+neither duration. Thus, the percentage means power completeness wherever HR
+permits decoupling, not power completeness across the whole activity. HR drift
+uses the same elapsed midpoint and HR validity bounds but is weighted over
+HR-supported intervals independently of workload.
 
 ### C) Athlete profile values used by the derivations
 
@@ -131,9 +158,18 @@ when their current inputs cannot match the historical defaults.
 
 Normal chart, compliance, activity-detail, and coaching-packet readers also
 check provenance before exposing threshold-dependent cache fields. Stale HR or
-power zones are shown as zero, stale derived loads are omitted (or fall back to
-the raw Garmin TSS when available), and threshold-independent fields remain
-available until the next refresh rebuilds the cache.
+power zones are shown as zero, and stale derived loads are omitted (or fall back
+to the raw Garmin TSS when available).
+
+The Phase 2D temporal fields (`aerobic_decoupling_pct`,
+`pace_decoupling_pct`, `hr_drift_pct`, and all five `peak_power_*_w` fields)
+have an additional algorithm-freshness rule: normal readers expose them only
+when `refresh_provenance_version` exactly equals the current provenance version.
+Version 1, legacy `NULL`, and unknown future versions are unavailable to normal
+readers. Their stored values may physically remain in SQLite after a pending or
+failed refresh, but stay suppressed until a successful current-version refresh
+atomically replaces the metrics and provenance. Unrelated threshold-independent
+fields remain available under the existing Phase 2B rules.
 
 ---
 

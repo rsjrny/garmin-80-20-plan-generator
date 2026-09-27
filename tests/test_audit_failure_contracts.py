@@ -330,7 +330,13 @@ def test_decoupling_time_weights_irregular_trackpoint_intervals(db_conn):
 
 
 def test_decoupling_does_not_mix_intermittent_power_with_speed(db_conn):
-    """Incomplete power must use one coherent fallback stream, not watts plus m/s."""
+    """Incomplete power must use one coherent fallback stream, not watts plus m/s.
+
+    Power covers 2/3 of the HR-supported time, so the 95% policy selects speed.
+    The elapsed midpoint is 1.5s: first-half speed is 2 m/s and second-half
+    speed is (0.5s * 2 + 1s * 1) / 1.5s = 4/3 m/s.  With constant HR,
+    decoupling is (2 - 4/3) / 2 = 33.33%, not the old row-half value of 50%.
+    """
     _insert_activity(db_conn, 7)
     _insert_metric_trackpoints(
         db_conn,
@@ -354,7 +360,7 @@ def test_decoupling_does_not_mix_intermittent_power_with_speed(db_conn):
     ).fetchone()
 
     assert cached is not None
-    assert cached[0] == pytest.approx(50.0)
+    assert cached[0] == pytest.approx(33.33)
     assert cached[0] == pytest.approx(cached[1])
 
 

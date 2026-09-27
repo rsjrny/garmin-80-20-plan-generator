@@ -407,7 +407,7 @@ _ACTIVITY_SQL_TEMPLATE = """
             CASE WHEN am.hr_load_metrics_current THEN am.tss END,
             a.training_stress_score
         ) AS tss,
-        am.aerobic_decoupling_pct,
+        {temporal_metric_select_sql},
         CASE WHEN am.lthr_metrics_current THEN COALESCE(am.zone_1_s, 0) ELSE 0 END AS zone_1_s,
         CASE WHEN am.lthr_metrics_current THEN COALESCE(am.zone_2_s, 0) ELSE 0 END AS zone_2_s,
         CASE WHEN am.lthr_metrics_current THEN COALESCE(am.zone_3_s, 0) ELSE 0 END AS zone_3_s,
@@ -448,7 +448,12 @@ _ACTIVITY_SQL_TEMPLATE = """
 
 def _activity_sql(conn: sqlite3.Connection) -> str:
     return _ACTIVITY_SQL_TEMPLATE.format(
-        activity_day=activity_calendar_day_sql(conn, table_alias="a")
+        activity_day=activity_calendar_day_sql(conn, table_alias="a"),
+        temporal_metric_select_sql=(
+            db_queries.current_temporal_metric_projection_sql(
+                "am", ("aerobic_decoupling_pct",)
+            )
+        ),
     )
 
 

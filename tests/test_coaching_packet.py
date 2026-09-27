@@ -52,6 +52,62 @@ def _create_packet_db(tmp_path):
     return db_path, conn
 
 
+@pytest.mark.parametrize(
+    ("stored_version", "expected_decoupling"),
+    [
+        (db_queries.ACTIVITY_METRICS_PROVENANCE_VERSION, 4.2),
+        (db_queries.ACTIVITY_METRICS_PROVENANCE_VERSION - 1, None),
+        (None, None),
+        (db_queries.ACTIVITY_METRICS_PROVENANCE_VERSION + 1, None),
+    ],
+)
+def test_coaching_packet_suppresses_noncurrent_temporal_metrics(
+    tmp_path, stored_version, expected_decoupling
+):
+    db_path, conn = _create_packet_db(tmp_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO activity(
+                activity_id, start_time_gmt, activity_type, distance_meters,
+                elapsed_duration_seconds, average_hr, max_hr, avg_power,
+                norm_power, training_stress_score
+            ) VALUES (40, '2026-08-15T06:00:00Z', 'running', 10000,
+                      3600, 145, 172, 250, 270, 70)
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO activity_metrics(
+                activity_id, aerobic_decoupling_pct,
+                refresh_provenance_version
+            ) VALUES (40, 4.2, ?)
+            """,
+            (stored_version,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    packet = build_coaching_packet(db_path, as_of="2026-08-16", lookback_days=14)
+    actual = packet["context"]["training_history"]["recent_activities"][0][
+        "aerobic_decoupling_pct"
+    ]
+    assert actual == expected_decoupling
+
+    conn = connect_sqlite(db_path)
+    try:
+        persisted = conn.execute(
+            """
+            SELECT refresh_provenance_version, aerobic_decoupling_pct
+            FROM activity_metrics WHERE activity_id=40
+            """
+        ).fetchone()
+        assert tuple(persisted) == (stored_version, 4.2)
+    finally:
+        conn.close()
+
+
 def test_build_packet_is_deterministic_and_privacy_minimized(tmp_path):
     db_path, conn = _create_packet_db(tmp_path)
     try:
@@ -123,8 +179,9 @@ def test_build_packet_is_deterministic_and_privacy_minimized(tmp_path):
                 zone_1_s, zone_2_s, zone_3_s, zone_4_s, zone_5_s,
                 refresh_provenance_version, threshold_lthr_bpm,
                 threshold_ftp_w, threshold_resting_hr_bpm
-            ) VALUES (1, 75, 4.2, 300, 1800, 900, 300, 0, 1, 165, 280, 48)
-            """
+            ) VALUES (1, 75, 4.2, 300, 1800, 900, 300, 0, ?, 165, 280, 48)
+            """,
+            (db_queries.ACTIVITY_METRICS_PROVENANCE_VERSION,),
         )
         settings = {
             "plan_athlete_name": "Private Person",
@@ -298,8 +355,9 @@ def test_coaching_packet_does_not_use_threshold_stale_cached_metrics(tmp_path):
                 refresh_provenance_version, threshold_lthr_bpm,
                 threshold_ftp_w, threshold_resting_hr_bpm
             ) VALUES (10, 80, 4.2, 600, 1200, 900, 600, 300,
-                      1, 160, NULL, 60)
-            """
+                      ?, 160, NULL, 60)
+            """,
+            (db_queries.ACTIVITY_METRICS_PROVENANCE_VERSION,),
         )
         conn.commit()
     finally:
