@@ -75,7 +75,11 @@ CREATE TABLE IF NOT EXISTS activity_metrics (
   training_effect_aerobic   REAL,
   training_effect_anaerobic REAL,
   performance_condition_start REAL,
-  performance_condition_end   REAL
+  performance_condition_end   REAL,
+  refresh_provenance_version  INTEGER,
+  threshold_lthr_bpm          INTEGER,
+  threshold_ftp_w             INTEGER,
+  threshold_resting_hr_bpm    INTEGER
 );
 
 -- =========================

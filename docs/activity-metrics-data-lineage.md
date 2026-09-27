@@ -14,6 +14,12 @@ This note explains **what comes directly from `garmin-givemydata`** versus **wha
 
 > `activity_metrics` is **not** a raw Garmin table. It is an app-owned summary table populated after sync by `refresh_persisted_activity_metrics()`.
 
+The refresh is a current-state cache rebuild. It clears only the columns it
+owns, then repopulates them from the current summary and trackpoint sources in
+one transaction. A missing current source therefore produces `NULL`; it does
+not inherit a value from an older refresh. Numeric zero remains a measured
+value, distinct from missing data.
+
 ---
 
 ## Current refresh path
@@ -102,6 +108,32 @@ These columns exist for future expansion or legacy compatibility, but are still 
 - `gct_balance_avg_pct`
 - `performance_condition_start`
 - `performance_condition_end`
+
+The refresh deliberately does not clear these fields because it does not own
+their population.
+
+### E) Refresh provenance
+
+| `activity_metrics` column | Meaning |
+|---|---|
+| `refresh_provenance_version` | Version of the refresh provenance contract that produced the row |
+| `threshold_lthr_bpm` | Effective LTHR used by the refresh |
+| `threshold_ftp_w` | Effective FTP used by the refresh |
+| `threshold_resting_hr_bpm` | Effective resting HR used by the refresh |
+
+`list_activities_needing_metrics()` compares this provenance with the current
+effective athlete profile. Threshold updates therefore make dependent cached
+metrics stale without relying on incidental `NULL` checks. Any non-`NULL`
+provenance version other than the current version is always stale. Legacy rows
+have nullable provenance; `lthr_est_bpm` is used as a conservative compatibility
+fallback, while legacy FTP/IF and resting-HR-dependent values are invalidated
+when their current inputs cannot match the historical defaults.
+
+Normal chart, compliance, activity-detail, and coaching-packet readers also
+check provenance before exposing threshold-dependent cache fields. Stale HR or
+power zones are shown as zero, stale derived loads are omitted (or fall back to
+the raw Garmin TSS when available), and threshold-independent fields remain
+available until the next refresh rebuilds the cache.
 
 ---
 

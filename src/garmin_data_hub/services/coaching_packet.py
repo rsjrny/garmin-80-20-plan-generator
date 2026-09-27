@@ -402,15 +402,44 @@ _ACTIVITY_SQL = """
         a.max_hr,
         a.avg_power,
         a.norm_power,
-        COALESCE(am.tss, a.training_stress_score) AS tss,
+        COALESCE(
+            CASE WHEN am.hr_load_metrics_current THEN am.tss END,
+            a.training_stress_score
+        ) AS tss,
         am.aerobic_decoupling_pct,
-        COALESCE(am.zone_1_s, 0) AS zone_1_s,
-        COALESCE(am.zone_2_s, 0) AS zone_2_s,
-        COALESCE(am.zone_3_s, 0) AS zone_3_s,
-        COALESCE(am.zone_4_s, 0) AS zone_4_s,
-        COALESCE(am.zone_5_s, 0) AS zone_5_s
+        CASE WHEN am.lthr_metrics_current THEN COALESCE(am.zone_1_s, 0) ELSE 0 END AS zone_1_s,
+        CASE WHEN am.lthr_metrics_current THEN COALESCE(am.zone_2_s, 0) ELSE 0 END AS zone_2_s,
+        CASE WHEN am.lthr_metrics_current THEN COALESCE(am.zone_3_s, 0) ELSE 0 END AS zone_3_s,
+        CASE WHEN am.lthr_metrics_current THEN COALESCE(am.zone_4_s, 0) ELSE 0 END AS zone_4_s,
+        CASE WHEN am.lthr_metrics_current THEN COALESCE(am.zone_5_s, 0) ELSE 0 END AS zone_5_s
     FROM activity a
-    LEFT JOIN activity_metrics am ON am.activity_id = a.activity_id
+    LEFT JOIN (
+        SELECT
+            activity_metrics.*,
+            (
+                (
+                    refresh_provenance_version = ?
+                    AND (? = 0 OR threshold_lthr_bpm IS ?)
+                )
+                OR (
+                    refresh_provenance_version IS NULL
+                    AND (? = 0 OR lthr_est_bpm IS ?)
+                )
+            ) AS lthr_metrics_current,
+            (
+                (
+                    refresh_provenance_version = ?
+                    AND (? = 0 OR threshold_lthr_bpm IS ?)
+                    AND threshold_resting_hr_bpm IS ?
+                )
+                OR (
+                    refresh_provenance_version IS NULL
+                    AND ? = 60
+                    AND (? = 0 OR lthr_est_bpm IS ?)
+                )
+            ) AS hr_load_metrics_current
+        FROM activity_metrics
+    ) am ON am.activity_id = a.activity_id
     WHERE date(a.start_time_gmt) BETWEEN ? AND ?
     ORDER BY date(a.start_time_gmt) DESC, a.activity_id DESC
 """
@@ -460,9 +489,30 @@ def build_coaching_packet(
         settings.update(_sanitize_plan_context(plan_context))
         history_availability = "available"
         try:
+            current_lthr, _, current_resting_hr = (
+                db_queries.get_current_activity_metric_provenance(conn)
+            )
+            lthr_is_managed, _ = (
+                db_queries.get_activity_metric_threshold_management(conn)
+            )
             activity_rows = conn.execute(
                 _ACTIVITY_SQL,
-                (history_start.isoformat(), as_of_date.isoformat()),
+                (
+                    db_queries.ACTIVITY_METRICS_PROVENANCE_VERSION,
+                    int(lthr_is_managed),
+                    current_lthr,
+                    int(lthr_is_managed),
+                    current_lthr,
+                    db_queries.ACTIVITY_METRICS_PROVENANCE_VERSION,
+                    int(lthr_is_managed),
+                    current_lthr,
+                    current_resting_hr,
+                    current_resting_hr,
+                    int(lthr_is_managed),
+                    current_lthr,
+                    history_start.isoformat(),
+                    as_of_date.isoformat(),
+                ),
             ).fetchall()
         except sqlite3.OperationalError as exc:
             # Building a plan before the first Garmin sync is valid. The packet

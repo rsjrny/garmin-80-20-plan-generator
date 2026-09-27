@@ -120,8 +120,10 @@ def test_build_packet_is_deterministic_and_privacy_minimized(tmp_path):
             """
             INSERT INTO activity_metrics(
                 activity_id, tss, aerobic_decoupling_pct,
-                zone_1_s, zone_2_s, zone_3_s, zone_4_s, zone_5_s
-            ) VALUES (1, 75, 4.2, 300, 1800, 900, 300, 0)
+                zone_1_s, zone_2_s, zone_3_s, zone_4_s, zone_5_s,
+                refresh_provenance_version, threshold_lthr_bpm,
+                threshold_ftp_w, threshold_resting_hr_bpm
+            ) VALUES (1, 75, 4.2, 300, 1800, 900, 300, 0, 1, 165, 280, 48)
             """
         )
         settings = {
@@ -272,6 +274,59 @@ def test_build_packet_is_deterministic_and_privacy_minimized(tmp_path):
         "C:/Users/private",
     ):
         assert private_value not in rendered
+
+
+def test_coaching_packet_does_not_use_threshold_stale_cached_metrics(tmp_path):
+    db_path, conn = _create_packet_db(tmp_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO activity(
+                activity_id, start_time_gmt, activity_type, distance_meters,
+                elapsed_duration_seconds, average_hr, max_hr,
+                training_stress_score
+            ) VALUES (10, '2026-08-15T06:00:00Z', 'running', 10000,
+                      3600, 145, 180, 25)
+            """
+        )
+        db_queries.set_calculated_metrics(conn, hrmax=190, lthr=160)
+        conn.execute(
+            """
+            INSERT INTO activity_metrics(
+                activity_id, tss, aerobic_decoupling_pct,
+                zone_1_s, zone_2_s, zone_3_s, zone_4_s, zone_5_s,
+                refresh_provenance_version, threshold_lthr_bpm,
+                threshold_ftp_w, threshold_resting_hr_bpm
+            ) VALUES (10, 80, 4.2, 600, 1200, 900, 600, 300,
+                      1, 160, NULL, 60)
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    current = build_coaching_packet(db_path, as_of="2026-08-16", lookback_days=14)
+    assert current["context"]["training_history"]["summary"][
+        "training_stress_score"
+    ] == 80
+
+    conn = connect_sqlite(db_path)
+    try:
+        db_queries.set_calculated_metrics(conn, hrmax=190, lthr=170)
+    finally:
+        conn.close()
+
+    stale = build_coaching_packet(db_path, as_of="2026-08-16", lookback_days=14)
+    history = stale["context"]["training_history"]
+    assert history["summary"]["training_stress_score"] == 25
+    assert history["summary"]["heart_rate_zone_minutes"] == {
+        "zone_1": 0.0,
+        "zone_2": 0.0,
+        "zone_3": 0.0,
+        "zone_4": 0.0,
+        "zone_5": 0.0,
+    }
+    assert history["recent_activities"][0]["aerobic_decoupling_pct"] == 4.2
 
 
 def test_packet_contains_copyable_prompt_and_explicit_output_schema(tmp_path):

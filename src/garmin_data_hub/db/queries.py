@@ -12,6 +12,56 @@ GET_SETTING_SQL = "SELECT value FROM app_settings WHERE key = ?"
 UPSERT_SETTING_SQL = "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)"
 ACTIVITY_METRICS_LAST_REFRESH_KEY = "activity_metrics_last_refresh_utc"
 ACTIVITY_METRICS_LAST_REFRESH_SUMMARY_KEY = "activity_metrics_last_refresh_summary"
+ACTIVITY_METRICS_PROVENANCE_VERSION = 1
+
+# Columns rebuilt by refresh_persisted_activity_metrics(). Schema-only/legacy
+# columns are intentionally absent so a refresh cannot erase data it does not own.
+REFRESH_OWNED_ACTIVITY_METRIC_COLUMNS = (
+    "moving_time_s",
+    "stopped_time_s",
+    "avg_moving_speed_mps",
+    "hr_max_est_bpm",
+    "lthr_est_bpm",
+    "trimp",
+    "aerobic_decoupling_pct",
+    "hr_drift_pct",
+    "avg_hr_to_max_pct",
+    "zone_1_s",
+    "zone_2_s",
+    "zone_3_s",
+    "zone_4_s",
+    "zone_5_s",
+    "np_w",
+    "if_val",
+    "tss",
+    "variability_index",
+    "avg_power_w",
+    "max_power_w",
+    "peak_power_5s_w",
+    "peak_power_30s_w",
+    "peak_power_60s_w",
+    "peak_power_300s_w",
+    "peak_power_1200s_w",
+    "power_zone_1_s",
+    "power_zone_2_s",
+    "power_zone_3_s",
+    "power_zone_4_s",
+    "power_zone_5_s",
+    "power_zone_6_s",
+    "power_zone_7_s",
+    "efficiency_factor",
+    "pace_decoupling_pct",
+    "avg_cadence_spm",
+    "avg_temperature_c",
+    "min_temperature_c",
+    "max_temperature_c",
+    "total_ascent_m",
+    "total_descent_m",
+    "max_altitude_m",
+    "min_altitude_m",
+    "training_effect_aerobic",
+    "training_effect_anaerobic",
+)
 
 
 def get_setting(conn, key: str, default: Any):
@@ -91,14 +141,30 @@ def get_athlete_profile(conn):
         return None
 
 
+def _positive_profile_metric(
+    profile: dict[str, Any], override_key: str, calculated_key: str
+) -> int | None:
+    """Return the first positive override/calculated profile value."""
+    for key in (override_key, calculated_key):
+        value = profile.get(key)
+        if value is None:
+            continue
+        try:
+            normalized = int(value)
+        except (TypeError, ValueError):
+            continue
+        if normalized > 0:
+            return normalized
+    return None
+
+
 def get_effective_lthr(conn, *, commit: bool = True) -> int | None:
     """Return LTHR override/calculated value, with robust fallback from activities."""
     try:
-        profile = get_athlete_profile(conn)
-        if profile:
-            lthr = profile.get("lthr_override") or profile.get("lthr_calc")
-            if lthr and int(lthr) > 0:
-                return int(lthr)
+        profile = get_athlete_profile(conn) or {}
+        lthr = _positive_profile_metric(profile, "lthr_override", "lthr_calc")
+        if lthr is not None:
+            return lthr
     except Exception:
         pass
 
@@ -187,11 +253,10 @@ def _estimate_ftp_from_recent_power(conn, days_back: int = 180) -> int | None:
 def get_effective_ftp(conn, *, commit: bool = True) -> int | None:
     """Return FTP override/calculated value, with fallback estimation from power data."""
     try:
-        profile = get_athlete_profile(conn)
-        if profile:
-            ftp = profile.get("ftp_override") or profile.get("ftp_calc")
-            if ftp and int(ftp) > 0:
-                return int(ftp)
+        profile = get_athlete_profile(conn) or {}
+        ftp = _positive_profile_metric(profile, "ftp_override", "ftp_calc")
+        if ftp is not None:
+            return ftp
     except Exception:
         pass
 
@@ -207,6 +272,39 @@ def get_effective_ftp(conn, *, commit: bool = True) -> int | None:
         pass
 
     return None
+
+
+def get_current_activity_metric_provenance(
+    conn,
+) -> tuple[int | None, int | None, int]:
+    """Return the canonical threshold inputs expected on current metric rows."""
+    profile = get_athlete_profile(conn) or {}
+    return (
+        _positive_profile_metric(profile, "lthr_override", "lthr_calc"),
+        _positive_profile_metric(profile, "ftp_override", "ftp_calc"),
+        int(profile.get("resting_hr") or 60),
+    )
+
+
+def get_activity_metric_threshold_management(conn) -> tuple[bool, bool]:
+    """Return whether LTHR and FTP are explicitly managed by the profile."""
+    profile = get_athlete_profile(conn) or {}
+    profile_was_updated = bool(
+        profile.get("calc_updated_utc") is not None
+        or profile.get("override_updated_utc") is not None
+    )
+    return (
+        bool(
+            profile.get("lthr_override") is not None
+            or profile.get("lthr_calc") is not None
+            or profile_was_updated
+        ),
+        bool(
+            profile.get("ftp_override") is not None
+            or profile.get("ftp_calc") is not None
+            or profile_was_updated
+        ),
+    )
 
 
 def _utc_now_iso() -> str:
@@ -311,10 +409,10 @@ def _refresh_scalar_activity_metrics(
             )
 
         if_val = intensity_factor
-        if (if_val is None or float(if_val) <= 0) and ftp and norm_power:
+        if if_val is None and ftp and norm_power is not None:
             if_val = round(float(norm_power) / float(ftp), 2)
         elif (
-            (if_val is None or float(if_val) <= 0)
+            if_val is None
             and lthr
             and average_hr
             and lthr > resting_hr
@@ -324,7 +422,7 @@ def _refresh_scalar_activity_metrics(
 
         tss = training_stress_score
         if (
-            (tss is None or float(tss) <= 0)
+            tss is None
             and lthr
             and average_hr
             and moving_time_s
@@ -351,13 +449,13 @@ def _refresh_scalar_activity_metrics(
             trimp = round(trimp_val, 1) if trimp_val > 0 else None
 
         variability_index = None
-        if norm_power and avg_power and float(avg_power) > 0:
+        if norm_power is not None and avg_power is not None and float(avg_power) > 0:
             variability_index = round(float(norm_power) / float(avg_power), 3)
 
         efficiency_factor = None
-        if norm_power and average_hr and float(average_hr) > 0:
+        if norm_power is not None and average_hr and float(average_hr) > 0:
             efficiency_factor = round(float(norm_power) / float(average_hr), 3)
-        elif average_speed and average_hr and float(average_hr) > 0:
+        elif average_speed is not None and average_hr and float(average_hr) > 0:
             efficiency_factor = round(float(average_speed) / float(average_hr), 4)
 
         avg_temperature_c = None
@@ -447,9 +545,9 @@ def _refresh_trackpoint_derived_metrics(
         f"""
         SELECT
             activity_id,
-            AVG(CASE WHEN cadence IS NOT NULL AND cadence > 0 THEN cadence END) AS avg_cadence_spm,
-            AVG(CASE WHEN power_w IS NOT NULL AND power_w > 0 THEN power_w END) AS avg_power_w,
-            MAX(CASE WHEN power_w IS NOT NULL AND power_w > 0 THEN power_w END) AS max_power_w,
+            AVG(CASE WHEN cadence IS NOT NULL AND cadence >= 0 THEN cadence END) AS avg_cadence_spm,
+            AVG(CASE WHEN power_w IS NOT NULL AND power_w >= 0 THEN power_w END) AS avg_power_w,
+            MAX(CASE WHEN power_w IS NOT NULL AND power_w >= 0 THEN power_w END) AS max_power_w,
             AVG(temperature_c) AS avg_temperature_c,
             MIN(temperature_c) AS min_temperature_c,
             MAX(temperature_c) AS max_temperature_c,
@@ -593,7 +691,7 @@ def _refresh_trackpoint_derived_metrics(
             FROM activity_trackpoints
             WHERE activity_id IN ({placeholders})
               AND power_w IS NOT NULL
-              AND power_w > 0
+              AND power_w >= 0
         ),
         rolling AS (
             SELECT
@@ -665,7 +763,7 @@ def _refresh_trackpoint_derived_metrics(
                  AND tp_next.seq = tp.seq + 1
                 WHERE tp.activity_id IN ({placeholders})
                   AND tp.power_w IS NOT NULL
-                  AND tp.power_w > 0
+                  AND tp.power_w >= 0
             ) x
             WHERE x.dt_s > 0
               AND x.dt_s <= 30
@@ -719,6 +817,7 @@ def _refresh_trackpoint_derived_metrics(
 
 def ensure_athlete_profile_table(conn, *, commit: bool = True) -> None:
     """Create `athlete_profile` if it does not exist and ensure a row exists."""
+    caller_owns_transaction = bool(conn.in_transaction)
     try:
         conn.execute(
             """
@@ -747,10 +846,12 @@ def ensure_athlete_profile_table(conn, *, commit: bool = True) -> None:
                     f"ALTER TABLE athlete_profile ADD COLUMN {column_name} {column_sql}"
                 )
         conn.execute("INSERT OR IGNORE INTO athlete_profile(profile_id) VALUES (1)")
-        if commit:
+        if commit and not caller_owns_transaction:
             conn.commit()
     except Exception:
-        if not commit:
+        if not caller_owns_transaction and conn.in_transaction:
+            conn.rollback()
+        if caller_owns_transaction or not commit:
             raise
         return
 
@@ -843,11 +944,15 @@ def get_athlete_metrics(conn) -> dict:
             "lthr_override": lthr_override,
             "ftp_override": ftp_override,
             "resting_hr": profile.get("resting_hr"),
-            "hrmax_effective": (
-                hrmax_override if hrmax_override is not None else hrmax_calc
+            "hrmax_effective": _positive_profile_metric(
+                profile, "hrmax_override", "hrmax_calc"
             ),
-            "lthr_effective": lthr_override if lthr_override is not None else lthr_calc,
-            "ftp_effective": ftp_override if ftp_override is not None else ftp_calc,
+            "lthr_effective": _positive_profile_metric(
+                profile, "lthr_override", "lthr_calc"
+            ),
+            "ftp_effective": _positive_profile_metric(
+                profile, "ftp_override", "ftp_calc"
+            ),
             "calc_updated_at": profile.get("calc_updated_utc"),
             "override_updated_at": profile.get("override_updated_utc"),
         }
@@ -868,76 +973,86 @@ def get_athlete_metrics(conn) -> dict:
         }
 
 
+def _update_athlete_profile_thresholds(
+    conn,
+    sql: str,
+    params: tuple[Any, ...],
+    *,
+    commit: bool,
+) -> None:
+    """Run one profile mutation without committing or rolling back caller work."""
+    caller_owns_transaction = bool(conn.in_transaction)
+    savepoint_name = f"athlete_threshold_update_{id(params):x}"
+    savepoint_active = False
+    try:
+        if caller_owns_transaction:
+            conn.execute(f"SAVEPOINT {savepoint_name}")
+            savepoint_active = True
+        ensure_athlete_profile_table(conn, commit=False)
+        conn.execute(sql, params)
+        if savepoint_active:
+            conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+            savepoint_active = False
+        elif commit:
+            conn.commit()
+    except Exception:
+        try:
+            if savepoint_active:
+                conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+                conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+            elif conn.in_transaction:
+                conn.rollback()
+        except Exception:
+            logger.exception("Failed to roll back athlete threshold update")
+        if caller_owns_transaction or not commit:
+            raise
+        logger.warning("Failed to update athlete thresholds", exc_info=True)
+
+
 def set_calculated_metrics(
     conn, hrmax: int | None, lthr: int | None, *, commit: bool = True
 ) -> None:
-    try:
-        conn.execute(
-            "UPDATE athlete_profile SET hrmax_calc=?, lthr_calc=?, calc_updated_utc=? WHERE profile_id=1",
-            (hrmax, lthr, _utc_now_iso()),
-        )
-        if commit:
-            conn.commit()
-    except Exception:
-        if not commit:
-            raise
-        return
+    _update_athlete_profile_thresholds(
+        conn,
+        "UPDATE athlete_profile SET hrmax_calc=?, lthr_calc=?, calc_updated_utc=? WHERE profile_id=1",
+        (hrmax, lthr, _utc_now_iso()),
+        commit=commit,
+    )
 
 
 def set_calculated_ftp(conn, ftp: int | None, *, commit: bool = True) -> None:
     """Persist a calculated FTP estimate when the newer athlete-profile columns exist."""
-    try:
-        ensure_athlete_profile_table(conn, commit=commit)
-        conn.execute(
-            "UPDATE athlete_profile SET ftp_calc=?, calc_updated_utc=? WHERE profile_id=1",
-            (ftp, _utc_now_iso()),
-        )
-        if commit:
-            conn.commit()
-    except Exception:
-        if not commit:
-            raise
-        return
+    _update_athlete_profile_thresholds(
+        conn,
+        "UPDATE athlete_profile SET ftp_calc=?, calc_updated_utc=? WHERE profile_id=1",
+        (ftp, _utc_now_iso()),
+        commit=commit,
+    )
 
 
 def set_override_metrics(
-    conn, hrmax: int | None, lthr: int | None, ftp: int | None = None
+    conn,
+    hrmax: int | None,
+    lthr: int | None,
+    ftp: int | None = None,
+    *,
+    commit: bool = True,
 ) -> None:
-    try:
-        ensure_athlete_profile_table(conn)
-        columns = _get_table_columns(conn, "athlete_profile")
-        if "ftp_override" in columns:
-            conn.execute(
-                "UPDATE athlete_profile SET hrmax_override=?, lthr_override=?, ftp_override=?, override_updated_utc=? WHERE profile_id=1",
-                (hrmax, lthr, ftp, _utc_now_iso()),
-            )
-        else:
-            conn.execute(
-                "UPDATE athlete_profile SET hrmax_override=?, lthr_override=?, override_updated_utc=? WHERE profile_id=1",
-                (hrmax, lthr, _utc_now_iso()),
-            )
-        conn.commit()
-    except Exception:
-        return
+    _update_athlete_profile_thresholds(
+        conn,
+        "UPDATE athlete_profile SET hrmax_override=?, lthr_override=?, ftp_override=?, override_updated_utc=? WHERE profile_id=1",
+        (hrmax, lthr, ftp, _utc_now_iso()),
+        commit=commit,
+    )
 
 
-def clear_override_metrics(conn) -> None:
-    try:
-        ensure_athlete_profile_table(conn)
-        columns = _get_table_columns(conn, "athlete_profile")
-        if "ftp_override" in columns:
-            conn.execute(
-                "UPDATE athlete_profile SET hrmax_override=NULL, lthr_override=NULL, ftp_override=NULL, override_updated_utc=? WHERE profile_id=1",
-                (_utc_now_iso(),),
-            )
-        else:
-            conn.execute(
-                "UPDATE athlete_profile SET hrmax_override=NULL, lthr_override=NULL, override_updated_utc=? WHERE profile_id=1",
-                (_utc_now_iso(),),
-            )
-        conn.commit()
-    except Exception:
-        return
+def clear_override_metrics(conn, *, commit: bool = True) -> None:
+    _update_athlete_profile_thresholds(
+        conn,
+        "UPDATE athlete_profile SET hrmax_override=NULL, lthr_override=NULL, ftp_override=NULL, override_updated_utc=? WHERE profile_id=1",
+        (_utc_now_iso(),),
+        commit=commit,
+    )
 
 
 def delete_planned_workouts_in_range(conn, min_date: str, max_date: str) -> None:
@@ -1244,13 +1359,15 @@ def get_activities_dataframe(
     fallback to persisted `activity_metrics` values.
     """
     try:
+        current_lthr, current_ftp, current_resting_hr = (
+            get_current_activity_metric_provenance(conn)
+        )
+        lthr_is_managed, ftp_is_managed = (
+            get_activity_metric_threshold_management(conn)
+        )
         effective_lthr = lthr
         if use_temp_zone_metrics and effective_lthr is None:
-            profile = get_athlete_profile(conn)
-            if profile:
-                effective_lthr = profile.get("lthr_override") or profile.get(
-                    "lthr_calc"
-                )
+            effective_lthr = current_lthr
 
         if use_temp_zone_metrics:
             refresh_temp_activity_zone_metrics(
@@ -1262,20 +1379,20 @@ def get_activities_dataframe(
 
         if use_temp_zone_metrics:
             zone_select_sql = """
-                COALESCE(tzm.zone_1_s, am.zone_1_s, 0) AS zone_1_s,
-                COALESCE(tzm.zone_2_s, am.zone_2_s, 0) AS zone_2_s,
-                COALESCE(tzm.zone_3_s, am.zone_3_s, 0) AS zone_3_s,
-                COALESCE(tzm.zone_4_s, am.zone_4_s, 0) AS zone_4_s,
-                COALESCE(tzm.zone_5_s, am.zone_5_s, 0) AS zone_5_s
+                COALESCE(tzm.zone_1_s, CASE WHEN am.lthr_metrics_current THEN am.zone_1_s END, 0) AS zone_1_s,
+                COALESCE(tzm.zone_2_s, CASE WHEN am.lthr_metrics_current THEN am.zone_2_s END, 0) AS zone_2_s,
+                COALESCE(tzm.zone_3_s, CASE WHEN am.lthr_metrics_current THEN am.zone_3_s END, 0) AS zone_3_s,
+                COALESCE(tzm.zone_4_s, CASE WHEN am.lthr_metrics_current THEN am.zone_4_s END, 0) AS zone_4_s,
+                COALESCE(tzm.zone_5_s, CASE WHEN am.lthr_metrics_current THEN am.zone_5_s END, 0) AS zone_5_s
             """
             temp_join_sql = "LEFT JOIN temp_activity_zone_metrics tzm ON tzm.activity_id = a.activity_id"
         else:
             zone_select_sql = """
-                COALESCE(am.zone_1_s, 0) AS zone_1_s,
-                COALESCE(am.zone_2_s, 0) AS zone_2_s,
-                COALESCE(am.zone_3_s, 0) AS zone_3_s,
-                COALESCE(am.zone_4_s, 0) AS zone_4_s,
-                COALESCE(am.zone_5_s, 0) AS zone_5_s
+                CASE WHEN am.lthr_metrics_current THEN COALESCE(am.zone_1_s, 0) ELSE 0 END AS zone_1_s,
+                CASE WHEN am.lthr_metrics_current THEN COALESCE(am.zone_2_s, 0) ELSE 0 END AS zone_2_s,
+                CASE WHEN am.lthr_metrics_current THEN COALESCE(am.zone_3_s, 0) ELSE 0 END AS zone_3_s,
+                CASE WHEN am.lthr_metrics_current THEN COALESCE(am.zone_4_s, 0) ELSE 0 END AS zone_4_s,
+                CASE WHEN am.lthr_metrics_current THEN COALESCE(am.zone_5_s, 0) ELSE 0 END AS zone_5_s
             """
             temp_join_sql = ""
 
@@ -1295,8 +1412,11 @@ def get_activities_dataframe(
                 a.intensity_factor,
                 a.training_stress_score,
                 am.moving_time_s,
-                am.trimp,
-                COALESCE(am.tss, a.training_stress_score) AS tss,
+                CASE WHEN am.hr_load_metrics_current THEN am.trimp END AS trimp,
+                COALESCE(
+                    CASE WHEN am.hr_load_metrics_current THEN am.tss END,
+                    a.training_stress_score
+                ) AS tss,
                 am.aerobic_decoupling_pct,
                 am.hr_drift_pct,
                 am.efficiency_factor,
@@ -1306,21 +1426,75 @@ def get_activities_dataframe(
                 am.peak_power_60s_w,
                 am.peak_power_300s_w,
                 am.peak_power_1200s_w,
-                COALESCE(am.power_zone_1_s, 0) AS power_zone_1_s,
-                COALESCE(am.power_zone_2_s, 0) AS power_zone_2_s,
-                COALESCE(am.power_zone_3_s, 0) AS power_zone_3_s,
-                COALESCE(am.power_zone_4_s, 0) AS power_zone_4_s,
-                COALESCE(am.power_zone_5_s, 0) AS power_zone_5_s,
-                COALESCE(am.power_zone_6_s, 0) AS power_zone_6_s,
-                COALESCE(am.power_zone_7_s, 0) AS power_zone_7_s,
+                CASE WHEN am.ftp_metrics_current THEN COALESCE(am.power_zone_1_s, 0) ELSE 0 END AS power_zone_1_s,
+                CASE WHEN am.ftp_metrics_current THEN COALESCE(am.power_zone_2_s, 0) ELSE 0 END AS power_zone_2_s,
+                CASE WHEN am.ftp_metrics_current THEN COALESCE(am.power_zone_3_s, 0) ELSE 0 END AS power_zone_3_s,
+                CASE WHEN am.ftp_metrics_current THEN COALESCE(am.power_zone_4_s, 0) ELSE 0 END AS power_zone_4_s,
+                CASE WHEN am.ftp_metrics_current THEN COALESCE(am.power_zone_5_s, 0) ELSE 0 END AS power_zone_5_s,
+                CASE WHEN am.ftp_metrics_current THEN COALESCE(am.power_zone_6_s, 0) ELSE 0 END AS power_zone_6_s,
+                CASE WHEN am.ftp_metrics_current THEN COALESCE(am.power_zone_7_s, 0) ELSE 0 END AS power_zone_7_s,
                 {zone_select_sql}
             FROM activity a
-            LEFT JOIN activity_metrics am ON am.activity_id = a.activity_id
+            LEFT JOIN (
+                SELECT
+                    activity_metrics.*,
+                    (
+                        (
+                            refresh_provenance_version = ?
+                            AND (? = 0 OR threshold_lthr_bpm IS ?)
+                        )
+                        OR (
+                            refresh_provenance_version IS NULL
+                            AND (? = 0 OR lthr_est_bpm IS ?)
+                        )
+                    ) AS lthr_metrics_current,
+                    (
+                        (
+                            refresh_provenance_version = ?
+                            AND (? = 0 OR threshold_lthr_bpm IS ?)
+                            AND threshold_resting_hr_bpm IS ?
+                        )
+                        OR (
+                            refresh_provenance_version IS NULL
+                            AND ? = 60
+                            AND (? = 0 OR lthr_est_bpm IS ?)
+                        )
+                    ) AS hr_load_metrics_current,
+                    (
+                        (
+                            refresh_provenance_version = ?
+                            AND (? = 0 OR threshold_ftp_w IS ?)
+                        )
+                        OR (
+                            refresh_provenance_version IS NULL
+                            AND ? = 0
+                        )
+                    ) AS ftp_metrics_current
+                FROM activity_metrics
+            ) am ON am.activity_id = a.activity_id
             {temp_join_sql}
             WHERE a.start_time_gmt >= ?
         """
 
-        params = [start_ts_iso]
+        params = [
+            ACTIVITY_METRICS_PROVENANCE_VERSION,
+            int(lthr_is_managed),
+            current_lthr,
+            int(lthr_is_managed),
+            current_lthr,
+            ACTIVITY_METRICS_PROVENANCE_VERSION,
+            int(lthr_is_managed),
+            current_lthr,
+            current_resting_hr,
+            current_resting_hr,
+            int(lthr_is_managed),
+            current_lthr,
+            ACTIVITY_METRICS_PROVENANCE_VERSION,
+            int(ftp_is_managed),
+            current_ftp,
+            int(ftp_is_managed),
+            start_ts_iso,
+        ]
         if sports_list:
             placeholders = ",".join("?" for _ in sports_list)
             query += f" AND a.activity_type IN ({placeholders})"
@@ -1588,17 +1762,29 @@ def refresh_persisted_activity_metrics(
             if lthr and int(lthr) > 0
             else get_effective_lthr(conn, commit=False)
         )
-        effective_ftp = (
-            int(profile.get("ftp_override") or profile.get("ftp_calc"))
-            if (profile.get("ftp_override") or profile.get("ftp_calc"))
-            else get_effective_ftp(conn, commit=False)
-        )
+        effective_ftp = _positive_profile_metric(
+            profile, "ftp_override", "ftp_calc"
+        ) or get_effective_ftp(conn, commit=False)
         resting_hr = int(profile.get("resting_hr") or 60)
 
         # Ensure target rows exist.
         conn.executemany(
             "INSERT OR IGNORE INTO activity_metrics(activity_id) VALUES (?)",
             [(aid,) for aid in candidate_ids],
+        )
+
+        # A refresh is a current-state rebuild for the fields it owns. Clearing
+        # them first prevents an unavailable source from inheriting an obsolete
+        # value; the enclosing transaction/savepoint restores everything on error.
+        placeholders = ",".join("?" for _ in candidate_ids)
+        clear_assignments = ", ".join(
+            f"{column_name} = NULL"
+            for column_name in REFRESH_OWNED_ACTIVITY_METRIC_COLUMNS
+        )
+        conn.execute(
+            f"UPDATE activity_metrics SET {clear_assignments} "
+            f"WHERE activity_id IN ({placeholders})",
+            tuple(candidate_ids),
         )
 
         _refresh_scalar_activity_metrics(
@@ -1614,7 +1800,6 @@ def refresh_persisted_activity_metrics(
             int(effective_ftp) if effective_ftp else None,
         )
 
-        placeholders = ",".join("?" for _ in candidate_ids)
         if effective_lthr:
             z1_upper = float(effective_lthr) * 0.50
             z2_upper = float(effective_lthr) * 0.70
@@ -1674,7 +1859,7 @@ def refresh_persisted_activity_metrics(
 
             update_rows = []
             for aid in candidate_ids:
-                z = zone_by_activity.get(aid, (0.0, 0.0, 0.0, 0.0, 0.0))
+                z = zone_by_activity.get(aid, (None, None, None, None, None))
                 update_rows.append((*z, effective_lthr, aid))
 
             conn.executemany(
@@ -1691,6 +1876,24 @@ def refresh_persisted_activity_metrics(
                 update_rows,
             )
             summary["zones_updated"] = len(update_rows)
+
+        conn.execute(
+            f"""
+            UPDATE activity_metrics
+            SET refresh_provenance_version = ?,
+                threshold_lthr_bpm = ?,
+                threshold_ftp_w = ?,
+                threshold_resting_hr_bpm = ?
+            WHERE activity_id IN ({placeholders})
+            """,
+            (
+                ACTIVITY_METRICS_PROVENANCE_VERSION,
+                effective_lthr,
+                effective_ftp,
+                resting_hr,
+                *candidate_ids,
+            ),
+        )
 
         summary["rows_upserted"] = len(candidate_ids)
         conn.execute(
@@ -1781,12 +1984,98 @@ def list_activities_needing_metrics(conn) -> list[int]:
     unavailable.
     """
     try:
+        current_lthr, current_ftp, current_resting_hr = (
+            get_current_activity_metric_provenance(conn)
+        )
+        lthr_is_managed, ftp_is_managed = (
+            get_activity_metric_threshold_management(conn)
+        )
+
+        activity_columns = _get_table_columns(conn, "activity")
+        legacy_power_source_checks = [
+            """EXISTS (
+                    SELECT 1
+                    FROM activity_trackpoints power_tp
+                    WHERE power_tp.activity_id = a.activity_id
+                      AND power_tp.power_w IS NOT NULL
+                )"""
+        ]
+        for source_column in ("norm_power", "avg_power", "max_power"):
+            if source_column in activity_columns:
+                legacy_power_source_checks.append(
+                    f"a.{source_column} IS NOT NULL"
+                )
+        legacy_power_source_sql = " OR ".join(legacy_power_source_checks)
         rows = conn.execute(
-            """
+            f"""
             SELECT a.activity_id
             FROM activity a
             LEFT JOIN activity_metrics am ON a.activity_id = am.activity_id
             WHERE am.activity_id IS NULL
+               OR (
+                    am.refresh_provenance_version IS NOT NULL
+                    AND am.refresh_provenance_version <> ?
+               )
+               OR (
+                    am.refresh_provenance_version = ?
+                    AND (
+                        (? = 1 AND am.threshold_lthr_bpm IS NOT ?)
+                        OR (? = 1 AND am.threshold_ftp_w IS NOT ?)
+                        OR am.threshold_resting_hr_bpm IS NOT ?
+                    )
+               )
+               OR (
+                    ? = 1
+                    AND am.refresh_provenance_version IS NULL
+                    AND (
+                        am.lthr_est_bpm IS NOT ?
+                        OR (
+                            ? IS NULL
+                            AND (
+                                am.zone_1_s IS NOT NULL
+                                OR am.zone_2_s IS NOT NULL
+                                OR am.zone_3_s IS NOT NULL
+                                OR am.zone_4_s IS NOT NULL
+                                OR am.zone_5_s IS NOT NULL
+                            )
+                        )
+                    )
+               )
+               OR (
+                    ? = 1
+                    AND am.refresh_provenance_version IS NULL
+                    AND (
+                        (
+                            ? IS NOT NULL
+                            AND ({legacy_power_source_sql})
+                        )
+                        OR (
+                            ? IS NULL
+                            AND (
+                                am.power_zone_1_s IS NOT NULL
+                                OR am.power_zone_2_s IS NOT NULL
+                                OR am.power_zone_3_s IS NOT NULL
+                                OR am.power_zone_4_s IS NOT NULL
+                                OR am.power_zone_5_s IS NOT NULL
+                                OR am.power_zone_6_s IS NOT NULL
+                                OR am.power_zone_7_s IS NOT NULL
+                                OR (
+                                    am.if_val IS NOT NULL
+                                    AND ({legacy_power_source_sql})
+                                )
+                            )
+                        )
+                    )
+               )
+               OR (
+                    am.refresh_provenance_version IS NULL
+                    AND ? <> 60
+                    AND (
+                        am.trimp IS NOT NULL
+                        OR am.if_val IS NOT NULL
+                        OR am.tss IS NOT NULL
+                    )
+               )
                OR (
                     EXISTS (
                         SELECT 1
@@ -1812,7 +2101,23 @@ def list_activities_needing_metrics(conn) -> list[int]:
                         )
                     )
                )
-            """
+            """,
+            (
+                ACTIVITY_METRICS_PROVENANCE_VERSION,
+                ACTIVITY_METRICS_PROVENANCE_VERSION,
+                int(lthr_is_managed),
+                current_lthr,
+                int(ftp_is_managed),
+                current_ftp,
+                current_resting_hr,
+                int(lthr_is_managed),
+                current_lthr,
+                current_lthr,
+                int(ftp_is_managed),
+                current_ftp,
+                current_ftp,
+                current_resting_hr,
+            ),
         ).fetchall()
         return [r[0] for r in rows]
     except Exception:
@@ -1833,9 +2138,60 @@ def list_all_activity_ids(conn) -> list[int]:
 def get_activity_metrics(conn, activity_id: int):
     """Return the `activity_metrics` row for `activity_id` or None."""
     try:
+        current_lthr, _, current_resting_hr = (
+            get_current_activity_metric_provenance(conn)
+        )
+        lthr_is_managed, _ = get_activity_metric_threshold_management(conn)
         row = conn.execute(
-            "SELECT zone_1_s, trimp, tss FROM activity_metrics WHERE activity_id = ?",
-            (activity_id,),
+            """
+            SELECT
+                CASE WHEN lthr_metrics_current THEN zone_1_s END AS zone_1_s,
+                CASE WHEN hr_load_metrics_current THEN trimp END AS trimp,
+                CASE WHEN hr_load_metrics_current THEN tss END AS tss
+            FROM (
+                SELECT
+                    activity_metrics.*,
+                    (
+                        (
+                            refresh_provenance_version = ?
+                            AND (? = 0 OR threshold_lthr_bpm IS ?)
+                        )
+                        OR (
+                            refresh_provenance_version IS NULL
+                            AND (? = 0 OR lthr_est_bpm IS ?)
+                        )
+                    ) AS lthr_metrics_current,
+                    (
+                        (
+                            refresh_provenance_version = ?
+                            AND (? = 0 OR threshold_lthr_bpm IS ?)
+                            AND threshold_resting_hr_bpm IS ?
+                        )
+                        OR (
+                            refresh_provenance_version IS NULL
+                            AND ? = 60
+                            AND (? = 0 OR lthr_est_bpm IS ?)
+                        )
+                    ) AS hr_load_metrics_current
+                FROM activity_metrics
+            )
+            WHERE activity_id = ?
+            """,
+            (
+                ACTIVITY_METRICS_PROVENANCE_VERSION,
+                int(lthr_is_managed),
+                current_lthr,
+                int(lthr_is_managed),
+                current_lthr,
+                ACTIVITY_METRICS_PROVENANCE_VERSION,
+                int(lthr_is_managed),
+                current_lthr,
+                current_resting_hr,
+                current_resting_hr,
+                int(lthr_is_managed),
+                current_lthr,
+                activity_id,
+            ),
         ).fetchone()
         return row
     except Exception:

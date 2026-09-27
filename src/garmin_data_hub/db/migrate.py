@@ -5,7 +5,7 @@ import sqlite3
 
 logger = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION = 5
+CURRENT_SCHEMA_VERSION = 6
 
 
 def _ensure_schema_migrations_table(conn: sqlite3.Connection) -> None:
@@ -174,6 +174,28 @@ def _migration_5_add_plan_import_history(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_6_add_metric_refresh_provenance(conn: sqlite3.Connection) -> None:
+    """Add nullable provenance without claiming legacy metric rows are current."""
+    columns = {
+        "refresh_provenance_version": "INTEGER",
+        "threshold_lthr_bpm": "INTEGER",
+        "threshold_ftp_w": "INTEGER",
+        "threshold_resting_hr_bpm": "INTEGER",
+    }
+    savepoint_name = "migration_6_metric_refresh_provenance"
+    conn.execute(f"SAVEPOINT {savepoint_name}")
+    try:
+        for column_name, column_sql in columns.items():
+            _add_column_if_missing(conn, "activity_metrics", column_name, column_sql)
+    except Exception:
+        try:
+            conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+        finally:
+            conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+        raise
+    conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+
+
 def _fix_trackpoint_cascade(conn: sqlite3.Connection) -> None:
     """Remove ON DELETE CASCADE from activity_trackpoints if present.
 
@@ -326,9 +348,15 @@ def apply_schema(conn: sqlite3.Connection, schema_path: Path | None = None) -> N
             "add manual plan import history",
             lambda: _migration_5_add_plan_import_history(conn),
         ),
+        (
+            6,
+            "add activity metric refresh provenance",
+            lambda: _migration_6_add_metric_refresh_provenance(conn),
+        ),
     ]
 
     current_version = _get_current_schema_version(conn)
+    recorded_version = current_version
     for version, name, migration in migrations:
         if current_version >= version:
             continue
@@ -336,6 +364,12 @@ def apply_schema(conn: sqlite3.Connection, schema_path: Path | None = None) -> N
         _record_migration(conn, version, name)
         current_version = version
         logger.info("Applied schema migration v%s: %s", version, name)
+
+    # A copied or manually altered database can claim v6 while missing one of
+    # its nullable columns. Repair that state idempotently instead of trusting
+    # the version record alone.
+    if recorded_version >= 6:
+        _migration_6_add_metric_refresh_provenance(conn)
 
     # Keep baseline DDL idempotent so new installs and reruns remain safe.
     conn.executescript(schema_sql)
