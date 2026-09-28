@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import zipfile
@@ -29,6 +30,12 @@ from garmin_data_hub.ingest.trackpoints import (
 TERMINAL_STATUSES = {
     "ingested",
     "resolved_no_records",
+    "unsupported",
+    "malformed",
+    "mismatch",
+    "ambiguous",
+}
+WARNING_TERMINAL_STATUSES = {
     "unsupported",
     "malformed",
     "mismatch",
@@ -245,11 +252,13 @@ def _summary() -> dict[str, object]:
         "ingested_points": 0,
         "resolved_no_records": 0,
         "warnings": 0,
+        "baseline_warnings": 0,
         "errors": 0,
         "updated_activity_ids": [],
         "excluded_activity_ids": [],
         "status_counts": {},
         "baseline_complete": False,
+        "candidate_state_sha256": "",
     }
 
 
@@ -333,6 +342,25 @@ def _finalize_summary(summary: dict[str, object]) -> dict[str, object]:
     return summary
 
 
+def _candidate_state_sha256(fit_dir: Path, candidates: list[Path]) -> str:
+    """Fingerprint the candidate universe without opening archive payloads."""
+    state: list[tuple[str, int | None, int | None]] = []
+    for path in candidates:
+        try:
+            source_size, source_mtime_ns = stat_signature(path)
+        except OSError:
+            source_size, source_mtime_ns = None, None
+        state.append(
+            (
+                _archive_identity(fit_dir, path),
+                source_size,
+                source_mtime_ns,
+            )
+        )
+    payload = json.dumps(state, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def _record_unresolved_candidate(
     conn: sqlite3.Connection,
     fit_dir: Path,
@@ -394,6 +422,9 @@ def reconcile_historical_archives(
     summary = _summary()
     candidates = _candidate_archive_paths(Path(fit_dir), archive_paths)
     summary["candidate_archives"] = len(candidates)
+    summary["candidate_state_sha256"] = _candidate_state_sha256(
+        Path(fit_dir), candidates
+    )
     if not candidates:
         return _finalize_summary(summary)
     ledger_available = conn.execute(
@@ -514,6 +545,10 @@ def reconcile_historical_archives(
                 summary["unchanged_terminal"] = int(
                     summary["unchanged_terminal"]
                 ) + 1
+                if str(existing[0]) in WARNING_TERMINAL_STATUSES:
+                    summary["baseline_warnings"] = int(
+                        summary["baseline_warnings"]
+                    ) + 1
                 if str(existing[0]) != "ingested":
                     _exclude_activity(summary, activity_id)
                 _account_candidate(summary, terminal=True)
@@ -553,6 +588,9 @@ def reconcile_historical_archives(
                     )
                     conn.commit()
                 summary["warnings"] = int(summary["warnings"]) + 1
+                summary["baseline_warnings"] = int(
+                    summary["baseline_warnings"]
+                ) + 1
                 _increment_status(summary, status)
                 _exclude_activity(summary, activity_id)
                 _account_candidate(summary, terminal=True)
@@ -724,6 +762,9 @@ def reconcile_historical_archives(
                 _account_candidate(summary, terminal=False, unresolved=True)
             else:
                 summary["warnings"] = int(summary["warnings"]) + 1
+                summary["baseline_warnings"] = int(
+                    summary["baseline_warnings"]
+                ) + 1
                 _account_candidate(summary, terminal=True)
             _exclude_activity(summary, activity_id)
             _increment_status(summary, status)

@@ -1420,11 +1420,18 @@ def get_max_session_max_hr(conn) -> int | None:
 
 
 def delete_setting(conn, key: str) -> None:
+    """Delete and durably commit a setting, propagating any write failure."""
     try:
         conn.execute(DELETE_SETTING_SQL, (key,))
         conn.commit()
     except Exception:
-        return
+        try:
+            if conn.in_transaction:
+                conn.rollback()
+        except Exception:
+            logger.exception("Failed to roll back app setting deletion '%s'", key)
+        logger.warning("Failed to delete app setting '%s'", key, exc_info=True)
+        raise
 
 
 def load_activity_preferences(conn, default=None):
