@@ -1,9 +1,24 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 
 from garmin_data_hub.analytics.post_sync_refresh import refresh_post_sync_tables
 from garmin_data_hub.db import queries
+
+
+@pytest.fixture
+def fixed_ftp_estimation_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the April 1 power fixture inside the production 180-day window."""
+
+    class FixedUtcDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            current = cls(2026, 4, 2, tzinfo=timezone.utc)
+            return current.replace(tzinfo=None) if tz is None else current.astimezone(tz)
+
+    monkeypatch.setattr(queries, "datetime", FixedUtcDateTime)
 
 
 def _insert_activity(
@@ -342,7 +357,9 @@ def test_upsert_activity_metrics_preserves_existing_extended_columns(db_conn):
     assert row[2] == pytest.approx(82.0)
 
 
-def test_get_effective_ftp_estimates_from_power_activities(db_conn):
+def test_get_effective_ftp_estimates_from_power_activities(
+    db_conn, fixed_ftp_estimation_clock
+):
     _insert_activity(
         db_conn,
         21,
@@ -367,6 +384,7 @@ def test_get_effective_ftp_estimates_from_power_activities(db_conn):
 
 def test_refresh_persisted_activity_metrics_populates_power_zones_with_estimated_ftp(
     db_conn,
+    fixed_ftp_estimation_clock,
 ):
     _insert_activity(
         db_conn,

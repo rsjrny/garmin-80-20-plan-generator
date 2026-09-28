@@ -20,16 +20,18 @@ def refresh_post_sync_tables(
         "rows_upserted": 0,
         "zones_updated": 0,
         "errors": 0,
+        "athlete_profile_errors": 0,
     }
 
     try:
-        update_athlete_profile(conn)
-    except (sqlite3.Error, TypeError, ValueError, ImportError):
+        update_athlete_profile(conn, required=True)
+    except Exception:
         # Keep refreshing metrics even if athlete-profile update fails.
         logger.warning(
             "Athlete profile refresh failed; continuing with activity metric refresh",
             exc_info=True,
         )
+        summary["athlete_profile_errors"] = 1
 
     effective_lthr = queries.get_effective_lthr(conn)
     metrics_summary = queries.refresh_persisted_activity_metrics(
@@ -39,6 +41,9 @@ def refresh_post_sync_tables(
         lthr=effective_lthr,
     )
     summary.update(metrics_summary)
+    summary["errors"] = int(metrics_summary.get("errors", 0) or 0) + summary[
+        "athlete_profile_errors"
+    ]
 
     # Incremental syncs usually target only changed or trackpoint-backed activities.
     # Do a small top-off pass for any rows still flagged as needing derived metrics so

@@ -65,7 +65,13 @@ def test_bundled_givemydata_forwards_arguments_and_restores_sys_argv(
     )
 
     assert result == 0
-    assert seen_argv == ["garmin-givemydata", "--days", "14", "--visible"]
+    assert seen_argv == [
+        "garmin-givemydata",
+        "--days",
+        "14",
+        "--visible",
+        "--no-trackpoints",
+    ]
     assert seen_driver_dirs == [str(tmp_path / "drivers")]
     assert (tmp_path / "drivers").is_dir()
     assert cli_backup_ingest.sys.argv is original_argv
@@ -224,6 +230,7 @@ def test_run_sync_keeps_upstream_sync_in_a_child_process(monkeypatch, tmp_path):
         "--visible",
         "--profile",
         "health",
+        "--no-trackpoints",
     ]
     assert recorded["kwargs"]["check"] is True
     assert recorded["kwargs"]["cwd"] == db_path.parent

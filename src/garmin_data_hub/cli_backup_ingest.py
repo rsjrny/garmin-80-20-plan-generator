@@ -16,14 +16,125 @@ import logging
 import subprocess
 import multiprocessing
 import os
+import stat
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+from garmin_data_hub.ingest.trackpoints import (
+    _activity_id_from_zip_filename,
+    ingest_trackpoints_from_fit_archives,
+)
+from garmin_data_hub.paths import default_db_path, ensure_app_dirs
 
 logger = logging.getLogger(__name__)
 
 _BUNDLED_GIVEMYDATA_FLAG = "--_run-bundled-givemydata"
 
-from garmin_data_hub.paths import default_db_path, ensure_app_dirs
+
+class _SyncArgumentParser(argparse.ArgumentParser):
+    """Argument validator that reports errors without exiting the application."""
+
+    def error(self, message: str) -> None:
+        raise ValueError(message)
+
+
+def _validate_upstream_sync_args(args: list[str] | None) -> list[str]:
+    """Allow only upstream options used for ordinary Garmin synchronization.
+
+    Upstream utility modes are intentionally excluded.  In particular,
+    ``--rebuild-trackpoints`` bypasses upstream's ``--no-trackpoints`` switch.
+    Disabling argparse abbreviation also prevents shortened utility options from
+    resolving to an unsafe upstream mode.
+    """
+    validated = list(args or [])
+    parser = _SyncArgumentParser(add_help=False, allow_abbrev=False)
+    parser.add_argument("--days", type=int)
+    parser.add_argument("--since")
+    parser.add_argument(
+        "--profile",
+        choices=("all", "health", "activities", "sleep"),
+    )
+    parser.add_argument("--full", action="store_true")
+    parser.add_argument("--save-raw", action="store_true")
+    parser.add_argument("--no-files", action="store_true")
+    parser.add_argument("--no-trackpoints", action="store_true")
+    parser.add_argument("--fit-only", action="store_true")
+    parser.add_argument("--latest", action="store_true")
+    parser.add_argument("--date")
+    parser.add_argument("--visible", action="store_true")
+    parser.parse_args(validated)
+    return validated
+
+
+def _with_no_trackpoints(args: list[str]) -> list[str]:
+    """Return validated upstream arguments with exactly one safety switch."""
+    return [argument for argument in args if argument != "--no-trackpoints"] + [
+        "--no-trackpoints"
+    ]
+
+
+def _snapshot_fit_archives(
+    fit_dir: Path,
+    *,
+    fail_on_disappearing_archive: bool = False,
+) -> dict[Path, tuple[int, int]]:
+    """Return lightweight identities without opening or parsing FIT archives."""
+    snapshot: dict[Path, tuple[int, int]] = {}
+    try:
+        fit_dir_stat = fit_dir.stat()
+    except FileNotFoundError:
+        return snapshot
+    if not stat.S_ISDIR(fit_dir_stat.st_mode):
+        raise NotADirectoryError(f"FIT archive path is not a directory: {fit_dir}")
+    try:
+        archive_paths = sorted(
+            (
+                path
+                for path in fit_dir.iterdir()
+                if path.suffix.lower() == ".zip"
+            ),
+            key=lambda path: str(path).casefold(),
+        )
+    except FileNotFoundError:
+        if fail_on_disappearing_archive:
+            raise
+        return snapshot
+    for archive_path in archive_paths:
+        try:
+            archive_stat = archive_path.stat()
+        except FileNotFoundError:
+            if fail_on_disappearing_archive:
+                raise
+            continue
+        snapshot[archive_path] = (
+            archive_stat.st_size,
+            archive_stat.st_mtime_ns,
+        )
+    return snapshot
+
+
+def _ambiguous_changed_archive_ids(
+    archive_paths: list[Path],
+    changed_archive_paths: list[Path],
+) -> dict[int, list[Path]]:
+    """Return duplicate activity archives relevant to the changed pass.
+
+    Unchanged-only backlog duplicates remain guarded by the ingester.  Indexing
+    the complete post-sync filename universe here prevents a changed archive
+    and its unchanged counterpart from being hidden in separate passes.
+    """
+    changed_paths = set(changed_archive_paths)
+    archives_by_activity: dict[int, list[Path]] = {}
+    for archive_path in archive_paths:
+        activity_id = _activity_id_from_zip_filename(archive_path)
+        if activity_id is not None:
+            archives_by_activity.setdefault(int(activity_id), []).append(archive_path)
+
+    return {
+        activity_id: sorted(paths, key=lambda path: str(path).casefold())
+        for activity_id, paths in archives_by_activity.items()
+        if len(paths) > 1 and any(path in changed_paths for path in paths)
+    }
 
 
 def _clear_stale_chrome_profile_locks(profile_dir: Path) -> None:
@@ -72,6 +183,12 @@ def _find_givemydata_cmd() -> list[str] | None:
 
 def _run_bundled_givemydata(args: list[str]) -> int:
     """Run the packaged garmin-givemydata entry point with isolated arguments."""
+    try:
+        args = _with_no_trackpoints(_validate_upstream_sync_args(args))
+    except ValueError as exc:
+        print(f"[ERROR] Unsupported upstream sync argument: {exc}", file=sys.stderr)
+        return 2
+
     original_argv = sys.argv
     sys.argv = ["garmin-givemydata", *args]
     try:
@@ -127,6 +244,12 @@ def run_sync(
         )
         return 2
 
+    try:
+        validated_extra_args = _validate_upstream_sync_args(extra_args)
+    except ValueError as exc:
+        print(f"[ERROR] Unsupported upstream sync argument: {exc}")
+        return 2
+
     ensure_app_dirs()
 
     print("=" * 60)
@@ -163,10 +286,21 @@ def run_sync(
             "that flag; continuing with default browser mode"
         )
 
-    if cmd and extra_args:
-        cmd.extend(extra_args)
+    if cmd and validated_extra_args:
+        cmd.extend(validated_extra_args)
+
+    if cmd:
+        cmd = _with_no_trackpoints(cmd)
 
     sync_cwd = data_dir
+    fit_dir = data_dir / "fit"
+    try:
+        pre_sync_archives = (
+            _snapshot_fit_archives(fit_dir) if not derived_metrics_only else {}
+        )
+    except OSError as exc:
+        print(f"[ERROR] Could not inspect FIT archives before sync: {exc}")
+        return 2
 
     if derived_metrics_only:
         print("[SKIP] Garmin download disabled (--derived-metrics-only)")
@@ -187,6 +321,7 @@ def run_sync(
             return 1
 
     # Apply app-internal schema extensions (athlete_profile, activity_metrics, etc.)
+    conn = None
     try:
         from garmin_data_hub.db.sqlite import connect_sqlite
         from garmin_data_hub.db.migrate import apply_schema
@@ -196,6 +331,82 @@ def run_sync(
         conn = connect_sqlite(db_path)
         apply_schema(conn, schema_sql_path())
         print("[OK] App schema applied")
+
+        updated_activity_ids: set[int] = set()
+        if not derived_metrics_only:
+            post_sync_archives = _snapshot_fit_archives(
+                fit_dir,
+                fail_on_disappearing_archive=True,
+            )
+            disappeared_archives = sorted(
+                set(pre_sync_archives).difference(post_sync_archives),
+                key=lambda path: str(path).casefold(),
+            )
+            if disappeared_archives:
+                raise RuntimeError(
+                    "FIT archive(s) disappeared during synchronization: "
+                    + ", ".join(str(path) for path in disappeared_archives)
+                )
+            changed_archives = [
+                path
+                for path, identity in post_sync_archives.items()
+                if pre_sync_archives.get(path) != identity
+            ]
+            ambiguous_archives = _ambiguous_changed_archive_ids(
+                list(post_sync_archives),
+                changed_archives,
+            )
+            if ambiguous_archives:
+                details = "; ".join(
+                    f"activity {activity_id}: "
+                    + ", ".join(str(path) for path in paths)
+                    for activity_id, paths in sorted(ambiguous_archives.items())
+                )
+                raise RuntimeError(f"ambiguous FIT archives detected: {details}")
+            changed_summary = ingest_trackpoints_from_fit_archives(
+                conn,
+                fit_dir,
+                replace_existing=True,
+                archive_paths=changed_archives,
+            )
+            updated_activity_ids.update(
+                int(activity_id)
+                for activity_id in changed_summary.get("updated_activity_ids", [])
+            )
+
+            changed_archive_set = set(changed_archives)
+            changed_activity_ids = {
+                int(activity_id)
+                for activity_id in changed_summary.get("target_activity_ids", [])
+            }
+            backlog_archives = [
+                path
+                for path in post_sync_archives
+                if path not in changed_archive_set
+                and _activity_id_from_zip_filename(path) not in changed_activity_ids
+            ]
+            backlog_summary = ingest_trackpoints_from_fit_archives(
+                conn,
+                fit_dir,
+                replace_existing=False,
+                archive_paths=backlog_archives,
+            )
+            updated_activity_ids.update(
+                int(activity_id)
+                for activity_id in backlog_summary.get("updated_activity_ids", [])
+            )
+            trackpoint_errors = int(changed_summary.get("errors", 0) or 0) + int(
+                backlog_summary.get("errors", 0) or 0
+            )
+            if trackpoint_errors:
+                raise RuntimeError(
+                    f"trackpoint ingestion encountered {trackpoint_errors} error(s)"
+                )
+            print(
+                "[OK] Trackpoints ingested: "
+                f"changed={changed_summary.get('ingested_activities', 0)}, "
+                f"backlog={backlog_summary.get('ingested_activities', 0)}"
+            )
 
         refresh_ids = None
         start_ts_iso = None
@@ -207,11 +418,13 @@ def run_sync(
         elif rebuild_derived_metrics:
             # Rebuild over selected time window when provided, else all activities.
             if days and int(days) > 0:
+                refresh_ids = sorted(updated_activity_ids)
                 start_ts_iso = (
                     datetime.now(timezone.utc) - timedelta(days=int(days) + 1)
                 ).strftime("%Y-%m-%dT%H:%M:%SZ")
         else:
             if days and int(days) > 0:
+                refresh_ids = sorted(updated_activity_ids)
                 start_ts_iso = (
                     datetime.now(timezone.utc) - timedelta(days=int(days) + 1)
                 ).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -230,11 +443,13 @@ def run_sync(
             f"zones={refresh_summary.get('zones_updated', 0)}"
         )
 
-        conn.close()
     except Exception as e:
         logger.exception("Post-sync update failed")
         print(f"[ERROR] Post-sync update failed: {e}")
         return 2
+    finally:
+        if conn is not None:
+            conn.close()
 
     print("[SUCCESS] Sync complete")
     return 0

@@ -60,15 +60,13 @@ def _candidate_archive_paths(
     archive_paths: Iterable[Path] | None,
 ) -> list[Path]:
     if archive_paths is None:
-        return sorted(fit_dir.glob("*.zip"))
+        return sorted(fit_dir.glob("*.zip"), key=lambda path: str(path).casefold())
 
     unique_paths: dict[Path, None] = {}
     for archive_path in archive_paths:
         path = Path(archive_path)
-        if path.suffix.lower() != ".zip" or not path.exists():
-            continue
         unique_paths[path] = None
-    return list(unique_paths)
+    return sorted(unique_paths, key=lambda path: str(path).casefold())
 
 
 def _activity_id_from_zip_filename(zip_path: Path) -> int | None:
@@ -108,11 +106,16 @@ def ingest_trackpoints_from_fit_archives(
         "target_activity_ids": [],
         "updated_activity_ids": [],
     }
+    explicit_targets = archive_paths is not None
+    strict_archive_paths = explicit_targets and replace_existing
 
     if not fit_dir.exists():
-        return summary
+        if not explicit_targets:
+            return summary
 
-    archive_by_activity: dict[int, Path] = {}
+    archives_by_activity: dict[int, list[Path]] = {}
+    unavailable_archives: dict[Path, str] = {}
+    strict_failed_activity_ids: set[int] = set()
     candidate_archives = _candidate_archive_paths(fit_dir, archive_paths)
     if not candidate_archives:
         return summary
@@ -122,39 +125,146 @@ def ingest_trackpoints_from_fit_archives(
     fallback_zips: list[Path] = []
     for zip_path in candidate_archives:
         activity_id = _activity_id_from_zip_filename(zip_path)
+        if zip_path.suffix.lower() != ".zip":
+            if strict_archive_paths:
+                summary["errors"] += 1
+                if activity_id is not None:
+                    strict_failed_activity_ids.add(activity_id)
+                print(
+                    f"[trackpoints] ERROR explicit target is not a ZIP archive: {zip_path}",
+                    flush=True,
+                )
+            elif activity_id is not None:
+                archives_by_activity.setdefault(activity_id, []).append(zip_path)
+                unavailable_archives[zip_path] = "is not a ZIP archive"
+            continue
+        if explicit_targets:
+            try:
+                zip_path.stat()
+            except FileNotFoundError:
+                if strict_archive_paths:
+                    summary["errors"] += 1
+                    if activity_id is not None:
+                        strict_failed_activity_ids.add(activity_id)
+                    print(
+                        f"[trackpoints] ERROR explicit target disappeared: {zip_path}",
+                        flush=True,
+                    )
+                elif activity_id is not None:
+                    archives_by_activity.setdefault(activity_id, []).append(zip_path)
+                    unavailable_archives[zip_path] = "disappeared"
+                continue
+            except OSError as exc:
+                if strict_archive_paths:
+                    summary["errors"] += 1
+                    if activity_id is not None:
+                        strict_failed_activity_ids.add(activity_id)
+                    print(
+                        f"[trackpoints] ERROR cannot inspect explicit target "
+                        f"{zip_path}: {exc}",
+                        flush=True,
+                    )
+                elif activity_id is not None:
+                    archives_by_activity.setdefault(activity_id, []).append(zip_path)
+                    unavailable_archives[zip_path] = f"cannot be inspected: {exc}"
+                continue
         if activity_id is not None:
-            if activity_id not in archive_by_activity:
-                archive_by_activity[activity_id] = zip_path
+            archives_by_activity.setdefault(activity_id, []).append(zip_path)
         else:
             fallback_zips.append(zip_path)
 
     # Fallback: open ZIPs where filename parsing was inconclusive.
     for zip_path in fallback_zips:
+        matched_activity_id = None
         try:
             with zipfile.ZipFile(zip_path, "r") as zf:
                 for member in zf.namelist():
                     activity_id = _extract_activity_id_from_member(member)
                     if activity_id is None:
                         continue
-                    if activity_id not in archive_by_activity:
-                        archive_by_activity[activity_id] = zip_path
+                    matched_activity_id = activity_id
+                    archives_by_activity.setdefault(activity_id, []).append(zip_path)
                     break
-        except Exception:
+        except Exception as exc:
+            if strict_archive_paths:
+                summary["errors"] += 1
+                print(
+                    f"[trackpoints] ERROR cannot inspect explicit target {zip_path}: {exc}",
+                    flush=True,
+                )
             continue
+        if matched_activity_id is None and strict_archive_paths:
+            summary["errors"] += 1
+            print(
+                f"[trackpoints] ERROR no activity FIT found in explicit target: {zip_path}",
+                flush=True,
+            )
+
+    strict_duplicate_ids = {
+        activity_id
+        for activity_id, paths in archives_by_activity.items()
+        if strict_archive_paths and len(paths) > 1
+    }
+    for activity_id in sorted(strict_duplicate_ids):
+        stable_paths = sorted(
+            archives_by_activity[activity_id],
+            key=lambda path: str(path).casefold(),
+        )
+        summary["errors"] += 1
+        strict_failed_activity_ids.add(activity_id)
+        print(
+            f"[trackpoints] ERROR ambiguous archives for activity {activity_id}: "
+            + ", ".join(str(path) for path in stable_paths),
+            flush=True,
+        )
+
+    # A failed changed target must not be replaced by another archive for the
+    # same activity during this pass.
+    for activity_id in strict_failed_activity_ids:
+        archives_by_activity.pop(activity_id, None)
 
     target_ids = _get_target_activity_ids(
         conn,
-        list(archive_by_activity),
+        list(archives_by_activity),
         replace_existing,
     )
     if max_activities is not None and max_activities > 0:
         target_ids = target_ids[:max_activities]
 
-    summary["target_activities"] = len(target_ids)
-    summary["target_activity_ids"] = list(target_ids)
-    summary["matched_archives"] = len(archive_by_activity)
+    failed_target_ids = sorted(strict_failed_activity_ids.difference(target_ids))
+    summary["target_activities"] = len(target_ids) + len(failed_target_ids)
+    summary["target_activity_ids"] = [*target_ids, *failed_target_ids]
+    summary["matched_archives"] = len(archives_by_activity)
     if not target_ids:
         return summary
+
+    # Reject ambiguous duplicates rather than allowing filesystem order to
+    # choose an archive. Errors are limited to activities actually selected by
+    # the DB query, so broad backlog discovery can ignore irrelevant files.
+    archive_by_activity: dict[int, Path] = {}
+    for activity_id in target_ids:
+        paths = archives_by_activity[activity_id]
+        if len(paths) > 1:
+            stable_paths = sorted(paths, key=lambda path: str(path).casefold())
+            summary["errors"] += 1
+            print(
+                f"[trackpoints] ERROR ambiguous archives for activity {activity_id}: "
+                + ", ".join(str(path) for path in stable_paths),
+                flush=True,
+            )
+            continue
+
+        archive_path = paths[0]
+        unavailable_reason = unavailable_archives.get(archive_path)
+        if unavailable_reason is not None:
+            summary["errors"] += 1
+            print(
+                f"[trackpoints] ERROR explicit target {unavailable_reason}: "
+                f"{archive_path}",
+                flush=True,
+            )
+            continue
+        archive_by_activity[activity_id] = archive_path
 
     total = len(target_ids)
     matched = len(archive_by_activity)
@@ -171,7 +281,15 @@ def ingest_trackpoints_from_fit_archives(
         try:
             parsed_activity_id, rows = parse_trackpoints_from_fit_archive(zip_path)
             if parsed_activity_id is None:
-                summary["skipped_no_fit"] += 1
+                if explicit_targets:
+                    summary["errors"] += 1
+                    print(
+                        f"[trackpoints] {idx}/{total} {activity_id}: "
+                        "ERROR archive could not be parsed",
+                        flush=True,
+                    )
+                else:
+                    summary["skipped_no_fit"] += 1
                 continue
             if parsed_activity_id != activity_id:
                 summary["errors"] += 1

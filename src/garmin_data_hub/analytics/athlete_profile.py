@@ -73,27 +73,54 @@ def _calculate_lthr_from_efforts(
         return None
 
 
-def update_athlete_profile(conn: sqlite3.Connection):
+def update_athlete_profile(
+    conn: sqlite3.Connection,
+    *,
+    required: bool = False,
+):
     """
     Calculates and updates athlete profile metrics like HRMax and LTHR.
     Uses recent activity data (last 90 days) for robust estimates.
     """
 
-    # Use central DB helpers to compute a robust HRmax and suggested LTHR
+    # Use central DB helpers to compute a robust HRmax and suggested LTHR.
+    # The required post-sync path uses strict helper behavior and one savepoint,
+    # keeping legitimate "no evidence" distinct from an operational failure.
     cutoff_iso = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+    savepoint_name = f"required_athlete_profile_{id(conn):x}"
+    savepoint_active = False
     try:
         from garmin_data_hub.db import queries as db_queries
 
+        if required:
+            conn.execute(f"SAVEPOINT {savepoint_name}")
+            savepoint_active = True
         hrmax_calc, lthr_calc = db_queries.get_hrmax_robust_and_lthr(
-            conn, cutoff_iso, percentile=0.995
+            conn,
+            cutoff_iso,
+            percentile=0.995,
+            raise_on_error=required,
         )
-        ftp_calc = db_queries.get_effective_ftp(conn)
+        ftp_calc = db_queries.get_effective_ftp(
+            conn,
+            commit=not required,
+            raise_on_error=required,
+        )
 
         if hrmax_calc:
-            db_queries.ensure_athlete_profile_table(conn)
-            db_queries.set_calculated_metrics(conn, hrmax_calc, lthr_calc)
+            db_queries.ensure_athlete_profile_table(conn, commit=not required)
+            db_queries.set_calculated_metrics(
+                conn,
+                hrmax_calc,
+                lthr_calc,
+                commit=not required,
+            )
             if ftp_calc:
-                db_queries.set_calculated_ftp(conn, ftp_calc)
+                db_queries.set_calculated_ftp(
+                    conn,
+                    ftp_calc,
+                    commit=not required,
+                )
             message = (
                 f"Athlete profile updated. HRMax: {hrmax_calc} bpm, "
                 f"LTHR: {lthr_calc} bpm" + (f", FTP: {ftp_calc} W" if ftp_calc else "")
@@ -101,8 +128,12 @@ def update_athlete_profile(conn: sqlite3.Connection):
             logger.info(message)
             print(message)
         elif ftp_calc:
-            db_queries.ensure_athlete_profile_table(conn)
-            db_queries.set_calculated_ftp(conn, ftp_calc)
+            db_queries.ensure_athlete_profile_table(conn, commit=not required)
+            db_queries.set_calculated_ftp(
+                conn,
+                ftp_calc,
+                commit=not required,
+            )
             message = f"Athlete profile updated. FTP: {ftp_calc} W"
             logger.info(message)
             print(message)
@@ -111,6 +142,17 @@ def update_athlete_profile(conn: sqlite3.Connection):
                 "No recent HR or power data available to update athlete profile"
             )
             print("No recent HR or power data to update athlete profile.")
-    except (ImportError, sqlite3.Error, TypeError, ValueError):
+        if savepoint_active:
+            conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+            savepoint_active = False
+    except Exception:
+        if savepoint_active:
+            try:
+                conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+                conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+            except Exception:
+                logger.exception("Failed to roll back required athlete-profile refresh")
         logger.exception("Failed to update athlete profile from synced activities")
         print("ERROR updating athlete_profile via db.queries. See logs for details.")
+        if required:
+            raise

@@ -17,7 +17,7 @@ from plotly.subplots import make_subplots
 
 from garmin_data_hub import __version__
 from garmin_data_hub.analytics.sleep_recovery import analyze_sleep_recovery
-from garmin_data_hub.mcp_sidecar_client import call_tool_via_sidecar, describe_readonly_tools, call_readonly_tools
+from garmin_data_hub.mcp_sidecar_client import describe_readonly_tools, call_readonly_tools
 from garmin_data_hub.ui_nicegui.mcp_results import render_mcp_result
 from garmin_data_hub.services.baseline_plan_builder import (
     BASELINE_DISTANCE_OPTIONS,
@@ -3277,8 +3277,63 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                             if name == "garmin_sync":
                                 parsed["refresh"] = bool(allow_sync.value)
                             if name == "garmin_sync" and allow_sync.value:
-                                raw = await run.io_bound(call_tool_via_sidecar, name, parsed, db_path)
-                                is_error = False
+                                if sandboxed:
+                                    raise ValueError(
+                                        "Garmin synchronization is unavailable for a sandboxed database"
+                                    )
+                                if db_path.name != "garmin.db":
+                                    raise ValueError(
+                                        "Garmin synchronization requires the live database named garmin.db"
+                                    )
+                                credentials = load_credentials()
+                                if credentials is None:
+                                    raw = json.dumps(
+                                        {
+                                            "error": (
+                                                "No saved Garmin login is available. "
+                                                "Open Garmin Sync and configure Garmin login first."
+                                            )
+                                        }
+                                    )
+                                    is_error = True
+                                else:
+                                    job = get_sync_job(db_path)
+                                    snapshot = job.snapshot()
+                                    started = False
+                                    if snapshot.state not in {
+                                        "running",
+                                        "cancelling",
+                                        "resetting_login",
+                                    }:
+                                        try:
+                                            job.start(days=0, credentials=credentials)
+                                            started = True
+                                        except RuntimeError as exc:
+                                            snapshot = job.snapshot()
+                                            if snapshot.state not in {
+                                                "running",
+                                                "cancelling",
+                                            }:
+                                                raise exc
+                                    snapshot = job.snapshot()
+                                    raw = json.dumps(
+                                        {
+                                            "message": (
+                                                "Garmin Sync started."
+                                                if started
+                                                else "Garmin Sync is already in progress."
+                                            ),
+                                            "sync_state": {
+                                                "state": snapshot.state,
+                                                "progress": snapshot.progress,
+                                                "elapsed_seconds": snapshot.elapsed_seconds,
+                                                "return_code": snapshot.return_code,
+                                                "error": snapshot.error,
+                                                "log": snapshot.log,
+                                            },
+                                        }
+                                    )
+                                    is_error = snapshot.state == "failed"
                             else:
                                 outputs = await run.io_bound(call_readonly_tools, db_path, [(name, parsed)])
                                 raw = outputs[name]["text"]

@@ -140,7 +140,7 @@ ORDER BY activity_type
 """
 
 
-def get_athlete_profile(conn):
+def get_athlete_profile(conn, *, raise_on_error: bool = False):
     """Return the single-row athlete_profile as a mapping (or None).
 
     Tries to include FTP/resting-HR columns if present; falls back gracefully if
@@ -183,6 +183,8 @@ def get_athlete_profile(conn):
                 }
         return None
     except Exception:
+        if raise_on_error:
+            raise
         return None
 
 
@@ -228,14 +230,23 @@ def get_effective_lthr(conn, *, commit: bool = True) -> int | None:
     return None
 
 
-def _estimate_ftp_from_recent_power(conn, days_back: int = 180) -> int | None:
+def _estimate_ftp_from_recent_power(
+    conn,
+    days_back: int = 180,
+    *,
+    raise_on_error: bool = False,
+) -> int | None:
     """Estimate cycling FTP from recent power-enabled activities.
 
     Uses the strongest recent sustained power efforts (favoring cycling/ride sports)
     and applies the common ~95% of best 20+ minute effort heuristic.
     """
     try:
-        activity_columns = _get_table_columns(conn, "activity")
+        activity_columns = (
+            _get_table_columns(conn, "activity", raise_on_error=True)
+            if raise_on_error
+            else _get_table_columns(conn, "activity")
+        )
         if not activity_columns:
             return None
 
@@ -292,27 +303,40 @@ def _estimate_ftp_from_recent_power(conn, days_back: int = 180) -> int | None:
         return ftp_est if 80 <= ftp_est <= 500 else None
     except (sqlite3.Error, TypeError, ValueError):
         logger.warning("Failed to estimate FTP from recent power data", exc_info=True)
+        if raise_on_error:
+            raise
         return None
 
 
-def get_effective_ftp(conn, *, commit: bool = True) -> int | None:
+def get_effective_ftp(
+    conn,
+    *,
+    commit: bool = True,
+    raise_on_error: bool = False,
+) -> int | None:
     """Return FTP override/calculated value, with fallback estimation from power data."""
     try:
-        profile = get_athlete_profile(conn) or {}
+        profile = get_athlete_profile(conn, raise_on_error=raise_on_error) or {}
         ftp = _positive_profile_metric(profile, "ftp_override", "ftp_calc")
         if ftp is not None:
             return ftp
     except Exception:
+        if raise_on_error:
+            raise
         pass
 
     try:
-        ftp_est = _estimate_ftp_from_recent_power(conn)
+        ftp_est = (
+            _estimate_ftp_from_recent_power(conn, raise_on_error=True)
+            if raise_on_error
+            else _estimate_ftp_from_recent_power(conn)
+        )
         if ftp_est and int(ftp_est) > 0:
             ensure_athlete_profile_table(conn, commit=commit)
             set_calculated_ftp(conn, int(ftp_est), commit=commit)
             return int(ftp_est)
     except Exception:
-        if not commit:
+        if raise_on_error or not commit:
             raise
         pass
 
@@ -356,12 +380,19 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _get_table_columns(conn, table_name: str) -> set[str]:
+def _get_table_columns(
+    conn,
+    table_name: str,
+    *,
+    raise_on_error: bool = False,
+) -> set[str]:
     """Return the column names present on `table_name`, or an empty set."""
     try:
         rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
         return {str(r[1]) for r in rows if len(r) > 1 and r[1]}
     except sqlite3.Error:
+        if raise_on_error:
+            raise
         return set()
 
 
@@ -1115,7 +1146,11 @@ def get_planned_workout_date_range(conn):
 
 
 def get_hrmax_robust_and_lthr(
-    conn, cutoff_iso: str, percentile: float = 0.995
+    conn,
+    cutoff_iso: str,
+    percentile: float = 0.995,
+    *,
+    raise_on_error: bool = False,
 ) -> tuple[int | None, int | None]:
     """Compute a robust HRMax (percentile) from recent activity max HRs and suggest LTHR."""
     try:
@@ -1147,6 +1182,8 @@ def get_hrmax_robust_and_lthr(
         lthr_suggested = int(round(hrmax_robust * 0.86))
         return hrmax_robust, lthr_suggested
     except Exception:
+        if raise_on_error:
+            raise
         return None, None
 
 
@@ -1732,20 +1769,25 @@ def refresh_persisted_activity_metrics(
             candidate_ids = [
                 int(aid) for aid in activity_ids if aid is not None and int(aid) > 0
             ]
+        candidate_ids = list(dict.fromkeys(candidate_ids))
 
-        # Treat an empty explicit list the same as "no specific IDs supplied" so
-        # post-sync refresh does not silently no-op when the upstream sync did not
-        # report changed activity IDs.
-        if not candidate_ids:
-            if start_ts_iso:
-                rows = conn.execute(
-                    "SELECT activity_id FROM activity WHERE start_time_gmt >= ?",
-                    (start_ts_iso,),
-                ).fetchall()
-                candidate_ids = [int(r[0]) for r in rows if r and r[0] is not None]
-            else:
-                rows = conn.execute("SELECT activity_id FROM activity").fetchall()
-                candidate_ids = [int(r[0]) for r in rows if r and r[0] is not None]
+        if start_ts_iso:
+            rows = conn.execute(
+                "SELECT activity_id FROM activity WHERE start_time_gmt >= ?",
+                (start_ts_iso,),
+            ).fetchall()
+            candidate_id_set = set(candidate_ids)
+            for row in rows:
+                if not row or row[0] is None:
+                    continue
+                activity_id = int(row[0])
+                if activity_id not in candidate_id_set:
+                    candidate_ids.append(activity_id)
+                    candidate_id_set.add(activity_id)
+        elif not candidate_ids:
+            # An empty explicit list retains the historical all-activity fallback.
+            rows = conn.execute("SELECT activity_id FROM activity").fetchall()
+            candidate_ids = [int(r[0]) for r in rows if r and r[0] is not None]
 
         if not candidate_ids:
             return summary
