@@ -93,7 +93,7 @@ def test_nested_threshold_failure_rolls_back_savepoint_and_preserves_outer_work(
         conn.close()
 
 
-def test_hr_only_override_save_currently_clears_ftp_override(tmp_path):
+def test_hr_only_override_save_preserves_ftp_override(tmp_path):
     db_path = _database(tmp_path)
     conn = sqlite3.connect(db_path)
     try:
@@ -103,10 +103,10 @@ def test_hr_only_override_save_currently_clears_ftp_override(tmp_path):
 
     athlete_metrics_service.set_override_metrics(db_path, 190, 170)
 
-    assert _profile_values(db_path)[2:] == (190, 170, None)
+    assert _profile_values(db_path)[2:] == (190, 170, 260)
 
 
-def test_clear_override_currently_clears_hr_lthr_and_ftp(tmp_path):
+def test_clear_hr_overrides_preserves_ftp_override(tmp_path):
     db_path = _database(tmp_path)
     conn = sqlite3.connect(db_path)
     try:
@@ -116,7 +116,7 @@ def test_clear_override_currently_clears_hr_lthr_and_ftp(tmp_path):
 
     athlete_metrics_service.clear_override_metrics(db_path)
 
-    assert _profile_values(db_path)[2:] == (None, None, None)
+    assert _profile_values(db_path)[2:] == (None, None, 260)
 
 
 def test_successful_manual_calculated_threshold_write_persists_hr_values(tmp_path):
@@ -188,7 +188,7 @@ def test_zero_in_threshold_ui_clears_hr_overrides_and_uses_calculated_fallback(
 
     asyncio.run(scenario())
 
-    assert _profile_values(db_path)[2:] == (None, None, None)
+    assert _profile_values(db_path)[2:] == (None, None, 255)
     assert athlete_metrics_service.get_athlete_metrics(db_path)[
         "hrmax_effective"
     ] == 184

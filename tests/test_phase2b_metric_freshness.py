@@ -212,7 +212,7 @@ def test_successful_threshold_change_does_not_commit_caller_transaction(db_conn)
     ).fetchone() is None
 
 
-def test_fallback_threshold_recalculation_does_not_commit_caller_transaction(
+def test_effective_lthr_does_not_manufacture_fallback_or_commit_caller_transaction(
     db_conn,
 ):
     _insert_activity(db_conn, 218, max_hr=180)
@@ -222,7 +222,7 @@ def test_fallback_threshold_recalculation_does_not_commit_caller_transaction(
 
     calculated_lthr = queries.get_effective_lthr(db_conn)
 
-    assert calculated_lthr == int(round(180 * 0.86))
+    assert calculated_lthr is None
     assert db_conn.in_transaction
     db_conn.rollback()
     profile = queries.get_athlete_profile(db_conn)

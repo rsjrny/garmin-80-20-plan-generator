@@ -512,8 +512,10 @@ def test_live_plan_context_overrides_unpersisted_defaults(tmp_path):
         "age": 57,
         "primary_sport": "run",
         "hrmax_bpm": None,
-        "lthr_bpm": None,
-        "sodium_mg_per_hour": 750,
+            "lthr_bpm": None,
+            "resting_heart_rate_bpm": 60,
+            "resting_heart_rate_source": "default_fallback",
+            "sodium_mg_per_hour": 750,
         "notes": "",
     }
     assert packet["context"]["event"] == {

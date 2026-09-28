@@ -1,7 +1,7 @@
 from __future__ import annotations
 import logging
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -83,10 +83,9 @@ def update_athlete_profile(
     Uses recent activity data (last 90 days) for robust estimates.
     """
 
-    # Use central DB helpers to compute a robust HRmax and suggested LTHR.
-    # The required post-sync path uses strict helper behavior and one savepoint,
-    # keeping legitimate "no evidence" distinct from an operational failure.
-    cutoff_iso = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+    # The required post-sync path uses one outer savepoint.  The canonical
+    # threshold service performs a nested atomic value/provenance update and
+    # leaves legitimate "no evidence" distinct from an operational failure.
     savepoint_name = f"required_athlete_profile_{id(conn):x}"
     savepoint_active = False
     try:
@@ -95,53 +94,28 @@ def update_athlete_profile(
         if required:
             conn.execute(f"SAVEPOINT {savepoint_name}")
             savepoint_active = True
-        hrmax_calc, lthr_calc = db_queries.get_hrmax_robust_and_lthr(
-            conn,
-            cutoff_iso,
-            percentile=0.995,
-            raise_on_error=required,
-        )
-        ftp_calc = db_queries.get_effective_ftp(
-            conn,
-            commit=not required,
-            raise_on_error=required,
-        )
+        from garmin_data_hub.services import thresholds
 
-        if hrmax_calc:
-            db_queries.ensure_athlete_profile_table(conn, commit=not required)
-            db_queries.set_calculated_metrics(
-                conn,
-                hrmax_calc,
-                lthr_calc,
-                commit=not required,
-            )
-            if ftp_calc:
-                db_queries.set_calculated_ftp(
-                    conn,
-                    ftp_calc,
-                    commit=not required,
-                )
+        result = thresholds.refresh_thresholds(
+            conn,
+            activity_metric_provenance_version=(
+                db_queries.ACTIVITY_METRICS_PROVENANCE_VERSION
+            ),
+            commit=not required,
+        )
+        available = {key: value for key, value in result.items() if value is not None}
+        if available:
             message = (
-                f"Athlete profile updated. HRMax: {hrmax_calc} bpm, "
-                f"LTHR: {lthr_calc} bpm" + (f", FTP: {ftp_calc} W" if ftp_calc else "")
+                "Athlete thresholds resolved. "
+                + ", ".join(f"{key}: {value}" for key, value in available.items())
             )
-            logger.info(message)
-            print(message)
-        elif ftp_calc:
-            db_queries.ensure_athlete_profile_table(conn, commit=not required)
-            db_queries.set_calculated_ftp(
-                conn,
-                ftp_calc,
-                commit=not required,
-            )
-            message = f"Athlete profile updated. FTP: {ftp_calc} W"
             logger.info(message)
             print(message)
         else:
             logger.info(
-                "No recent HR or power data available to update athlete profile"
+                "No threshold evidence or retained values are available"
             )
-            print("No recent HR or power data to update athlete profile.")
+            print("No threshold evidence or retained values are available.")
         if savepoint_active:
             conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
             savepoint_active = False

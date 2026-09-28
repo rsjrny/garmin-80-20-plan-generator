@@ -1,24 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from garmin_data_hub.analytics.post_sync_refresh import refresh_post_sync_tables
 from garmin_data_hub.db import queries
-
-
-@pytest.fixture
-def fixed_ftp_estimation_clock(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep the April 1 power fixture inside the production 180-day window."""
-
-    class FixedUtcDateTime(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            current = cls(2026, 4, 2, tzinfo=timezone.utc)
-            return current.replace(tzinfo=None) if tz is None else current.astimezone(tz)
-
-    monkeypatch.setattr(queries, "datetime", FixedUtcDateTime)
 
 
 def _insert_activity(
@@ -357,8 +344,8 @@ def test_upsert_activity_metrics_preserves_existing_extended_columns(db_conn):
     assert row[2] == pytest.approx(82.0)
 
 
-def test_get_effective_ftp_estimates_from_power_activities(
-    db_conn, fixed_ftp_estimation_clock
+def test_get_effective_ftp_does_not_use_cycling_or_incomplete_power_evidence(
+    db_conn,
 ):
     _insert_activity(
         db_conn,
@@ -376,16 +363,16 @@ def test_get_effective_ftp_estimates_from_power_activities(
 
     ftp = queries.get_effective_ftp(db_conn)
 
-    assert ftp == 200
+    assert ftp is None
     profile = queries.get_athlete_profile(db_conn)
     assert profile is not None
-    assert profile["ftp_calc"] == 200
+    assert profile["ftp_calc"] is None
 
 
 def test_refresh_persisted_activity_metrics_populates_power_zones_with_estimated_ftp(
     db_conn,
-    fixed_ftp_estimation_clock,
 ):
+    queries.set_calculated_ftp(db_conn, 200)
     _insert_activity(
         db_conn,
         23,
@@ -428,8 +415,26 @@ def test_refresh_persisted_activity_metrics_populates_power_zones_with_estimated
 
 
 def test_refresh_post_sync_tables_updates_athlete_profile(db_conn):
-    _insert_activity(db_conn, 22, max_hr=188, average_hr=158)
+    started = datetime.now(timezone.utc)
+    _insert_activity(
+        db_conn,
+        22,
+        start_time_gmt=started.isoformat(),
+        max_hr=188,
+        average_hr=158,
+    )
     _insert_trackpoints(db_conn, 22)
+    db_conn.executemany(
+        """
+        INSERT INTO activity_trackpoints(
+            activity_id, seq, timestamp_utc, heart_rate_bpm
+        ) VALUES (22, ?, ?, ?)
+        """,
+        [
+            (7, started.isoformat(), 186),
+            (8, (started + timedelta(seconds=5)).isoformat(), 188),
+        ],
+    )
 
     summary = refresh_post_sync_tables(db_conn, activity_ids=[22])
 

@@ -14,6 +14,7 @@ from garmin_data_hub.analytics.temporal_metrics import (
     calculate_temporal_metrics,
 )
 from garmin_data_hub.db.activity_dates import activity_calendar_day_sql
+from garmin_data_hub.services import thresholds as threshold_service
 
 logger = logging.getLogger(__name__)
 
@@ -174,7 +175,14 @@ def get_athlete_profile(conn, *, raise_on_error: bool = False):
         # Prefer a wide selection if newer profile columns exist.
         try:
             row = conn.execute(
-                "SELECT hrmax_calc, lthr_calc, hrmax_override, lthr_override, ftp_calc, ftp_override, resting_hr, calc_updated_utc, override_updated_utc FROM athlete_profile WHERE profile_id = 1"
+                """
+                SELECT hrmax_calc, lthr_calc, hrmax_override, lthr_override,
+                       ftp_calc, ftp_override, resting_hr, calc_updated_utc,
+                       override_updated_utc, hrmax_calculation_id,
+                       lthr_calculation_id, ftp_calculation_id,
+                       resting_hr_calculation_id
+                FROM athlete_profile WHERE profile_id = 1
+                """
             ).fetchone()
             if row:
                 return {
@@ -187,6 +195,10 @@ def get_athlete_profile(conn, *, raise_on_error: bool = False):
                     "resting_hr": row[6],
                     "calc_updated_utc": row[7],
                     "override_updated_utc": row[8],
+                    "hrmax_calculation_id": row[9],
+                    "lthr_calculation_id": row[10],
+                    "ftp_calculation_id": row[11],
+                    "resting_hr_calculation_id": row[12],
                 }
         except Exception:
             # Fallback to minimal selection for older schemas.
@@ -230,28 +242,9 @@ def _positive_profile_metric(
 
 
 def get_effective_lthr(conn, *, commit: bool = True) -> int | None:
-    """Return LTHR override/calculated value, with robust fallback from activities."""
-    try:
-        profile = get_athlete_profile(conn) or {}
-        lthr = _positive_profile_metric(profile, "lthr_override", "lthr_calc")
-        if lthr is not None:
-            return lthr
-    except Exception:
-        pass
-
-    # Fallback to robust estimate from recent max HR values.
-    try:
-        cutoff_iso = "1970-01-01T00:00:00Z"
-        hrmax, lthr = get_hrmax_robust_and_lthr(conn, cutoff_iso, percentile=0.995)
-        if hrmax and lthr:
-            ensure_athlete_profile_table(conn, commit=commit)
-            set_calculated_metrics(conn, int(hrmax), int(lthr), commit=commit)
-            return int(lthr)
-    except Exception:
-        if not commit:
-            raise
-        pass
-    return None
+    """Return the canonical positive LTHR override/calculated value."""
+    profile = get_athlete_profile(conn) or {}
+    return _positive_profile_metric(profile, "lthr_override", "lthr_calc")
 
 
 def _estimate_ftp_from_recent_power(
@@ -260,73 +253,19 @@ def _estimate_ftp_from_recent_power(
     *,
     raise_on_error: bool = False,
 ) -> int | None:
-    """Estimate cycling FTP from recent power-enabled activities.
-
-    Uses the strongest recent sustained power efforts (favoring cycling/ride sports)
-    and applies the common ~95% of best 20+ minute effort heuristic.
-    """
+    """Estimate running FTP from canonical complete 1200-second power evidence."""
     try:
-        activity_columns = (
-            _get_table_columns(conn, "activity", raise_on_error=True)
-            if raise_on_error
-            else _get_table_columns(conn, "activity")
-        )
-        if not activity_columns:
-            return None
-
-        power_col = None
-        if "norm_power" in activity_columns:
-            power_col = "norm_power"
-        elif "avg_power" in activity_columns:
-            power_col = "avg_power"
-        if power_col is None or "elapsed_duration_seconds" not in activity_columns:
-            return None
-
         cutoff_iso = (
             datetime.now(timezone.utc) - pd.Timedelta(days=int(days_back))
         ).strftime("%Y-%m-%dT%H:%M:%SZ")
-        sport_filter = """
-            LOWER(COALESCE(activity_type, '')) LIKE '%cycl%'
-            OR LOWER(COALESCE(activity_type, '')) LIKE '%bike%'
-            OR LOWER(COALESCE(activity_type, '')) LIKE '%ride%'
-        """
-
-        def _load_candidates(prefer_cycling: bool) -> list[float]:
-            filter_sql = (
-                f"AND ({sport_filter})"
-                if prefer_cycling and "activity_type" in activity_columns
-                else ""
-            )
-            rows = conn.execute(
-                f"""
-                SELECT COALESCE(norm_power, avg_power) AS candidate_power
-                FROM activity
-                WHERE start_time_gmt >= ?
-                  AND elapsed_duration_seconds >= ?
-                  AND COALESCE(norm_power, avg_power) IS NOT NULL
-                  AND COALESCE(norm_power, avg_power) > 0
-                  {filter_sql}
-                ORDER BY candidate_power DESC
-                LIMIT 32
-                """,
-                (cutoff_iso, 20 * 60),
-            ).fetchall()
-            return [
-                float(r[0]) for r in rows if r and r[0] is not None and float(r[0]) > 0
-            ]
-
-        candidates = _load_candidates(prefer_cycling=True)
-        if not candidates:
-            candidates = _load_candidates(prefer_cycling=False)
-        if not candidates:
-            return None
-
-        candidates.sort(reverse=True)
-        best_sustained_power = candidates[0]
-        ftp_est = int(round(best_sustained_power * 0.95))
-        return ftp_est if 80 <= ftp_est <= 500 else None
-    except (sqlite3.Error, TypeError, ValueError):
-        logger.warning("Failed to estimate FTP from recent power data", exc_info=True)
+        result = threshold_service.calculate_running_ftp(
+            conn,
+            cutoff_utc=cutoff_iso,
+            activity_metric_provenance_version=ACTIVITY_METRICS_PROVENANCE_VERSION,
+        )
+        return int(result["calculated_value"]) if result is not None else None
+    except (sqlite3.Error, TypeError, ValueError, OverflowError):
+        logger.warning("Failed to estimate running FTP from recent power", exc_info=True)
         if raise_on_error:
             raise
         return None
@@ -338,33 +277,9 @@ def get_effective_ftp(
     commit: bool = True,
     raise_on_error: bool = False,
 ) -> int | None:
-    """Return FTP override/calculated value, with fallback estimation from power data."""
-    try:
-        profile = get_athlete_profile(conn, raise_on_error=raise_on_error) or {}
-        ftp = _positive_profile_metric(profile, "ftp_override", "ftp_calc")
-        if ftp is not None:
-            return ftp
-    except Exception:
-        if raise_on_error:
-            raise
-        pass
-
-    try:
-        ftp_est = (
-            _estimate_ftp_from_recent_power(conn, raise_on_error=True)
-            if raise_on_error
-            else _estimate_ftp_from_recent_power(conn)
-        )
-        if ftp_est and int(ftp_est) > 0:
-            ensure_athlete_profile_table(conn, commit=commit)
-            set_calculated_ftp(conn, int(ftp_est), commit=commit)
-            return int(ftp_est)
-    except Exception:
-        if raise_on_error or not commit:
-            raise
-        pass
-
-    return None
+    """Return the canonical positive FTP override/calculated value."""
+    profile = get_athlete_profile(conn, raise_on_error=raise_on_error) or {}
+    return _positive_profile_metric(profile, "ftp_override", "ftp_calc")
 
 
 def get_current_activity_metric_provenance(
@@ -372,16 +287,29 @@ def get_current_activity_metric_provenance(
 ) -> tuple[int | None, int | None, int]:
     """Return the canonical threshold inputs expected on current metric rows."""
     profile = get_athlete_profile(conn) or {}
+    resting_hr = threshold_service.positive_int(profile.get("resting_hr"))
+    if resting_hr is None:
+        try:
+            calculation = threshold_service.calculate_resting_hr(conn)
+            resting_hr = (
+                int(calculation["calculated_value"])
+                if calculation is not None
+                else None
+            )
+        except sqlite3.Error:
+            resting_hr = None
     return (
         _positive_profile_metric(profile, "lthr_override", "lthr_calc"),
         _positive_profile_metric(profile, "ftp_override", "ftp_calc"),
-        int(profile.get("resting_hr") or 60),
+        resting_hr or 60,
     )
 
 
 def get_activity_metric_threshold_management(conn) -> tuple[bool, bool]:
     """Return whether LTHR and FTP are explicitly managed by the profile."""
     profile = get_athlete_profile(conn) or {}
+    # This legacy marker is used only to detect managed NULL transitions in
+    # Phase 2B metric snapshots.  Threshold source age never derives from it.
     profile_was_updated = bool(
         profile.get("calc_updated_utc") is not None
         or profile.get("override_updated_utc") is not None
@@ -402,6 +330,11 @@ def get_activity_metric_threshold_management(conn) -> tuple[bool, bool]:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def derive_threshold_status(**kwargs) -> dict[str, Any]:
+    """Compatibility adapter to the canonical threshold resolver."""
+    return threshold_service.derive_threshold_status(**kwargs)
 
 
 def _get_table_columns(
@@ -868,6 +801,36 @@ def ensure_athlete_profile_table(conn, *, commit: bool = True) -> None:
     try:
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS threshold_calculation (
+                threshold_calculation_id INTEGER PRIMARY KEY,
+                threshold_type TEXT NOT NULL,
+                calculated_value INTEGER NOT NULL,
+                algorithm_version TEXT NOT NULL,
+                calculated_at_utc TEXT,
+                evidence_cutoff_utc TEXT,
+                evidence_at_utc TEXT,
+                source_kind TEXT NOT NULL,
+                source_activity_id INTEGER,
+                source_activity_timestamp_utc TEXT,
+                source_sport TEXT,
+                evidence_value REAL,
+                evidence_duration_s REAL,
+                candidate_count INTEGER,
+                aggregate_evidence_json TEXT,
+                parent_calculation_id INTEGER,
+                FOREIGN KEY (parent_calculation_id)
+                  REFERENCES threshold_calculation(threshold_calculation_id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_threshold_calculation_type_id
+            ON threshold_calculation(threshold_type, threshold_calculation_id)
+            """
+        )
+        conn.execute(
+            """
         CREATE TABLE IF NOT EXISTS athlete_profile (
             profile_id INTEGER PRIMARY KEY DEFAULT 1,
             hrmax_calc INTEGER,
@@ -878,7 +841,11 @@ def ensure_athlete_profile_table(conn, *, commit: bool = True) -> None:
             lthr_override INTEGER,
             ftp_override INTEGER,
             resting_hr INTEGER,
-            override_updated_utc TEXT
+            override_updated_utc TEXT,
+            hrmax_calculation_id INTEGER REFERENCES threshold_calculation(threshold_calculation_id),
+            lthr_calculation_id INTEGER REFERENCES threshold_calculation(threshold_calculation_id),
+            ftp_calculation_id INTEGER REFERENCES threshold_calculation(threshold_calculation_id),
+            resting_hr_calculation_id INTEGER REFERENCES threshold_calculation(threshold_calculation_id)
         );
         """
         )
@@ -887,6 +854,10 @@ def ensure_athlete_profile_table(conn, *, commit: bool = True) -> None:
             "ftp_calc": "INTEGER",
             "ftp_override": "INTEGER",
             "resting_hr": "INTEGER",
+            "hrmax_calculation_id": "INTEGER REFERENCES threshold_calculation(threshold_calculation_id)",
+            "lthr_calculation_id": "INTEGER REFERENCES threshold_calculation(threshold_calculation_id)",
+            "ftp_calculation_id": "INTEGER REFERENCES threshold_calculation(threshold_calculation_id)",
+            "resting_hr_calculation_id": "INTEGER REFERENCES threshold_calculation(threshold_calculation_id)",
         }.items():
             if column_name not in existing_columns:
                 conn.execute(
@@ -983,6 +954,104 @@ def get_athlete_metrics(conn) -> dict:
         hrmax_override = profile.get("hrmax_override")
         lthr_override = profile.get("lthr_override")
         ftp_override = profile.get("ftp_override")
+        try:
+            resting_calculation = threshold_service.calculate_resting_hr(conn)
+        except sqlite3.Error:
+            resting_calculation = None
+        provenance: dict[str, dict[str, Any] | None] = {}
+        for public_name, threshold_type, raw_value in (
+            ("hrmax", "hrmax", hrmax_calc),
+            ("lthr", "estimated_lthr", lthr_calc),
+            ("ftp", "running_ftp", ftp_calc),
+            ("resting_hr", "resting_hr", profile.get("resting_hr")),
+        ):
+            current = None
+            try:
+                current = threshold_service.get_current_provenance(
+                    conn, threshold_type
+                )
+            except sqlite3.Error:
+                current = None
+            normalized = threshold_service.positive_int(raw_value)
+            if (
+                threshold_type == "resting_hr"
+                and current is None
+                and resting_calculation is not None
+                and (
+                    normalized is None
+                    or normalized == int(resting_calculation["calculated_value"])
+                )
+            ):
+                presented = threshold_service.provenance_for_presentation(
+                    {
+                        "threshold_calculation_id": None,
+                        **resting_calculation,
+                        "parent_calculation_id": None,
+                    }
+                )
+                if normalized is not None:
+                    presented = {
+                        "source_kind": presented["source_kind"],
+                        "algorithm_version": presented["algorithm_version"],
+                        "latest_evidence_date": presented[
+                            "latest_evidence_date"
+                        ],
+                        "observations": presented["observations"],
+                        "observation_count": presented["observation_count"],
+                    }
+                current = presented
+            if current is None and normalized is not None:
+                current = threshold_service.unknown_provenance(
+                    threshold_type,
+                    normalized,
+                    calculated_at_utc=profile.get("calc_updated_utc"),
+                )
+            provenance[public_name] = current
+
+        resting_value = threshold_service.positive_int(profile.get("resting_hr"))
+        if provenance["resting_hr"] is None:
+            if resting_calculation is not None and (
+                resting_value is None
+                or resting_value
+                == int(resting_calculation["calculated_value"])
+            ):
+                resting_value = int(resting_calculation["calculated_value"])
+                provenance["resting_hr"] = (
+                    threshold_service.provenance_for_presentation(
+                        {
+                            "threshold_calculation_id": None,
+                            **resting_calculation,
+                            "parent_calculation_id": None,
+                        }
+                    )
+                )
+
+        statuses: dict[str, dict[str, Any]] = {}
+        for public_name, threshold_name, calculated, override, stale_days in (
+            ("hrmax", "hrmax", hrmax_calc, hrmax_override, 90),
+            ("lthr", "estimated_lthr", lthr_calc, lthr_override, 90),
+            ("ftp", "running_ftp", ftp_calc, ftp_override, 180),
+            ("resting_hr", "resting_hr", resting_value, None, 14),
+        ):
+            current_provenance = provenance[public_name] or {}
+            evidence_at = current_provenance.get("evidence_at_utc")
+            if public_name == "resting_hr" and evidence_at is None:
+                evidence_at = (
+                    resting_calculation.get("evidence_at_utc")
+                    if resting_calculation is not None
+                    else None
+                )
+            statuses[public_name] = threshold_service.derive_threshold_status(
+                threshold=threshold_name,
+                calculated_value=calculated,
+                override_value=override,
+                evidence_at_utc=evidence_at,
+                stale_after_days=stale_days,
+            )
+            if public_name == "resting_hr" and resting_value is None:
+                statuses[public_name]["effective_value"] = 60
+                statuses[public_name]["effective_source"] = "default"
+
         return {
             "hrmax_calc": hrmax_calc,
             "lthr_calc": lthr_calc,
@@ -990,7 +1059,13 @@ def get_athlete_metrics(conn) -> dict:
             "hrmax_override": hrmax_override,
             "lthr_override": lthr_override,
             "ftp_override": ftp_override,
-            "resting_hr": profile.get("resting_hr"),
+            "resting_hr": resting_value,
+            "resting_hr_effective": resting_value or 60,
+            "resting_hr_source": (
+                "calculated"
+                if resting_value is not None
+                else "default"
+            ),
             "hrmax_effective": _positive_profile_metric(
                 profile, "hrmax_override", "hrmax_calc"
             ),
@@ -1002,6 +1077,26 @@ def get_athlete_metrics(conn) -> dict:
             ),
             "calc_updated_at": profile.get("calc_updated_utc"),
             "override_updated_at": profile.get("override_updated_utc"),
+            "hrmax_provenance": provenance["hrmax"],
+            "lthr_provenance": provenance["lthr"],
+            "ftp_provenance": provenance["ftp"],
+            "resting_hr_provenance": provenance["resting_hr"],
+            "hrmax_calculated_at": (
+                provenance["hrmax"] or {}
+            ).get("calculated_at_utc"),
+            "lthr_calculated_at": (
+                provenance["lthr"] or {}
+            ).get("calculated_at_utc"),
+            "ftp_calculated_at": (
+                provenance["ftp"] or {}
+            ).get("calculated_at_utc"),
+            "resting_hr_calculated_at": (
+                provenance["resting_hr"] or {}
+            ).get("calculated_at_utc"),
+            "hrmax_status": statuses["hrmax"],
+            "lthr_status": statuses["lthr"],
+            "ftp_status": statuses["ftp"],
+            "resting_hr_status": statuses["resting_hr"],
         }
     except Exception:
         return {
@@ -1012,31 +1107,40 @@ def get_athlete_metrics(conn) -> dict:
             "lthr_override": None,
             "ftp_override": None,
             "resting_hr": None,
+            "resting_hr_effective": 60,
+            "resting_hr_source": "default",
             "hrmax_effective": None,
             "lthr_effective": None,
             "ftp_effective": None,
             "calc_updated_at": None,
             "override_updated_at": None,
+            "hrmax_provenance": None,
+            "lthr_provenance": None,
+            "ftp_provenance": None,
+            "resting_hr_provenance": None,
+            "hrmax_calculated_at": None,
+            "lthr_calculated_at": None,
+            "ftp_calculated_at": None,
+            "resting_hr_calculated_at": None,
         }
 
 
-def _update_athlete_profile_thresholds(
+def _mutate_athlete_profile_thresholds(
     conn,
-    sql: str,
-    params: tuple[Any, ...],
+    mutation,
     *,
     commit: bool,
 ) -> None:
-    """Run one profile mutation without committing or rolling back caller work."""
+    """Run one atomic profile/provenance mutation without taking caller ownership."""
     caller_owns_transaction = bool(conn.in_transaction)
-    savepoint_name = f"athlete_threshold_update_{id(params):x}"
+    savepoint_name = f"athlete_threshold_update_{id(mutation):x}"
     savepoint_active = False
     try:
         if caller_owns_transaction:
             conn.execute(f"SAVEPOINT {savepoint_name}")
             savepoint_active = True
         ensure_athlete_profile_table(conn, commit=False)
-        conn.execute(sql, params)
+        mutation()
         if savepoint_active:
             conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
             savepoint_active = False
@@ -1055,25 +1159,119 @@ def _update_athlete_profile_thresholds(
         raise
 
 
+def _update_athlete_profile_thresholds(
+    conn,
+    sql: str,
+    params: tuple[Any, ...],
+    *,
+    commit: bool,
+) -> None:
+    """Run one profile mutation without committing or rolling back caller work."""
+    _mutate_athlete_profile_thresholds(
+        conn, lambda: conn.execute(sql, params), commit=commit
+    )
+
+
 def set_calculated_metrics(
     conn, hrmax: int | None, lthr: int | None, *, commit: bool = True
 ) -> None:
-    _update_athlete_profile_thresholds(
-        conn,
-        "UPDATE athlete_profile SET hrmax_calc=?, lthr_calc=?, calc_updated_utc=? WHERE profile_id=1",
-        (hrmax, lthr, _utc_now_iso()),
-        commit=commit,
-    )
+    calculated_at = _utc_now_iso()
+
+    def mutation() -> None:
+        hrmax_value = threshold_service.positive_int(hrmax)
+        lthr_value = threshold_service.positive_int(lthr)
+        hrmax_id: int | None = None
+        if hrmax_value is None:
+            conn.execute(
+                "UPDATE athlete_profile SET hrmax_calc=NULL, hrmax_calculation_id=NULL WHERE profile_id=1"
+            )
+        else:
+            hrmax_id = threshold_service.insert_calculation(
+                conn,
+                {
+                    "threshold_type": "hrmax",
+                    "calculated_value": hrmax_value,
+                    "algorithm_version": threshold_service.LEGACY_UNKNOWN_ALGORITHM_VERSION,
+                    "calculated_at_utc": calculated_at,
+                    "source_kind": "unknown",
+                },
+            )
+            threshold_service.point_profile_at_calculation(
+                conn,
+                threshold_type="hrmax",
+                value=hrmax_value,
+                calculation_id=hrmax_id,
+            )
+        if lthr_value is None:
+            conn.execute(
+                "UPDATE athlete_profile SET lthr_calc=NULL, lthr_calculation_id=NULL WHERE profile_id=1"
+            )
+        else:
+            lthr_id = threshold_service.insert_calculation(
+                conn,
+                {
+                    "threshold_type": "estimated_lthr",
+                    "calculated_value": lthr_value,
+                    "algorithm_version": threshold_service.LEGACY_UNKNOWN_ALGORITHM_VERSION,
+                    "calculated_at_utc": calculated_at,
+                    "source_kind": "unknown",
+                },
+            )
+            threshold_service.point_profile_at_calculation(
+                conn,
+                threshold_type="estimated_lthr",
+                value=lthr_value,
+                calculation_id=lthr_id,
+            )
+        conn.execute(
+            """
+            UPDATE athlete_profile
+            SET calc_updated_utc=COALESCE(calc_updated_utc, ?)
+            WHERE profile_id=1
+            """,
+            (calculated_at,),
+        )
+
+    _mutate_athlete_profile_thresholds(conn, mutation, commit=commit)
 
 
 def set_calculated_ftp(conn, ftp: int | None, *, commit: bool = True) -> None:
     """Persist a calculated FTP estimate when the newer athlete-profile columns exist."""
-    _update_athlete_profile_thresholds(
-        conn,
-        "UPDATE athlete_profile SET ftp_calc=?, calc_updated_utc=? WHERE profile_id=1",
-        (ftp, _utc_now_iso()),
-        commit=commit,
-    )
+    calculated_at = _utc_now_iso()
+
+    def mutation() -> None:
+        value = threshold_service.positive_int(ftp)
+        if value is None:
+            conn.execute(
+                "UPDATE athlete_profile SET ftp_calc=NULL, ftp_calculation_id=NULL WHERE profile_id=1"
+            )
+        else:
+            calculation_id = threshold_service.insert_calculation(
+                conn,
+                {
+                    "threshold_type": "running_ftp",
+                    "calculated_value": value,
+                    "algorithm_version": threshold_service.LEGACY_UNKNOWN_ALGORITHM_VERSION,
+                    "calculated_at_utc": calculated_at,
+                    "source_kind": "unknown",
+                },
+            )
+            threshold_service.point_profile_at_calculation(
+                conn,
+                threshold_type="running_ftp",
+                value=value,
+                calculation_id=calculation_id,
+            )
+        conn.execute(
+            """
+            UPDATE athlete_profile
+            SET calc_updated_utc=COALESCE(calc_updated_utc, ?)
+            WHERE profile_id=1
+            """,
+            (calculated_at,),
+        )
+
+    _mutate_athlete_profile_thresholds(conn, mutation, commit=commit)
 
 
 def set_override_metrics(
@@ -1181,7 +1379,7 @@ def get_hrmax_robust_and_lthr(
             """
             SELECT max_hr
             FROM activity
-            WHERE start_time_gmt >= ?
+            WHERE datetime(start_time_gmt) >= datetime(?)
               AND max_hr IS NOT NULL
               AND max_hr > 0
             ORDER BY max_hr ASC
@@ -2145,6 +2343,8 @@ def list_activities_needing_metrics(conn) -> list[int]:
                     )
                )
                OR (
+                    ? IS NOT NULL
+                    AND
                     EXISTS (
                         SELECT 1
                         FROM activity_trackpoints tp
@@ -2185,6 +2385,7 @@ def list_activities_needing_metrics(conn) -> list[int]:
                 current_ftp,
                 current_ftp,
                 current_resting_hr,
+                current_lthr,
             ),
         ).fetchall()
         return [r[0] for r in rows]

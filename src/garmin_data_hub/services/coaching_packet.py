@@ -586,7 +586,10 @@ def build_coaching_packet(
                 athlete_metrics, "ftp"
             ),
             "resting_heart_rate_bpm": _bounded_number(
-                athlete_metrics.get("resting_hr"), 1, 220
+                athlete_context.get("resting_heart_rate_bpm"), 1, 220
+            ),
+            "resting_heart_rate_source": athlete_context.get(
+                "resting_heart_rate_source"
             ),
             "max_heart_rate_source": _metric_source(athlete_metrics, "hrmax"),
             "lactate_threshold_heart_rate_source": _metric_source(
@@ -777,11 +780,19 @@ def _load_relevant_settings(conn: sqlite3.Connection) -> dict[str, Any]:
 
 
 def _metric_source(metrics: Mapping[str, Any], name: str) -> str:
-    if metrics.get(f"{name}_override") is not None:
+    override = _bounded_int(metrics.get(f"{name}_override"), 1, 10000)
+    if override is not None:
         return "athlete_override"
-    if metrics.get(f"{name}_calc") is not None:
-        return "calculated_from_garmin_history"
-    return "unavailable"
+    calculated_key = "resting_hr" if name == "resting_hr" else f"{name}_calc"
+    calculated = _bounded_int(metrics.get(calculated_key), 1, 10000)
+    if calculated is None:
+        return "default_fallback" if name == "resting_hr" else "unavailable"
+    provenance = metrics.get(f"{name}_provenance")
+    if isinstance(provenance, Mapping):
+        source_kind = provenance.get("source_kind")
+        if source_kind:
+            return str(source_kind)
+    return "unknown"
 
 
 def _build_athlete_context(
@@ -792,12 +803,22 @@ def _build_athlete_context(
     if hrmax is not None and lthr is not None and lthr >= hrmax:
         raise ValueError("LTHR must be lower than HRmax before exporting a coaching packet")
     sodium = _bounded_int(settings.get("plan_sodium"), 0, 3000)
+    resting_hr = _bounded_int(
+        metrics.get("resting_hr_effective", metrics.get("resting_hr")), 1, 220
+    )
+    if resting_hr is None:
+        resting_hr = 60
+        resting_hr_source = "default_fallback"
+    else:
+        resting_hr_source = _metric_source(metrics, "resting_hr")
     return {
         "name": "Athlete",
         "age": _bounded_int(settings.get("plan_age"), 10, 100) or 50,
         "primary_sport": "run",
         "hrmax_bpm": hrmax,
         "lthr_bpm": lthr,
+        "resting_heart_rate_bpm": resting_hr,
+        "resting_heart_rate_source": resting_hr_source,
         "sodium_mg_per_hour": sodium or None,
         "notes": "",
     }

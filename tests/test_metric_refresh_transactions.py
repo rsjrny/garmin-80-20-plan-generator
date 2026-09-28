@@ -210,8 +210,13 @@ def test_failure_after_profile_preparation_rolls_back_preparation_write(
         )
         raise RuntimeError("failure during profile preparation")
 
-    monkeypatch.setattr(queries, "_estimate_ftp_from_recent_power", lambda _conn: 250)
-    monkeypatch.setattr(queries, "set_calculated_ftp", fail_during_ftp_persistence)
+    monkeypatch.setattr(
+        queries,
+        "get_effective_ftp",
+        lambda conn, *, commit: fail_during_ftp_persistence(
+            conn, 250, commit=commit
+        ),
+    )
 
     summary = queries.refresh_persisted_activity_metrics(
         db_conn, activity_ids=[107], lthr=160

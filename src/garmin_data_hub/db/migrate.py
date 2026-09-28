@@ -5,7 +5,7 @@ import sqlite3
 
 logger = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION = 6
+CURRENT_SCHEMA_VERSION = 7
 
 
 def _ensure_schema_migrations_table(conn: sqlite3.Connection) -> None:
@@ -196,6 +196,101 @@ def _migration_6_add_metric_refresh_provenance(conn: sqlite3.Connection) -> None
     conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
 
 
+def _migration_7_add_threshold_calculation_provenance(
+    conn: sqlite3.Connection,
+) -> None:
+    """Add narrow append-only threshold provenance and preserve legacy values."""
+    savepoint_name = "migration_7_threshold_calculation_provenance"
+    conn.execute(f"SAVEPOINT {savepoint_name}")
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS threshold_calculation (
+                threshold_calculation_id INTEGER PRIMARY KEY,
+                threshold_type TEXT NOT NULL,
+                calculated_value INTEGER NOT NULL,
+                algorithm_version TEXT NOT NULL,
+                calculated_at_utc TEXT,
+                evidence_cutoff_utc TEXT,
+                evidence_at_utc TEXT,
+                source_kind TEXT NOT NULL,
+                source_activity_id INTEGER,
+                source_activity_timestamp_utc TEXT,
+                source_sport TEXT,
+                evidence_value REAL,
+                evidence_duration_s REAL,
+                candidate_count INTEGER,
+                aggregate_evidence_json TEXT,
+                parent_calculation_id INTEGER,
+                FOREIGN KEY (parent_calculation_id)
+                  REFERENCES threshold_calculation(threshold_calculation_id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_threshold_calculation_type_id
+            ON threshold_calculation(threshold_type, threshold_calculation_id)
+            """
+        )
+        if not _table_exists(conn, "athlete_profile"):
+            conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+            return
+
+        reference_columns = {
+            "hrmax_calculation_id": "INTEGER REFERENCES threshold_calculation(threshold_calculation_id)",
+            "lthr_calculation_id": "INTEGER REFERENCES threshold_calculation(threshold_calculation_id)",
+            "ftp_calculation_id": "INTEGER REFERENCES threshold_calculation(threshold_calculation_id)",
+            "resting_hr_calculation_id": "INTEGER REFERENCES threshold_calculation(threshold_calculation_id)",
+        }
+        for column_name, column_sql in reference_columns.items():
+            _add_column_if_missing(conn, "athlete_profile", column_name, column_sql)
+
+        row = conn.execute(
+            """
+            SELECT hrmax_calc, lthr_calc, ftp_calc, resting_hr,
+                   calc_updated_utc,
+                   hrmax_calculation_id, lthr_calculation_id,
+                   ftp_calculation_id, resting_hr_calculation_id
+            FROM athlete_profile WHERE profile_id=1
+            """
+        ).fetchone()
+        if row is not None:
+            legacy = (
+                ("hrmax", "hrmax_calculation_id", row[0], row[5]),
+                ("estimated_lthr", "lthr_calculation_id", row[1], row[6]),
+                ("running_ftp", "ftp_calculation_id", row[2], row[7]),
+                ("resting_hr", "resting_hr_calculation_id", row[3], row[8]),
+            )
+            for threshold_type, reference_column, raw_value, current_id in legacy:
+                try:
+                    value = int(raw_value) if raw_value is not None else None
+                except (TypeError, ValueError, OverflowError):
+                    value = None
+                if value is None or value <= 0 or current_id is not None:
+                    continue
+                cursor = conn.execute(
+                    """
+                    INSERT INTO threshold_calculation(
+                        threshold_type, calculated_value, algorithm_version,
+                        calculated_at_utc, source_kind
+                    ) VALUES (?, ?, 'legacy_unknown_v1', ?, 'unknown')
+                    """,
+                    (threshold_type, value, row[4]),
+                )
+                conn.execute(
+                    f"UPDATE athlete_profile SET {reference_column}=? WHERE profile_id=1",
+                    (int(cursor.lastrowid),),
+                )
+    except Exception:
+        try:
+            conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+        finally:
+            conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+        raise
+    conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+
+
 def _fix_trackpoint_cascade(conn: sqlite3.Connection) -> None:
     """Remove ON DELETE CASCADE from activity_trackpoints if present.
 
@@ -353,6 +448,11 @@ def apply_schema(conn: sqlite3.Connection, schema_path: Path | None = None) -> N
             "add activity metric refresh provenance",
             lambda: _migration_6_add_metric_refresh_provenance(conn),
         ),
+        (
+            7,
+            "add threshold calculation provenance",
+            lambda: _migration_7_add_threshold_calculation_provenance(conn),
+        ),
     ]
 
     current_version = _get_current_schema_version(conn)
@@ -360,8 +460,22 @@ def apply_schema(conn: sqlite3.Connection, schema_path: Path | None = None) -> N
     for version, name, migration in migrations:
         if current_version >= version:
             continue
-        migration()
-        _record_migration(conn, version, name)
+        if version == 7:
+            boundary = "migration_7_with_version_record"
+            conn.execute(f"SAVEPOINT {boundary}")
+            try:
+                migration()
+                _record_migration(conn, version, name)
+            except Exception:
+                try:
+                    conn.execute(f"ROLLBACK TO SAVEPOINT {boundary}")
+                finally:
+                    conn.execute(f"RELEASE SAVEPOINT {boundary}")
+                raise
+            conn.execute(f"RELEASE SAVEPOINT {boundary}")
+        else:
+            migration()
+            _record_migration(conn, version, name)
         current_version = version
         logger.info("Applied schema migration v%s: %s", version, name)
 
@@ -370,6 +484,8 @@ def apply_schema(conn: sqlite3.Connection, schema_path: Path | None = None) -> N
     # the version record alone.
     if recorded_version >= 6:
         _migration_6_add_metric_refresh_provenance(conn)
+    if recorded_version >= 7:
+        _migration_7_add_threshold_calculation_provenance(conn)
 
     # Keep baseline DDL idempotent so new installs and reruns remain safe.
     conn.executescript(schema_sql)

@@ -2021,19 +2021,55 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                 with ui.row().classes("items-end gap-3 flex-wrap"):
                     hrmax = ui.number(
                         "HRmax override (0 clears)",
-                        value=metrics.get("hrmax_effective") or 0,
+                        value=metrics.get("hrmax_override"),
                         min=0,
                         max=250,
                     ).props("outlined")
                     lthr = ui.number(
                         "LTHR override (0 clears)",
-                        value=metrics.get("lthr_effective") or 0,
+                        value=metrics.get("lthr_override"),
                         min=0,
                         max=220,
                     ).props("outlined")
                     years = ui.number(
                         "History years", value=5, min=1, max=50
                     ).props("outlined")
+
+                    calculated_hrmax = ui.label(
+                        f"Calculated HRmax: {metrics.get('hrmax_calc') or '-'}"
+                    )
+                    calculated_lthr = ui.label(
+                        "Estimated LTHR (calculated): "
+                        f"{metrics.get('lthr_calc') or '-'}"
+                    )
+                    effective_hrmax = ui.label(
+                        f"Effective HRmax: {metrics.get('hrmax_effective') or '-'}"
+                    )
+                    effective_lthr = ui.label(
+                        "Effective Estimated LTHR: "
+                        f"{metrics.get('lthr_effective') or '-'}"
+                    )
+
+                    def reload_threshold_presentation() -> None:
+                        persisted = get_athlete_metrics(db_path)
+                        hrmax.value = persisted.get("hrmax_override")
+                        lthr.value = persisted.get("lthr_override")
+                        calculated_hrmax.set_text(
+                            "Calculated HRmax: "
+                            f"{persisted.get('hrmax_calc') or '-'}"
+                        )
+                        calculated_lthr.set_text(
+                            "Estimated LTHR (calculated): "
+                            f"{persisted.get('lthr_calc') or '-'}"
+                        )
+                        effective_hrmax.set_text(
+                            "Effective HRmax: "
+                            f"{persisted.get('hrmax_effective') or '-'}"
+                        )
+                        effective_lthr.set_text(
+                            "Effective Estimated LTHR: "
+                            f"{persisted.get('lthr_effective') or '-'}"
+                        )
 
                     def save_thresholds() -> None:
                         high = int(hrmax.value or 0) or None
@@ -2046,6 +2082,7 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                         except (OSError, sqlite3.Error):
                             _notify_error("Threshold overrides could not be saved.")
                             return
+                        reload_threshold_presentation()
                         ui.notify("Threshold overrides saved.", type="positive")
 
                     def clear_thresholds() -> None:
@@ -2054,6 +2091,7 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                         except (OSError, sqlite3.Error):
                             _notify_error("Threshold overrides could not be cleared.")
                             return
+                        reload_threshold_presentation()
                         ui.notify("Threshold overrides cleared.", type="positive")
 
                     async def recalculate() -> None:
@@ -2066,13 +2104,19 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                         if error:
                             _notify_error(error)
                             return
-                        try:
-                            set_calculated_metrics(db_path, high, threshold)
-                        except (OSError, sqlite3.Error):
-                            _notify_error("Calculated thresholds could not be saved.")
-                            return
-                        hrmax.value = high or 0
-                        lthr.value = threshold or 0
+                        persisted = get_athlete_metrics(db_path)
+                        if (
+                            persisted.get("hrmax_calc") != high
+                            or persisted.get("lthr_calc") != threshold
+                        ):
+                            try:
+                                set_calculated_metrics(db_path, high, threshold)
+                            except (OSError, sqlite3.Error):
+                                _notify_error(
+                                    "Calculated thresholds could not be saved."
+                                )
+                                return
+                        reload_threshold_presentation()
                         ui.notify("Calculated thresholds refreshed.", type="positive")
 
                     ui.button("Save override", on_click=save_thresholds)

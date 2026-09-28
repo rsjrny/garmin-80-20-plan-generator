@@ -83,8 +83,32 @@ CREATE TABLE IF NOT EXISTS activity_metrics (
 );
 
 -- =========================
---  C) ATHLETE PROFILE
+--  C) THRESHOLD CALCULATIONS / ATHLETE PROFILE
 -- =========================
+CREATE TABLE IF NOT EXISTS threshold_calculation (
+    threshold_calculation_id       INTEGER PRIMARY KEY,
+    threshold_type                 TEXT NOT NULL,
+    calculated_value               INTEGER NOT NULL,
+    algorithm_version              TEXT NOT NULL,
+    calculated_at_utc              TEXT,
+    evidence_cutoff_utc             TEXT,
+    evidence_at_utc                 TEXT,
+    source_kind                     TEXT NOT NULL,
+    source_activity_id              INTEGER,
+    source_activity_timestamp_utc   TEXT,
+    source_sport                    TEXT,
+    evidence_value                  REAL,
+    evidence_duration_s             REAL,
+    candidate_count                 INTEGER,
+    aggregate_evidence_json         TEXT,
+    parent_calculation_id           INTEGER,
+    FOREIGN KEY (parent_calculation_id)
+      REFERENCES threshold_calculation(threshold_calculation_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_threshold_calculation_type_id
+  ON threshold_calculation(threshold_type, threshold_calculation_id);
+
 CREATE TABLE IF NOT EXISTS athlete_profile (
     profile_id           INTEGER PRIMARY KEY DEFAULT 1,
     hrmax_calc           INTEGER,
@@ -95,7 +119,19 @@ CREATE TABLE IF NOT EXISTS athlete_profile (
     lthr_override        INTEGER,
     ftp_override         INTEGER,
     resting_hr           INTEGER,
-    override_updated_utc TEXT
+    override_updated_utc TEXT,
+    hrmax_calculation_id INTEGER,
+    lthr_calculation_id INTEGER,
+    ftp_calculation_id INTEGER,
+    resting_hr_calculation_id INTEGER,
+    FOREIGN KEY (hrmax_calculation_id)
+      REFERENCES threshold_calculation(threshold_calculation_id),
+    FOREIGN KEY (lthr_calculation_id)
+      REFERENCES threshold_calculation(threshold_calculation_id),
+    FOREIGN KEY (ftp_calculation_id)
+      REFERENCES threshold_calculation(threshold_calculation_id),
+    FOREIGN KEY (resting_hr_calculation_id)
+      REFERENCES threshold_calculation(threshold_calculation_id)
 );
 
 INSERT OR IGNORE INTO athlete_profile(profile_id) VALUES (1);

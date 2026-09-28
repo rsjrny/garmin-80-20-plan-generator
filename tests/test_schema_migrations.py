@@ -236,7 +236,7 @@ def test_v6_repairs_missing_column_even_when_version_is_already_recorded(tmp_pat
             row[1] for row in conn.execute("PRAGMA table_info(activity_metrics)")
         }
         assert PROVENANCE_COLUMNS.issubset(columns)
-        assert get_current_schema_version(conn) == 6
+        assert get_current_schema_version(conn) == CURRENT_SCHEMA_VERSION
     finally:
         conn.close()
 
@@ -300,7 +300,7 @@ def test_partially_completed_v6_is_repaired_idempotently(tmp_path):
             row[1] for row in conn.execute("PRAGMA table_info(activity_metrics)")
         }
         assert PROVENANCE_COLUMNS.issubset(columns)
-        assert get_current_schema_version(conn) == 6
+        assert get_current_schema_version(conn) == CURRENT_SCHEMA_VERSION
     finally:
         conn.close()
 

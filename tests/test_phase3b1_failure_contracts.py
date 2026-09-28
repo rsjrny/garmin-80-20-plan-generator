@@ -402,7 +402,7 @@ def test_recalculation_write_failure_keeps_controls_and_reports_one_error(
         )
         hrmax = next(iter(user.find("HRmax override (0 clears)").elements))
         lthr = next(iter(user.find("LTHR override (0 clears)").elements))
-        assert (hrmax.value, lthr.value) == (184, 164)
+        assert (hrmax.value, lthr.value) == (None, None)
         assert _profile(db_path)[:2] == (184, 164)
 
     _run_page_action(
