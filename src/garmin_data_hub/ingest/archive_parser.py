@@ -25,7 +25,7 @@ from garmin_mcp.parse_activity_files import (
 )
 
 
-PARSER_ALGORITHM_VERSION = "archive-v1"
+PARSER_ALGORITHM_VERSION = "archive-v2"
 IDENTITY_TOLERANCE_SECONDS = 300.0
 
 GPX_NS = "http://www.topografix.com/GPX/1/1"
@@ -216,6 +216,65 @@ def _time_matches(
     return True, delta
 
 
+def _timestamps_are_nondecreasing(values: list[datetime]) -> bool:
+    return all(current >= previous for previous, current in zip(values, values[1:]))
+
+
+def _trackpoint_time_range_matches(
+    timestamps: list[datetime],
+    target: ActivityIdentity,
+) -> bool:
+    """Require the actual point span to remain compatible with the target."""
+    if not timestamps:
+        return True
+    target_start, target_end = _target_window(target)
+    tolerance = timedelta(seconds=IDENTITY_TOLERANCE_SECONDS)
+    if not target_start - tolerance <= timestamps[0] <= target_start + tolerance:
+        return False
+    if target_end > target_start and timestamps[-1] > target_end + tolerance:
+        return False
+    return True
+
+
+def _tcx_declared_window(
+    activity: ElementTree.Element,
+) -> tuple[datetime, datetime] | None:
+    """Return a complete TCX Lap envelope when every Lap declares timing."""
+    laps = activity.findall(f"{{{TCX_NS}}}Lap")
+    if not laps:
+        return None
+    starts: list[datetime] = []
+    ends: list[datetime] = []
+    try:
+        for lap in laps:
+            start = _parse_datetime(
+                lap.get("StartTime"),
+                source_requires_timezone=True,
+            )
+            duration = _optional_float(
+                _text(lap.find(f"{{{TCX_NS}}}TotalTimeSeconds")),
+                "total_time_seconds",
+            )
+            if duration is None or duration < 0:
+                return None
+            starts.append(start)
+            ends.append(start + timedelta(seconds=duration))
+    except _MalformedArchive:
+        return None
+    return min(starts), max(ends)
+
+
+def _timestamps_fit_window(
+    timestamps: list[datetime],
+    window: tuple[datetime, datetime] | None,
+) -> bool:
+    if not timestamps or window is None:
+        return True
+    start, end = window
+    tolerance = timedelta(seconds=IDENTITY_TOLERANCE_SECONDS)
+    return timestamps[0] >= start - tolerance and timestamps[-1] <= end + tolerance
+
+
 def _routing_evidence(
     archive_path: Path,
     member_name: str,
@@ -250,6 +309,9 @@ _CYCLING_ACTIVITY_TYPES = frozenset(
         "indoor_cycling",
     }
 )
+_WALKING_ACTIVITY_TYPES = frozenset({"walking"})
+_STRENGTH_ACTIVITY_TYPES = frozenset({"strength_training"})
+_STRONG_IDENTITY_ACTIVITY_FAMILIES = {"road_biking": "cycling"}
 
 
 def _sport_family(value: str | None) -> str | None:
@@ -261,18 +323,75 @@ def _sport_family(value: str | None) -> str | None:
         return "running"
     if normalized in _CYCLING_ACTIVITY_TYPES:
         return "cycling"
+    if normalized in _WALKING_ACTIVITY_TYPES:
+        return "walking"
+    if normalized in _STRENGTH_ACTIVITY_TYPES:
+        return "strength"
     return None
 
 
-def _sport_matches(tcx_sport: str | None, activity_type: str | None) -> bool:
+def _sport_evidence(tcx_sport: str | None, activity_type: str | None) -> str:
+    """Classify sport metadata without letting unsupported aliases match."""
     if not tcx_sport or not activity_type:
-        return True
+        return "unavailable"
     sport = tcx_sport.strip().casefold()
     if sport == "other":
-        return True
+        return "unavailable"
     source_family = _sport_family(sport)
     target_family = _sport_family(activity_type)
-    return source_family is not None and source_family == target_family
+    if source_family is None or target_family is None:
+        return "unsupported"
+    return "compatible" if source_family == target_family else "conflict"
+
+
+def _strong_exact_tcx_identity(
+    evidence: dict[str, Any],
+    delta: float,
+    points: list[ElementTree.Element],
+    first_point_time: datetime,
+    end_time: datetime,
+    declared_window: tuple[datetime, datetime] | None,
+    target: ActivityIdentity,
+) -> bool:
+    """Require exact routing/time signals and a corroborating point span."""
+    target_id = evidence.get("target_activity_id")
+    target_start, _target_end = _target_window(target)
+    declared_start = declared_window[0] if declared_window is not None else None
+    return (
+        target_id is not None
+        and evidence.get("archive_activity_id") == target_id
+        and evidence.get("member_activity_id") == target_id
+        and delta == 0.0
+        and len(points) >= 2
+        and first_point_time == target_start
+        and declared_start == target_start
+        and end_time >= first_point_time
+        and _timestamps_fit_window(
+            [first_point_time, end_time],
+            declared_window,
+        )
+    )
+
+
+def _strong_identity_sport_evidence(
+    tcx_sport: str | None,
+    activity_type: str | None,
+) -> str | None:
+    """Resolve only real-data-backed target aliases under strong identity."""
+    source_family = _sport_family(tcx_sport)
+    if not source_family or not activity_type:
+        return None
+    normalized_target = (
+        activity_type.strip().casefold().replace("-", "_").replace(" ", "_")
+    )
+    target_family = _sport_family(activity_type) or (
+        _STRONG_IDENTITY_ACTIVITY_FAMILIES.get(normalized_target)
+    )
+    if target_family is None:
+        return None
+    if source_family == target_family:
+        return "compatible_under_strong_identity"
+    return "conflict_overridden_by_strong_identity"
 
 
 def _parse_gpx(
@@ -302,8 +421,8 @@ def _parse_gpx(
             member_name=member_name,
         )
 
-    segments = root.findall(f".//{{{GPX_NS}}}trkseg")
-    if not segments:
+    tracks = root.findall(f"{{{GPX_NS}}}trk")
+    if not tracks:
         return _result(
             ArchiveParseStatus.AMBIGUOUS,
             ArchiveFormat.GPX,
@@ -313,13 +432,24 @@ def _parse_gpx(
             member_name=member_name,
         )
 
-    candidates: list[tuple[ElementTree.Element, list[ElementTree.Element], float]] = []
+    candidates: list[
+        tuple[ElementTree.Element, list[ElementTree.Element], float, int]
+    ] = []
     empty_segments = 0
+    unresolved_empty_tracks = 0
+    total_segments = 0
     try:
-        for segment in segments:
-            points = segment.findall(f"{{{GPX_NS}}}trkpt")
+        for track in tracks:
+            segments = track.findall(f"{{{GPX_NS}}}trkseg")
+            total_segments += len(segments)
+            points: list[ElementTree.Element] = []
+            for segment in segments:
+                segment_points = segment.findall(f"{{{GPX_NS}}}trkpt")
+                if not segment_points:
+                    empty_segments += 1
+                points.extend(segment_points)
             if not points:
-                empty_segments += 1
+                unresolved_empty_tracks += 1
                 continue
             timestamps = [
                 _parse_datetime(
@@ -328,9 +458,11 @@ def _parse_gpx(
                 )
                 for point in points
             ]
+            if not _timestamps_are_nondecreasing(timestamps):
+                raise _MalformedArchive("non monotonic timestamps")
             matches, delta = _time_matches(timestamps[0], timestamps[-1], target)
             if matches:
-                candidates.append((segment, points, delta))
+                candidates.append((track, points, delta, len(segments)))
     except _MalformedArchive as exc:
         return _result(
             ArchiveParseStatus.MALFORMED,
@@ -343,11 +475,14 @@ def _parse_gpx(
 
     match_evidence = {
         **evidence,
-        "candidate_count": len(segments),
+        "candidate_count": len(tracks),
         "matching_candidate_count": len(candidates),
-        "unresolved_empty_candidate_count": empty_segments,
+        "unresolved_empty_candidate_count": unresolved_empty_tracks,
+        "empty_segment_count": empty_segments,
+        "track_count": len(tracks),
+        "segment_count": total_segments,
     }
-    if empty_segments:
+    if unresolved_empty_tracks:
         return _result(
             ArchiveParseStatus.AMBIGUOUS,
             ArchiveFormat.GPX,
@@ -375,7 +510,7 @@ def _parse_gpx(
             member_name=member_name,
         )
 
-    _segment, points, delta = candidates[0]
+    _track, points, delta, selected_segment_count = candidates[0]
     rows: list[tuple] = []
     try:
         for seq, point in enumerate(points):
@@ -429,6 +564,8 @@ def _parse_gpx(
         )
 
     match_evidence["start_delta_seconds"] = delta
+    match_evidence["selected_track_segment_count"] = selected_segment_count
+    match_evidence["selected_track_point_count"] = len(points)
     return _result(
         ArchiveParseStatus.PARSED,
         ArchiveFormat.GPX,
@@ -477,28 +614,35 @@ def _parse_tcx(
             member_name=member_name,
         )
 
-    candidates: list[tuple[ElementTree.Element, list[ElementTree.Element], float]] = []
+    candidates: list[
+        tuple[ElementTree.Element, list[ElementTree.Element], float, str, str]
+    ] = []
     invalid_identity = False
     sport_conflicts = 0
+    trackpoint_time_range_conflicts = 0
+    insufficient_temporal_identity = 0
+    temporal_evidence: list[dict[str, Any]] = []
     for activity in activities:
+        tcx_sport = activity.get("Sport")
         try:
+            identity_text = _text(activity.find(f"{{{TCX_NS}}}Id"))
             identity_time = _parse_datetime(
-                _text(activity.find(f"{{{TCX_NS}}}Id")),
+                identity_text,
                 source_requires_timezone=True,
             )
         except _MalformedArchive:
             invalid_identity = True
             continue
         points = activity.findall(f".//{{{TCX_NS}}}Trackpoint")
+        declared_window = _tcx_declared_window(activity)
         try:
-            end_time = (
+            point_times = [
                 _parse_datetime(
-                    _text(points[-1].find(f"{{{TCX_NS}}}Time")),
+                    _text(point.find(f"{{{TCX_NS}}}Time")),
                     source_requires_timezone=True,
                 )
-                if points
-                else identity_time
-            )
+                for point in points
+            ]
         except _MalformedArchive:
             return _result(
                 ArchiveParseStatus.MALFORMED,
@@ -508,13 +652,86 @@ def _parse_tcx(
                 evidence=evidence,
                 member_name=member_name,
             )
+        if not _timestamps_are_nondecreasing(point_times):
+            return _result(
+                ArchiveParseStatus.MALFORMED,
+                ArchiveFormat.TCX,
+                target,
+                reason_code="non_monotonic_timestamps",
+                evidence=evidence,
+                member_name=member_name,
+            )
+        first_point_time = point_times[0] if point_times else identity_time
+        end_time = point_times[-1] if point_times else identity_time
         matches, delta = _time_matches(identity_time, end_time, target)
+        identity_strength = (
+            "strong"
+            if _strong_exact_tcx_identity(
+                evidence,
+                delta,
+                points,
+                first_point_time,
+                end_time,
+                declared_window,
+                target,
+            )
+            else "weak"
+        )
+        sport_evidence = _sport_evidence(tcx_sport, target.activity_type)
+        temporal_evidence.append(
+            {
+                "activity_id_time": _format_utc(identity_time),
+                "start_delta_seconds": delta,
+                "temporal_match": matches,
+                "tcx_sport": tcx_sport,
+                "identity_strength": identity_strength,
+                "sport_evidence": sport_evidence,
+                "declared_lap_start_utc": (
+                    _format_utc(declared_window[0]) if declared_window else None
+                ),
+                "declared_lap_end_utc": (
+                    _format_utc(declared_window[1]) if declared_window else None
+                ),
+            }
+        )
         if not matches:
             continue
-        if not _sport_matches(activity.get("Sport"), target.activity_type):
-            sport_conflicts += 1
+        point_span_matches = _trackpoint_time_range_matches(
+            point_times,
+            target,
+        )
+        if not point_span_matches:
+            trackpoint_time_range_conflicts += 1
             continue
-        candidates.append((activity, points, delta))
+        if sport_evidence in {"unsupported", "conflict"}:
+            override = (
+                _strong_identity_sport_evidence(tcx_sport, target.activity_type)
+                if identity_strength == "strong"
+                else None
+            )
+            if override is None:
+                sport_conflicts += 1
+                continue
+            sport_evidence = override
+        target_id = evidence.get("target_activity_id")
+        both_routing_ids_match = (
+            target_id is not None
+            and evidence.get("archive_activity_id") == target_id
+            and evidence.get("member_activity_id") == target_id
+        )
+        target_start, _target_end = _target_window(target)
+        first_point_delta = abs((first_point_time - target_start).total_seconds())
+        temporal_identity_sufficient = (
+            delta == 0.0
+            or first_point_delta == 0.0
+            or both_routing_ids_match
+        )
+        if not temporal_identity_sufficient:
+            insufficient_temporal_identity += 1
+            continue
+        candidates.append(
+            (activity, points, delta, identity_strength, sport_evidence)
+        )
 
     match_evidence = {
         **evidence,
@@ -522,6 +739,9 @@ def _parse_tcx(
         "matching_candidate_count": len(candidates),
         "invalid_identity_count": int(invalid_identity),
         "sport_conflict_count": sport_conflicts,
+        "trackpoint_time_range_conflict_count": trackpoint_time_range_conflicts,
+        "insufficient_temporal_identity_count": insufficient_temporal_identity,
+        "temporal_candidates": temporal_evidence,
     }
     if invalid_identity:
         return _result(
@@ -533,11 +753,19 @@ def _parse_tcx(
             member_name=member_name,
         )
     if not candidates:
+        if sport_conflicts:
+            reason_code = "sport_mismatch"
+        elif trackpoint_time_range_conflicts:
+            reason_code = "trackpoint_time_range_mismatch"
+        elif insufficient_temporal_identity:
+            reason_code = "insufficient_temporal_identity"
+        else:
+            reason_code = "no_temporal_match"
         return _result(
             ArchiveParseStatus.MISMATCH,
             ArchiveFormat.TCX,
             target,
-            reason_code=("sport_mismatch" if sport_conflicts else "no_temporal_match"),
+            reason_code=reason_code,
             evidence=match_evidence,
             member_name=member_name,
         )
@@ -551,7 +779,9 @@ def _parse_tcx(
             member_name=member_name,
         )
 
-    _activity, points, delta = candidates[0]
+    _activity, points, delta, identity_strength, sport_evidence = candidates[0]
+    match_evidence["identity_strength"] = identity_strength
+    match_evidence["sport_evidence"] = sport_evidence
     if not points:
         match_evidence["start_delta_seconds"] = delta
         return _result(
