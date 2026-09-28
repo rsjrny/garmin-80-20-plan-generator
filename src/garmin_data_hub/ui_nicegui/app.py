@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -420,8 +421,11 @@ def create_ui(db_path: Path, *, sandboxed: bool) -> None:
                                     str(prompt_editor.value or ""),
                                     packet,
                                 )
-                            except OSError as exc:
-                                ui.notify(str(exc), type="negative")
+                            except (OSError, sqlite3.Error):
+                                ui.notify(
+                                    "Generation prompt could not be saved locally.",
+                                    type="negative",
+                                )
                                 return
                             ui.notify("Generation prompt saved locally.", type="positive")
 
@@ -822,6 +826,14 @@ def create_ui(db_path: Path, *, sandboxed: bool) -> None:
                     prompt_editor.value = prompt
                     state["prompt_packet"] = packet
                     job.start(packet, prompt=prompt, executable=cli_path)
+                except sqlite3.Error:
+                    ui.notify(
+                        "Workspace preferences could not be saved; "
+                        "generation was not started.",
+                        color="negative",
+                    )
+                    set_prerequisite_busy(False)
+                    return
                 except (OSError, TypeError, ValueError, RuntimeError) as exc:
                     ui.notify(str(exc), color="negative", multi_line=True)
                     set_prerequisite_busy(False)

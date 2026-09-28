@@ -1735,7 +1735,9 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                 def save_settings() -> None:
                     try:
                         save_planning_settings(db_path, collect_settings())
-                    except (OSError, TypeError, ValueError) as exc:
+                    except (OSError, sqlite3.Error):
+                        _notify_error("Planning settings could not be saved.")
+                    except (TypeError, ValueError) as exc:
                         _notify_error(exc)
                     else:
                         ui.notify("Planning settings saved locally.", type="positive")
@@ -2039,11 +2041,19 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                         if high and threshold and threshold >= high:
                             _notify_error("LTHR must be below HRmax")
                             return
-                        set_override_metrics(db_path, high, threshold)
+                        try:
+                            set_override_metrics(db_path, high, threshold)
+                        except (OSError, sqlite3.Error):
+                            _notify_error("Threshold overrides could not be saved.")
+                            return
                         ui.notify("Threshold overrides saved.", type="positive")
 
                     def clear_thresholds() -> None:
-                        clear_override_metrics(db_path)
+                        try:
+                            clear_override_metrics(db_path)
+                        except (OSError, sqlite3.Error):
+                            _notify_error("Threshold overrides could not be cleared.")
+                            return
                         ui.notify("Threshold overrides cleared.", type="positive")
 
                     async def recalculate() -> None:
@@ -2056,7 +2066,11 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                         if error:
                             _notify_error(error)
                             return
-                        set_calculated_metrics(db_path, high, threshold)
+                        try:
+                            set_calculated_metrics(db_path, high, threshold)
+                        except (OSError, sqlite3.Error):
+                            _notify_error("Calculated thresholds could not be saved.")
+                            return
                         hrmax.value = high or 0
                         lthr.value = threshold or 0
                         ui.notify("Calculated thresholds refreshed.", type="positive")
@@ -3441,7 +3455,10 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
             def save_preferences() -> None:
                 try:
                     save_interface_settings(db_path, field_values())
-                except (OSError, TypeError, ValueError) as exc:
+                except (OSError, sqlite3.Error):
+                    _notify_error("Interface settings could not be saved.")
+                    return
+                except (TypeError, ValueError) as exc:
                     _notify_error(exc)
                     return
                 ui.notify(

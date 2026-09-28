@@ -329,11 +329,16 @@ def persist_workspace_preferences(
     *,
     lookback_weeks: int,
 ) -> WorkspaceContext:
-    for preference, setting in PREFERENCE_TO_SETTING.items():
-        save_plan_setting(context.db_path, setting, str(preferences.get(preference, "")))
-    save_plan_setting(
-        context.db_path, "chatgpt_exchange_lookback_weeks", int(lookback_weeks)
-    )
+    values = {
+        setting: str(preferences.get(preference, ""))
+        for preference, setting in PREFERENCE_TO_SETTING.items()
+    }
+    values["chatgpt_exchange_lookback_weeks"] = int(lookback_weeks)
+    conn = connect_sqlite(context.db_path)
+    try:
+        db_queries.set_settings(conn, values)
+    finally:
+        conn.close()
     return load_workspace_context(context.db_path, sandboxed=context.sandboxed)
 
 

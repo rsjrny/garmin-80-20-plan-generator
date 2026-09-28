@@ -3,7 +3,7 @@ import logging
 import math
 import sqlite3
 from datetime import datetime, timezone
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 import pandas as pd
 
 from garmin_data_hub.analytics.temporal_metrics import (
@@ -122,13 +122,37 @@ def get_setting(conn, key: str, default: Any):
 
 
 def set_setting(conn, key: str, value: Any) -> None:
-    """Upsert a JSON-serialised setting value."""
+    """Upsert and durably commit a JSON-serialised setting value."""
+    serialized = json.dumps(value)
     try:
-        conn.execute(UPSERT_SETTING_SQL, (key, json.dumps(value)))
+        conn.execute(UPSERT_SETTING_SQL, (key, serialized))
         conn.commit()
-    except (sqlite3.Error, TypeError, ValueError):
+    except Exception:
+        try:
+            if conn.in_transaction:
+                conn.rollback()
+        except Exception:
+            logger.exception("Failed to roll back app setting '%s'", key)
         logger.warning("Failed to persist app setting '%s'", key, exc_info=True)
-        return
+        raise
+
+
+def set_settings(conn, values: Mapping[str, Any]) -> None:
+    """Persist a group of JSON-serialised settings in one owned transaction."""
+    rows = [(key, json.dumps(value)) for key, value in values.items()]
+    try:
+        conn.execute("BEGIN")
+        for row in rows:
+            conn.execute(UPSERT_SETTING_SQL, row)
+        conn.commit()
+    except Exception:
+        try:
+            if conn.in_transaction:
+                conn.rollback()
+        except Exception:
+            logger.exception("Failed to roll back grouped app settings")
+        logger.warning("Failed to persist grouped app settings", exc_info=True)
+        raise
 
 
 GET_DISTINCT_SPORTS_SQL = """
@@ -1027,9 +1051,8 @@ def _update_athlete_profile_thresholds(
                 conn.rollback()
         except Exception:
             logger.exception("Failed to roll back athlete threshold update")
-        if caller_owns_transaction or not commit:
-            raise
         logger.warning("Failed to update athlete thresholds", exc_info=True)
+        raise
 
 
 def set_calculated_metrics(

@@ -164,8 +164,13 @@ def save_interface_settings(db_path: Path, values: Mapping[str, Any]) -> dict[st
     normalized = _validated_interface_settings(values)
     conn = connect_sqlite(db_path)
     try:
-        for friendly, key in INTERFACE_SETTING_KEYS.items():
-            queries.set_setting(conn, key, normalized[friendly])
+        queries.set_settings(
+            conn,
+            {
+                key: normalized[friendly]
+                for friendly, key in INTERFACE_SETTING_KEYS.items()
+            },
+        )
     finally:
         conn.close()
     return normalized
