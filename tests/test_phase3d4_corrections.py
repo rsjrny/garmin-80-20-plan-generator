@@ -8,7 +8,11 @@ import pytest
 
 from garmin_data_hub.analytics.athlete_profile import update_athlete_profile
 from garmin_data_hub.db import queries
-from garmin_data_hub.db.migrate import apply_schema, get_current_schema_version
+from garmin_data_hub.db.migrate import (
+    CURRENT_SCHEMA_VERSION,
+    apply_schema,
+    get_current_schema_version,
+)
 from garmin_data_hub.paths import schema_sql_path
 from garmin_data_hub.services import coaching_packet, thresholds
 
@@ -359,7 +363,7 @@ def test_v5_to_v6_to_v7_preserves_values_and_adds_honest_provenance(tmp_path):
 
         apply_schema(conn, schema_sql_path())
 
-        assert get_current_schema_version(conn) == 7
+        assert get_current_schema_version(conn) == CURRENT_SCHEMA_VERSION
         metric_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(activity_metrics)")
         }

@@ -24,6 +24,7 @@ dev = [
 
 [project.scripts]
 garmin-sync = "garmin_data_hub.cli_backup_ingest:main"
+garmin-reconcile-trackpoints = "garmin_data_hub.cli_archive_reconcile:main"
 garmin-data-hub = "garmin_data_hub.ui_nicegui.app:main"
 garmin-nicegui-preview = "garmin_data_hub.ui_nicegui.app:main"
 

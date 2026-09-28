@@ -5,7 +5,7 @@ import sqlite3
 
 logger = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION = 7
+CURRENT_SCHEMA_VERSION = 8
 
 
 def _ensure_schema_migrations_table(conn: sqlite3.Connection) -> None:
@@ -291,6 +291,61 @@ def _migration_7_add_threshold_calculation_provenance(
     conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
 
 
+def _migration_8_add_archive_reconciliation(conn: sqlite3.Connection) -> None:
+    """Add the app-owned historical archive reconciliation ledger."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS archive_reconciliation (
+          reconciliation_id      INTEGER PRIMARY KEY,
+          archive_identity       TEXT NOT NULL,
+          target_activity_id     INTEGER,
+          archive_format         TEXT NOT NULL
+            CHECK (archive_format IN ('fit', 'gpx', 'tcx', 'unknown')),
+          source_size            INTEGER NOT NULL CHECK (source_size >= 0),
+          source_mtime_ns        INTEGER NOT NULL CHECK (source_mtime_ns >= 0),
+          source_sha256          TEXT NOT NULL
+            CHECK (
+              length(source_sha256) = 64
+              AND source_sha256 = lower(source_sha256)
+              AND source_sha256 NOT GLOB '*[^0-9a-f]*'
+            ),
+          algorithm_version      TEXT NOT NULL,
+          status                 TEXT NOT NULL
+            CHECK (status IN (
+              'ingested', 'resolved_no_records', 'unsupported', 'malformed',
+              'mismatch', 'ambiguous', 'parser_error', 'write_error'
+            )),
+          reason_code            TEXT,
+          identity_evidence_json TEXT NOT NULL DEFAULT '{}',
+          trackpoint_count       INTEGER NOT NULL DEFAULT 0
+            CHECK (trackpoint_count >= 0),
+          attempted_at_utc       TEXT NOT NULL,
+          completed_at_utc       TEXT,
+          FOREIGN KEY (target_activity_id) REFERENCES activity(activity_id),
+          UNIQUE (
+            archive_identity, target_activity_id, source_size, source_mtime_ns,
+            source_sha256, algorithm_version
+          )
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_archive_reconciliation_fingerprint
+        ON archive_reconciliation(
+          archive_identity, target_activity_id, source_size, source_mtime_ns,
+          source_sha256, algorithm_version
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_archive_reconciliation_status
+        ON archive_reconciliation(status, target_activity_id)
+        """
+    )
+
+
 def _fix_trackpoint_cascade(conn: sqlite3.Connection) -> None:
     """Remove ON DELETE CASCADE from activity_trackpoints if present.
 
@@ -453,6 +508,11 @@ def apply_schema(conn: sqlite3.Connection, schema_path: Path | None = None) -> N
             "add threshold calculation provenance",
             lambda: _migration_7_add_threshold_calculation_provenance(conn),
         ),
+        (
+            8,
+            "add historical archive reconciliation ledger",
+            lambda: _migration_8_add_archive_reconciliation(conn),
+        ),
     ]
 
     current_version = _get_current_schema_version(conn)
@@ -460,8 +520,8 @@ def apply_schema(conn: sqlite3.Connection, schema_path: Path | None = None) -> N
     for version, name, migration in migrations:
         if current_version >= version:
             continue
-        if version == 7:
-            boundary = "migration_7_with_version_record"
+        if version >= 7:
+            boundary = f"migration_{version}_with_version_record"
             conn.execute(f"SAVEPOINT {boundary}")
             try:
                 migration()
@@ -486,6 +546,8 @@ def apply_schema(conn: sqlite3.Connection, schema_path: Path | None = None) -> N
         _migration_6_add_metric_refresh_provenance(conn)
     if recorded_version >= 7:
         _migration_7_add_threshold_calculation_provenance(conn)
+    if recorded_version >= 8:
+        _migration_8_add_archive_reconciliation(conn)
 
     # Keep baseline DDL idempotent so new installs and reruns remain safe.
     conn.executescript(schema_sql)

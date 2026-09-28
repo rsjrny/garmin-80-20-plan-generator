@@ -1930,6 +1930,7 @@ def refresh_persisted_activity_metrics(
     activity_ids: Iterable[int] | None = None,
     start_ts_iso: str | None = None,
     lthr: int | None = None,
+    excluded_activity_ids: Iterable[int] | None = None,
 ) -> dict[str, int]:
     """Refresh persisted `activity_metrics` fields after sync.
 
@@ -1985,10 +1986,19 @@ def refresh_persisted_activity_metrics(
                     )
 
     try:
+        excluded_ids = {
+            int(activity_id)
+            for activity_id in (excluded_activity_ids or [])
+            if activity_id is not None and int(activity_id) > 0
+        }
         candidate_ids: list[int] = []
         if activity_ids is not None:
             candidate_ids = [
-                int(aid) for aid in activity_ids if aid is not None and int(aid) > 0
+                int(aid)
+                for aid in activity_ids
+                if aid is not None
+                and int(aid) > 0
+                and int(aid) not in excluded_ids
             ]
         candidate_ids = list(dict.fromkeys(candidate_ids))
 
@@ -2002,13 +2012,21 @@ def refresh_persisted_activity_metrics(
                 if not row or row[0] is None:
                     continue
                 activity_id = int(row[0])
-                if activity_id not in candidate_id_set:
+                if (
+                    activity_id not in excluded_ids
+                    and activity_id not in candidate_id_set
+                ):
                     candidate_ids.append(activity_id)
                     candidate_id_set.add(activity_id)
-        elif not candidate_ids:
-            # An empty explicit list retains the historical all-activity fallback.
+        elif activity_ids is None:
+            # ``None`` deliberately requests the historical all-activity behavior.
+            # An explicit empty collection means there are exactly zero targets.
             rows = conn.execute("SELECT activity_id FROM activity").fetchall()
-            candidate_ids = [int(r[0]) for r in rows if r and r[0] is not None]
+            candidate_ids = [
+                int(r[0])
+                for r in rows
+                if r and r[0] is not None and int(r[0]) not in excluded_ids
+            ]
 
         if not candidate_ids:
             return summary

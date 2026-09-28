@@ -155,7 +155,7 @@ def test_refresh_persisted_activity_metrics_updates_zone_totals(db_conn):
     assert diagnostics["last_refresh_utc"] is not None
 
 
-def test_refresh_persisted_activity_metrics_empty_activity_ids_falls_back_to_all(
+def test_refresh_persisted_activity_metrics_empty_activity_ids_targets_none(
     db_conn,
 ):
     _insert_activity(db_conn, 7, max_hr=181, training_stress_score=42.0)
@@ -168,9 +168,9 @@ def test_refresh_persisted_activity_metrics_empty_activity_ids_falls_back_to_all
     )
 
     assert summary["errors"] == 0
-    assert summary["target_activities"] == 1
-    assert summary["rows_upserted"] == 1
-    assert summary["zones_updated"] == 1
+    assert summary["target_activities"] == 0
+    assert summary["rows_upserted"] == 0
+    assert summary["zones_updated"] == 0
 
 
 def test_list_activities_needing_metrics_ignores_optional_trimp_tss_gaps(db_conn):

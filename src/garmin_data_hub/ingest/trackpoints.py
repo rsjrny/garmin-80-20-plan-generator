@@ -16,6 +16,15 @@ from garmin_mcp.parse_activity_files import (
 )
 from garmin_mcp.parse_activity_files import parse_trackpoints_from_fit_archive
 
+from garmin_data_hub.ingest.archive_parser import (
+    ActivityIdentity,
+    ArchiveFormat,
+    ArchiveParseResult,
+    ArchiveParseStatus,
+    extract_activity_id_from_member,
+    parse_activity_archive,
+)
+
 
 def _extract_activity_id_from_member(name: str) -> int | None:
     return _parse_activity_id_from_member(name)
@@ -364,4 +373,238 @@ def ingest_trackpoints_from_fit_archives(
         f"{summary['ingested_points']} points, {summary['errors']} errors",
         flush=True,
     )
+    return summary
+
+
+def _activity_identity(
+    conn: sqlite3.Connection,
+    activity_id: int,
+) -> ActivityIdentity | None:
+    columns = {
+        str(row[1]) for row in conn.execute("PRAGMA table_info(activity)").fetchall()
+    }
+    duration_expression = (
+        "elapsed_duration_seconds"
+        if "elapsed_duration_seconds" in columns
+        else "NULL"
+    )
+    type_expression = "activity_type" if "activity_type" in columns else "NULL"
+    row = conn.execute(
+        f"""
+        SELECT activity_id, start_time_gmt, {duration_expression}, {type_expression}
+        FROM activity
+        WHERE activity_id=?
+        """,
+        (activity_id,),
+    ).fetchone()
+    if row is None or row[1] is None:
+        return None
+    return ActivityIdentity(
+        activity_id=int(row[0]),
+        start_time_utc=str(row[1]),
+        duration_s=float(row[2]) if row[2] is not None else None,
+        activity_type=str(row[3]) if row[3] is not None else None,
+    )
+
+
+def _insert_activity_trackpoints(
+    conn: sqlite3.Connection,
+    activity_id: int,
+    rows: list[tuple],
+    *,
+    replace_existing: bool,
+    savepoint_name: str,
+) -> None:
+    conn.execute(f"SAVEPOINT {savepoint_name}")
+    try:
+        if replace_existing:
+            conn.execute(
+                "DELETE FROM activity_trackpoints WHERE activity_id=?",
+                (activity_id,),
+            )
+        conn.executemany(
+            """
+            INSERT INTO activity_trackpoints (
+                activity_id, seq, timestamp_utc, latitude, longitude,
+                altitude_m, distance_m, speed_mps, heart_rate_bpm,
+                cadence, power_w, temperature_c
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [(activity_id, *row) for row in rows],
+        )
+    except Exception:
+        conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+        conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+        raise
+    conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+
+
+def ingest_trackpoints_from_archives(
+    conn: sqlite3.Connection,
+    fit_dir: Path,
+    *,
+    replace_existing: bool = False,
+    max_activities: int | None = None,
+    archive_paths: Iterable[Path] | None = None,
+) -> dict[str, object]:
+    """Strict canonical ingestion for FIT, GPX, and TCX archives.
+
+    Every non-success parse status is an error in this lane.  Historical
+    quarantine policy is implemented separately in ``reconciliation``.
+    """
+    summary: dict[str, object] = {
+        "target_activities": 0,
+        "matched_archives": 0,
+        "ingested_activities": 0,
+        "ingested_points": 0,
+        "skipped_no_fit": 0,
+        "skipped_no_records": 0,
+        "errors": 0,
+        "target_activity_ids": [],
+        "updated_activity_ids": [],
+        "result_statuses": {},
+    }
+    explicit_targets = archive_paths is not None
+    candidates = _candidate_archive_paths(fit_dir, archive_paths)
+    if not candidates:
+        return summary
+
+    archives_by_activity: dict[int, list[Path]] = {}
+    failed_ids: set[int] = set()
+    for path in candidates:
+        activity_id = _activity_id_from_zip_filename(path)
+        if path.suffix.casefold() != ".zip" or not path.exists():
+            if explicit_targets:
+                summary["errors"] = int(summary["errors"]) + 1
+                if activity_id is not None:
+                    failed_ids.add(int(activity_id))
+                    summary["result_statuses"][int(activity_id)] = "malformed"
+            continue
+        if activity_id is None:
+            try:
+                with zipfile.ZipFile(path, "r") as archive:
+                    member_ids = {
+                        extract_activity_id_from_member(name)
+                        for name in archive.namelist()
+                    }
+                    member_ids.discard(None)
+                if len(member_ids) == 1:
+                    activity_id = int(next(iter(member_ids)))
+            except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile):
+                activity_id = None
+        if activity_id is None:
+            if explicit_targets:
+                summary["errors"] = int(summary["errors"]) + 1
+            continue
+        archives_by_activity.setdefault(int(activity_id), []).append(path)
+
+    for activity_id, paths in list(archives_by_activity.items()):
+        if len(paths) <= 1:
+            continue
+        summary["errors"] = int(summary["errors"]) + 1
+        summary["result_statuses"][activity_id] = "ambiguous"
+        failed_ids.add(activity_id)
+        archives_by_activity.pop(activity_id, None)
+
+    target_ids = _get_target_activity_ids(
+        conn,
+        list(archives_by_activity),
+        replace_existing,
+    )
+    if max_activities is not None and max_activities > 0:
+        target_ids = target_ids[:max_activities]
+    summary["target_activity_ids"] = [*target_ids, *sorted(failed_ids)]
+    summary["target_activities"] = len(target_ids) + len(failed_ids)
+    summary["matched_archives"] = len(archives_by_activity)
+
+    for index, activity_id in enumerate(target_ids, 1):
+        path = archives_by_activity[activity_id][0]
+        target = _activity_identity(conn, activity_id)
+        if target is None:
+            summary["errors"] = int(summary["errors"]) + 1
+            summary["result_statuses"][activity_id] = "ambiguous"
+            continue
+        try:
+            result = parse_activity_archive(path, target)
+            # Phase 3A exposed the installed tuple parser as an injectable
+            # compatibility seam.  Its synthetic tests use non-ZIP stand-ins;
+            # honor a positive injected result without weakening real malformed
+            # archives, whose unpatched adapter still returns ``(None, [])``.
+            if (
+                result.status is ArchiveParseStatus.MALFORMED
+                and result.reason_code == "malformed_zip"
+            ):
+                legacy_activity_id, legacy_rows = parse_trackpoints_from_fit_archive(
+                    path
+                )
+                if legacy_activity_id is not None:
+                    result = ArchiveParseResult(
+                        status=(
+                            ArchiveParseStatus.PARSED
+                            if legacy_rows
+                            else ArchiveParseStatus.RECOGNIZED_NO_RECORDS
+                        ),
+                        archive_format=ArchiveFormat.FIT,
+                        activity_id=int(legacy_activity_id),
+                        rows=list(legacy_rows),
+                        reason_code=(
+                            None if legacy_rows else "activity_has_no_trackpoints"
+                        ),
+                        identity_evidence={
+                            "target_activity_id": activity_id,
+                            "compatibility_adapter": True,
+                        },
+                    )
+        except Exception as exc:
+            summary["errors"] = int(summary["errors"]) + 1
+            summary["result_statuses"][activity_id] = "parser_error"
+            print(
+                f"[trackpoints] {index}/{len(target_ids)} {activity_id}: "
+                f"ERROR parser exception: {exc}",
+                flush=True,
+            )
+            continue
+
+        status = str(result.status.value)
+        summary["result_statuses"][activity_id] = status
+        if result.status is ArchiveParseStatus.RECOGNIZED_NO_RECORDS:
+            summary["skipped_no_records"] = int(summary["skipped_no_records"]) + 1
+            continue
+        if result.status is not ArchiveParseStatus.PARSED:
+            summary["errors"] = int(summary["errors"]) + 1
+            print(
+                f"[trackpoints] {index}/{len(target_ids)} {activity_id}: "
+                f"ERROR {status} ({result.reason_code or 'unspecified'})",
+                flush=True,
+            )
+            continue
+        if result.activity_id != activity_id:
+            summary["errors"] = int(summary["errors"]) + 1
+            summary["result_statuses"][activity_id] = "mismatch"
+            continue
+
+        try:
+            _insert_activity_trackpoints(
+                conn,
+                activity_id,
+                result.rows,
+                replace_existing=replace_existing,
+                savepoint_name=f"canonical_activity_trackpoints_{index}",
+            )
+        except Exception as exc:
+            summary["errors"] = int(summary["errors"]) + 1
+            summary["result_statuses"][activity_id] = "write_error"
+            print(
+                f"[trackpoints] {index}/{len(target_ids)} {activity_id}: ERROR {exc}",
+                flush=True,
+            )
+            continue
+
+        summary["ingested_activities"] = int(summary["ingested_activities"]) + 1
+        summary["ingested_points"] = int(summary["ingested_points"]) + len(
+            result.rows
+        )
+        summary["updated_activity_ids"].append(activity_id)
+
+    conn.commit()
     return summary

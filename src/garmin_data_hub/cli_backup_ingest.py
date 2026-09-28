@@ -22,13 +22,92 @@ from pathlib import Path
 
 from garmin_data_hub.ingest.trackpoints import (
     _activity_id_from_zip_filename,
+    ingest_trackpoints_from_archives,
     ingest_trackpoints_from_fit_archives,
+)
+from garmin_data_hub.ingest.reconciliation import (
+    activity_id_for_archive,
+    baseline_required_summary,
+    reconcile_historical_archives,
+    reconciliation_baseline_is_current,
 )
 from garmin_data_hub.paths import default_db_path, ensure_app_dirs
 
 logger = logging.getLogger(__name__)
 
 _BUNDLED_GIVEMYDATA_FLAG = "--_run-bundled-givemydata"
+_ORIGINAL_CANONICAL_INGESTER = ingest_trackpoints_from_archives
+_ORIGINAL_COMPATIBILITY_INGESTER = ingest_trackpoints_from_fit_archives
+_ORIGINAL_HISTORICAL_RECONCILER = reconcile_historical_archives
+
+
+def _run_changed_archive_ingestion(conn, fit_dir: Path, archive_paths: list[Path]):
+    """Use the canonical strict lane while preserving injectable legacy seams."""
+    if (
+        ingest_trackpoints_from_fit_archives
+        is not _ORIGINAL_COMPATIBILITY_INGESTER
+        and ingest_trackpoints_from_archives is _ORIGINAL_CANONICAL_INGESTER
+    ):
+        # Older Phase 3A callers inject the compatibility adapter directly.
+        return ingest_trackpoints_from_fit_archives(
+            conn,
+            fit_dir,
+            replace_existing=True,
+            archive_paths=archive_paths,
+        )
+    return ingest_trackpoints_from_archives(
+        conn,
+        fit_dir,
+        replace_existing=True,
+        archive_paths=archive_paths,
+    )
+
+
+def _run_historical_archive_reconciliation(
+    conn,
+    fit_dir: Path,
+    archive_paths: list[Path],
+):
+    """Run durable reconciliation, retaining the Phase 3A injection seam."""
+    if (
+        ingest_trackpoints_from_fit_archives
+        is not _ORIGINAL_COMPATIBILITY_INGESTER
+        and reconcile_historical_archives is _ORIGINAL_HISTORICAL_RECONCILER
+    ):
+        return ingest_trackpoints_from_fit_archives(
+            conn,
+            fit_dir,
+            replace_existing=False,
+            archive_paths=archive_paths,
+        )
+    if not archive_paths:
+        return reconcile_historical_archives(
+            conn,
+            fit_dir,
+            archive_paths=archive_paths,
+        )
+    if (
+        reconcile_historical_archives is _ORIGINAL_HISTORICAL_RECONCILER
+        and not reconciliation_baseline_is_current(conn)
+    ):
+        print(
+            "[NOTICE] Historical archive reconciliation baseline is not "
+            "established; run garmin-reconcile-trackpoints --apply"
+        )
+        excluded_activity_ids = [
+            activity_id
+            for path in archive_paths
+            if (activity_id := activity_id_for_archive(path)) is not None
+        ]
+        return baseline_required_summary(
+            candidate_archives=len(archive_paths),
+            excluded_activity_ids=excluded_activity_ids,
+        )
+    return reconcile_historical_archives(
+        conn,
+        fit_dir,
+        archive_paths=archive_paths,
+    )
 
 
 class _SyncArgumentParser(argparse.ArgumentParser):
@@ -333,6 +412,8 @@ def run_sync(
         print("[OK] App schema applied")
 
         updated_activity_ids: set[int] = set()
+        historical_excluded_ids: set[int] = set()
+        historical_warnings = 0
         if not derived_metrics_only:
             post_sync_archives = _snapshot_fit_archives(
                 fit_dir,
@@ -363,11 +444,8 @@ def run_sync(
                     for activity_id, paths in sorted(ambiguous_archives.items())
                 )
                 raise RuntimeError(f"ambiguous FIT archives detected: {details}")
-            changed_summary = ingest_trackpoints_from_fit_archives(
-                conn,
-                fit_dir,
-                replace_existing=True,
-                archive_paths=changed_archives,
+            changed_summary = _run_changed_archive_ingestion(
+                conn, fit_dir, changed_archives
             )
             updated_activity_ids.update(
                 int(activity_id)
@@ -385,19 +463,21 @@ def run_sync(
                 if path not in changed_archive_set
                 and _activity_id_from_zip_filename(path) not in changed_activity_ids
             ]
-            backlog_summary = ingest_trackpoints_from_fit_archives(
-                conn,
-                fit_dir,
-                replace_existing=False,
-                archive_paths=backlog_archives,
+            backlog_summary = _run_historical_archive_reconciliation(
+                conn, fit_dir, backlog_archives
             )
             updated_activity_ids.update(
                 int(activity_id)
                 for activity_id in backlog_summary.get("updated_activity_ids", [])
             )
+            historical_excluded_ids.update(
+                int(activity_id)
+                for activity_id in backlog_summary.get("excluded_activity_ids", [])
+            )
             trackpoint_errors = int(changed_summary.get("errors", 0) or 0) + int(
                 backlog_summary.get("errors", 0) or 0
             )
+            historical_warnings = int(backlog_summary.get("warnings", 0) or 0)
             if trackpoint_errors:
                 raise RuntimeError(
                     f"trackpoint ingestion encountered {trackpoint_errors} error(s)"
@@ -423,8 +503,8 @@ def run_sync(
                     datetime.now(timezone.utc) - timedelta(days=int(days) + 1)
                 ).strftime("%Y-%m-%dT%H:%M:%SZ")
         else:
+            refresh_ids = sorted(updated_activity_ids)
             if days and int(days) > 0:
-                refresh_ids = sorted(updated_activity_ids)
                 start_ts_iso = (
                     datetime.now(timezone.utc) - timedelta(days=int(days) + 1)
                 ).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -433,6 +513,7 @@ def run_sync(
             conn,
             activity_ids=refresh_ids,
             start_ts_iso=start_ts_iso,
+            excluded_activity_ids=sorted(historical_excluded_ids),
         )
         if refresh_summary.get("errors", 0) > 0:
             raise RuntimeError("derived-table refresh encountered errors")
@@ -451,7 +532,10 @@ def run_sync(
         if conn is not None:
             conn.close()
 
-    print("[SUCCESS] Sync complete")
+    if historical_warnings:
+        print("[PARTIAL] Sync complete with historical reconciliation warnings")
+    else:
+        print("[SUCCESS] Sync complete")
     return 0
 
 

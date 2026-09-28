@@ -5,7 +5,11 @@ import sqlite3
 import pytest
 
 from garmin_data_hub.db import migrate
-from garmin_data_hub.db.migrate import apply_schema, get_current_schema_version
+from garmin_data_hub.db.migrate import (
+    CURRENT_SCHEMA_VERSION,
+    apply_schema,
+    get_current_schema_version,
+)
 from garmin_data_hub.paths import schema_sql_path
 
 
@@ -91,7 +95,7 @@ def test_v7_preserves_values_and_records_honest_unknown_provenance(tmp_path):
             ("resting_hr", 49, "unknown"),
         ]
         assert all(all(value is None for value in row[3:]) for row in rows)
-        assert get_current_schema_version(conn) == 7
+        assert get_current_schema_version(conn) == CURRENT_SCHEMA_VERSION
     finally:
         conn.close()
 
