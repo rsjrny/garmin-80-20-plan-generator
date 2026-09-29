@@ -444,6 +444,7 @@ $pyinstallerArgsCli = @(
     "--specpath", $CliBuildDir,
     "--add-data", ((Join-Path $ProjectRoot 'src\garmin_data_hub\db\schema.sql') + ";garmin_data_hub/db"),
     "--hidden-import", "garmin_givemydata",
+    "--copy-metadata", "garmin-givemydata",
     "--collect-all", "garmin_client",
     "--collect-all", "garmin_mcp",
     "--collect-all", "seleniumbase",

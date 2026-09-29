@@ -12,11 +12,14 @@ Usage examples:
 
 import sys
 import argparse
+import importlib.metadata
 import logging
 import subprocess
 import multiprocessing
 import os
+import re
 import stat
+import sysconfig
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -36,6 +39,8 @@ from garmin_data_hub.paths import default_db_path, ensure_app_dirs
 logger = logging.getLogger(__name__)
 
 _BUNDLED_GIVEMYDATA_FLAG = "--_run-bundled-givemydata"
+_GIVEMYDATA_DISTRIBUTION = "garmin-givemydata"
+_SUPPORTED_GIVEMYDATA_VERSION = "0.1.12"
 _ORIGINAL_CANONICAL_INGESTER = ingest_trackpoints_from_archives
 _ORIGINAL_COMPATIBILITY_INGESTER = ingest_trackpoints_from_fit_archives
 _ORIGINAL_HISTORICAL_RECONCILER = reconcile_historical_archives
@@ -239,25 +244,100 @@ def _clear_stale_chrome_profile_locks(profile_dir: Path) -> None:
         print(f"[INFO] Cleared {removed} stale browser profile lock file(s)")
 
 
-def _find_givemydata_cmd() -> list[str] | None:
+def _find_givemydata_cmd() -> list[str]:
     """Return a runnable garmin-givemydata command for this environment.
 
     A frozen build reuses this executable with an internal dispatch flag.  Pip's
     Windows console launcher cannot be copied into a release because it embeds
-    the absolute path to the build virtual environment.
+    the absolute path to the build virtual environment.  Source and installed
+    execution use the current interpreter in isolated mode so neither PATH nor
+    the sync working directory can select another environment's code.  ``-u``
+    preserves the unbuffered logging behavior that isolated mode would
+    otherwise ignore from ``PYTHONUNBUFFERED``.
     """
-    import shutil
-
     if getattr(sys, "frozen", False):
         return [sys.executable, _BUNDLED_GIVEMYDATA_FLAG]
 
-    found = shutil.which("garmin-givemydata")
-    if found:
-        return [found]
+    return [sys.executable, "-I", "-u", "-m", "garmin_givemydata"]
 
-    print("[ERROR] 'garmin-givemydata' not found.")
-    print("[INFO]  Install it: pip install garmin-givemydata")
-    return None
+
+def _isolated_givemydata_runtime_version() -> str:
+    """Read upstream metadata only from this interpreter's package roots."""
+    package_roots = {
+        path
+        for scheme in ("purelib", "platlib")
+        if (path := sysconfig.get_path(scheme))
+    }
+    canonical_name = re.sub(r"[-_.]+", "-", _GIVEMYDATA_DISTRIBUTION).casefold()
+    matches = [
+        distribution
+        for distribution in importlib.metadata.distributions(
+            path=sorted(package_roots)
+        )
+        if re.sub(
+            r"[-_.]+",
+            "-",
+            str(distribution.metadata.get("Name", "")),
+        ).casefold()
+        == canonical_name
+    ]
+    if not matches:
+        raise importlib.metadata.PackageNotFoundError(_GIVEMYDATA_DISTRIBUTION)
+    versions = {distribution.version for distribution in matches}
+    if len(versions) != 1:
+        raise RuntimeError(
+            "multiple garmin-givemydata versions exist in the selected runtime"
+        )
+    return versions.pop()
+
+
+def _validate_givemydata_runtime_version() -> bool:
+    """Require the supported upstream version in the selected environment."""
+    try:
+        installed_version = importlib.metadata.version(_GIVEMYDATA_DISTRIBUTION)
+    except importlib.metadata.PackageNotFoundError:
+        print(
+            "[ERROR] garmin-givemydata is not installed in the same Python "
+            "environment as Garmin Data Hub "
+            f"(required version {_SUPPORTED_GIVEMYDATA_VERSION})."
+        )
+        return False
+    except Exception as exc:
+        print(f"[ERROR] Could not determine garmin-givemydata version: {exc}")
+        return False
+
+    if installed_version != _SUPPORTED_GIVEMYDATA_VERSION:
+        print(
+            "[ERROR] garmin-givemydata version mismatch in the selected "
+            f"runtime: requires {_SUPPORTED_GIVEMYDATA_VERSION}, "
+            f"found {installed_version}."
+        )
+        return False
+
+    if not getattr(sys, "frozen", False):
+        try:
+            isolated_version = _isolated_givemydata_runtime_version()
+        except importlib.metadata.PackageNotFoundError:
+            print(
+                "[ERROR] garmin-givemydata is not installed in the isolated "
+                "Python runtime selected for execution "
+                f"(required version {_SUPPORTED_GIVEMYDATA_VERSION})."
+            )
+            return False
+        except Exception as exc:
+            print(
+                "[ERROR] Could not determine isolated garmin-givemydata "
+                f"version: {exc}"
+            )
+            return False
+        if isolated_version != installed_version:
+            print(
+                "[ERROR] garmin-givemydata metadata does not match the selected "
+                f"isolated runtime: checked {installed_version}, "
+                f"selected {isolated_version}."
+            )
+            return False
+    return True
 
 
 def _run_bundled_givemydata(args: list[str]) -> int:
@@ -267,6 +347,9 @@ def _run_bundled_givemydata(args: list[str]) -> int:
     except ValueError as exc:
         print(f"[ERROR] Unsupported upstream sync argument: {exc}", file=sys.stderr)
         return 2
+
+    if not _validate_givemydata_runtime_version():
+        return 1
 
     original_argv = sys.argv
     sys.argv = ["garmin-givemydata", *args]
@@ -329,6 +412,12 @@ def run_sync(
         print(f"[ERROR] Unsupported upstream sync argument: {exc}")
         return 2
 
+    cmd = None
+    if not derived_metrics_only:
+        cmd = _find_givemydata_cmd()
+        if not _validate_givemydata_runtime_version():
+            return 1
+
     ensure_app_dirs()
 
     print("=" * 60)
@@ -338,12 +427,6 @@ def run_sync(
     if days:
         print(f"Days:     {days}")
     print()
-
-    cmd = None
-    if not derived_metrics_only:
-        cmd = _find_givemydata_cmd()
-        if not cmd:
-            return 1
 
     data_dir = db_path.parent
 
