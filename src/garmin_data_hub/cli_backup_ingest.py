@@ -12,6 +12,7 @@ Usage examples:
 
 import sys
 import argparse
+import contextlib
 import importlib.metadata
 import logging
 import subprocess
@@ -20,6 +21,7 @@ import os
 import re
 import stat
 import sysconfig
+import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -44,6 +46,76 @@ _SUPPORTED_GIVEMYDATA_VERSION = "0.1.12"
 _ORIGINAL_CANONICAL_INGESTER = ingest_trackpoints_from_archives
 _ORIGINAL_COMPATIBILITY_INGESTER = ingest_trackpoints_from_fit_archives
 _ORIGINAL_HISTORICAL_RECONCILER = reconcile_historical_archives
+
+_REDACTED = "<REDACTED>"
+_MIN_KNOWN_SENSITIVE_VALUE_BYTES = 8
+_DISPLAY_NAME_PATTERN = re.compile(
+    r"(?i)(?P<prefix>['\"]?display(?:[_ -]?name)?['\"]?\s*[:=]\s*)"
+    r"(?:(?P<quote>['\"])(?P<quoted_value>[^\r\n]*?)(?P=quote)|"
+    r"(?P<value>[^\r\n;,}\]]+))"
+)
+_SENSITIVE_FIELD_PATTERN = re.compile(
+    r"(?i)(?P<prefix>['\"]?(?:user(?:name)?|email|display(?:[_ -]?name)?|"
+    r"password|access[_ -]?token|refresh[_ -]?token|cookie|"
+    r"session(?:[_ -]?id)?)['\"]?\s*[:=]\s*)"
+    r"(?:(?P<quote>['\"])(?P<quoted_value>[^\r\n]*?)(?P=quote)|"
+    r"(?P<value>[^\s;,'\"}\]]+))"
+)
+_BEARER_TOKEN_PATTERN = re.compile(
+    r"(?i)(?P<prefix>['\"]?authorization['\"]?\s*[:=]\s*)"
+    r"(?P<quote>['\"]?)(?P<scheme>bearer\s+)"
+    r"(?P<value>[^\s;,'\"}\]]+)(?P=quote)"
+)
+_COOKIE_HEADER_PATTERN = re.compile(
+    r"(?im)(?P<prefix>\b(?:set-cookie|cookie)\s*:\s*)[^\r\n]*"
+)
+_COOKIE_RESPONSE_VALUE_PATTERN = re.compile(
+    r"(?i)(?P<prefix>/cookie\b[^\r\n]*?['\"]?value['\"]?\s*:\s*)"
+    r"(?:(?P<quote>['\"])(?P<quoted_value>[^\r\n]*?)(?P=quote)|"
+    r"(?P<value>[^\s;,'\"}\]]+))"
+)
+
+# Keep the subprocess usable as a Windows/Python/browser worker without copying
+# arbitrary application or shell secrets into it.  Credentials are limited to
+# the two names used by the approved application credential transport.
+_WORKER_ENVIRONMENT_ALLOWLIST = (
+    "ALLUSERSPROFILE",
+    "APPDATA",
+    "COMSPEC",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "LOCALAPPDATA",
+    "NUMBER_OF_PROCESSORS",
+    "OS",
+    "PATH",
+    "PATHEXT",
+    "PROCESSOR_ARCHITECTURE",
+    "PROCESSOR_IDENTIFIER",
+    "PROCESSOR_LEVEL",
+    "PROCESSOR_REVISION",
+    "PROGRAMDATA",
+    "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
+    "PROGRAMW6432",
+    "SYSTEMDRIVE",
+    "SYSTEMROOT",
+    "TEMP",
+    "TMP",
+    "USERDOMAIN",
+    "USERNAME",
+    "USERPROFILE",
+    "WINDIR",
+    "LANG",
+    "LC_ALL",
+    "PYTHONIOENCODING",
+    "PYTHONUTF8",
+    "SSL_CERT_DIR",
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "GARMIN_EMAIL",
+    "GARMIN_PASSWORD",
+)
 
 
 def _run_changed_archive_ingestion(conn, fit_dir: Path, archive_paths: list[Path]):
@@ -244,6 +316,241 @@ def _clear_stale_chrome_profile_locks(profile_dir: Path) -> None:
         print(f"[INFO] Cleared {removed} stale browser profile lock file(s)")
 
 
+def _sanitize_diagnostic_text(
+    text: str | None,
+    *,
+    known_sensitive_values: tuple[str, ...] = (),
+) -> str:
+    """Redact reachable Garmin authentication/session diagnostic forms."""
+    if not text:
+        return "" if text is None else text
+
+    sanitized = str(text)
+    for value in sorted(
+        {
+            value
+            for value in known_sensitive_values
+            if len(value.encode("utf-8", errors="surrogatepass"))
+            >= _MIN_KNOWN_SENSITIVE_VALUE_BYTES
+            and not value.isspace()
+        },
+        key=len,
+        reverse=True,
+    ):
+        sanitized = sanitized.replace(value, _REDACTED)
+
+    sanitized = _BEARER_TOKEN_PATTERN.sub(
+        lambda match: (
+            f"{match.group('prefix')}{match.group('quote')}"
+            f"{match.group('scheme')}{_REDACTED}{match.group('quote')}"
+        ),
+        sanitized,
+    )
+    sanitized = _COOKIE_HEADER_PATTERN.sub(
+        lambda match: f"{match.group('prefix')}{_REDACTED}",
+        sanitized,
+    )
+    sanitized = _COOKIE_RESPONSE_VALUE_PATTERN.sub(
+        lambda match: (
+            f"{match.group('prefix')}{match.group('quote') or ''}"
+            f"{_REDACTED}{match.group('quote') or ''}"
+        ),
+        sanitized,
+    )
+    sanitized = _DISPLAY_NAME_PATTERN.sub(
+        lambda match: (
+            f"{match.group('prefix')}{match.group('quote') or ''}"
+            f"{_REDACTED}{match.group('quote') or ''}"
+        ),
+        sanitized,
+    )
+    return _SENSITIVE_FIELD_PATTERN.sub(
+        lambda match: (
+            f"{match.group('prefix')}{match.group('quote') or ''}"
+            f"{_REDACTED}{match.group('quote') or ''}"
+        ),
+        sanitized,
+    )
+
+
+class _SanitizingTextStream:
+    """Line-buffered stream that sanitizes text before forwarding it."""
+
+    def __init__(self, stream, known_sensitive_values: tuple[str, ...]) -> None:
+        self._stream = stream
+        self._known_sensitive_values = known_sensitive_values
+        self._pending = ""
+
+    def write(self, text: str) -> int:
+        if not text:
+            return 0
+        self._pending += str(text)
+        lines = self._pending.splitlines(keepends=True)
+        self._pending = ""
+        if lines and not lines[-1].endswith(("\n", "\r")):
+            self._pending = lines.pop()
+        for line in lines:
+            self._stream.write(
+                _sanitize_diagnostic_text(
+                    line,
+                    known_sensitive_values=self._known_sensitive_values,
+                )
+            )
+        return len(text)
+
+    def flush(self) -> None:
+        if self._pending:
+            self._stream.write(
+                _sanitize_diagnostic_text(
+                    self._pending,
+                    known_sensitive_values=self._known_sensitive_values,
+                )
+            )
+            self._pending = ""
+        self._stream.flush()
+
+    def __getattr__(self, name: str):
+        return getattr(self._stream, name)
+
+
+@contextlib.contextmanager
+def _transient_worker_credentials(credentials: dict[str, str]):
+    """Expose credentials to pinned upstream without descendant inheritance."""
+    environment = os.environ
+    original_get = environment.get
+    missing = object()
+    original_instance_get = vars(environment).get("get", missing)
+    original_values = {
+        name: environment[name] if name in environment else missing
+        for name in credentials
+    }
+    credential_lookup = {
+        name.casefold(): value for name, value in credentials.items() if value
+    }
+
+    def credential_aware_get(name: str, default=None):
+        value = credential_lookup.get(str(name).casefold(), missing)
+        return original_get(name, default) if value is missing else value
+
+    try:
+        # Empty inherited values also prevent pinned upstream's legacy .env
+        # loader from replacing application-provided credentials on setdefault.
+        for name in credentials:
+            environment[name] = ""
+        environment.get = credential_aware_get
+        yield
+    finally:
+        if original_instance_get is missing:
+            del environment.get
+        else:
+            environment.get = original_instance_get
+        for name, value in original_values.items():
+            if value is missing:
+                environment.pop(name, None)
+            else:
+                environment[name] = value
+
+
+@contextlib.contextmanager
+def _upstream_privacy_boundary(known_sensitive_values: tuple[str, ...]):
+    """Contain upstream output and global logging changes inside the worker."""
+    root_logger = logging.getLogger()
+    original_root_handlers = tuple(root_logger.handlers)
+    original_root_level = root_logger.level
+    original_logging_disable = logging.root.manager.disable
+    protected_logger_names = (
+        "garmin_client.client",
+        "selenium.webdriver.remote.remote_connection",
+    )
+    original_named_logger_state = {
+        name: (
+            logging.getLogger(name).level,
+            logging.getLogger(name).disabled,
+            logging.getLogger(name).propagate,
+        )
+        for name in protected_logger_names
+    }
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    sanitized_stdout = _SanitizingTextStream(
+        original_stdout,
+        known_sensitive_values,
+    )
+    sanitized_stderr = _SanitizingTextStream(
+        original_stderr,
+        known_sensitive_values,
+    )
+    original_basic_config = logging.basicConfig
+    original_file_handler = logging.FileHandler
+    original_se_debug = os.environ.pop("SE_DEBUG", None)
+
+    def discard_file_handler(*_args, **_kwargs) -> logging.Handler:
+        return logging.NullHandler()
+
+    def privacy_safe_basic_config(**kwargs) -> None:
+        safe_kwargs = dict(kwargs)
+        safe_kwargs.pop("filename", None)
+        safe_kwargs.pop("filemode", None)
+        safe_kwargs.pop("handlers", None)
+        safe_kwargs.pop("force", None)
+        requested_level = safe_kwargs.get("level", logging.INFO)
+        if isinstance(requested_level, str):
+            requested_level = logging.getLevelNamesMapping().get(
+                requested_level.upper(),
+                logging.INFO,
+            )
+        safe_kwargs["level"] = max(int(requested_level), logging.INFO)
+        safe_kwargs["stream"] = sys.stderr
+        original_basic_config(**safe_kwargs)
+
+    try:
+        sys.stdout = sanitized_stdout
+        sys.stderr = sanitized_stderr
+        logging.FileHandler = discard_file_handler
+        logging.basicConfig = privacy_safe_basic_config
+        logging.getLogger(
+            "selenium.webdriver.remote.remote_connection"
+        ).setLevel(logging.WARNING)
+        yield
+    finally:
+        sanitized_stdout.flush()
+        sanitized_stderr.flush()
+        sys.stdout = original_stdout
+        sys.stderr = original_stderr
+        logging.basicConfig = original_basic_config
+        logging.FileHandler = original_file_handler
+        if original_se_debug is None:
+            os.environ.pop("SE_DEBUG", None)
+        else:
+            os.environ["SE_DEBUG"] = original_se_debug
+
+        for handler in tuple(root_logger.handlers):
+            if handler not in original_root_handlers:
+                root_logger.removeHandler(handler)
+                with contextlib.suppress(Exception):
+                    handler.close()
+        root_logger.handlers = list(original_root_handlers)
+        root_logger.setLevel(original_root_level)
+        logging.disable(original_logging_disable)
+        for name, (level, disabled, propagate) in original_named_logger_state.items():
+            named_logger = logging.getLogger(name)
+            named_logger.setLevel(level)
+            named_logger.disabled = disabled
+            named_logger.propagate = propagate
+
+
+def _build_garmin_worker_environment(data_dir: Path) -> dict[str, str]:
+    """Construct the minimal practical environment for the Garmin worker."""
+    environment = {
+        name: os.environ[name]
+        for name in _WORKER_ENVIRONMENT_ALLOWLIST
+        if name in os.environ
+    }
+    environment["GARMIN_DATA_DIR"] = str(data_dir)
+    environment["PYTHONUNBUFFERED"] = "1"
+    return environment
+
+
 def _find_givemydata_cmd() -> list[str]:
     """Return a runnable garmin-givemydata command for this environment.
 
@@ -259,6 +566,22 @@ def _find_givemydata_cmd() -> list[str]:
         return [sys.executable, _BUNDLED_GIVEMYDATA_FLAG]
 
     return [sys.executable, "-I", "-u", "-m", "garmin_givemydata"]
+
+
+def _controlled_givemydata_worker_cmd(command: list[str]) -> list[str]:
+    """Route source execution through this module's privacy worker."""
+    source_entry = [sys.executable, "-I", "-u", "-m", "garmin_givemydata"]
+    if command[: len(source_entry)] == source_entry:
+        return [
+            sys.executable,
+            "-I",
+            "-u",
+            "-m",
+            "garmin_data_hub.cli_backup_ingest",
+            _BUNDLED_GIVEMYDATA_FLAG,
+            *command[len(source_entry) :],
+        ]
+    return list(command)
 
 
 def _isolated_givemydata_runtime_version() -> str:
@@ -341,7 +664,7 @@ def _validate_givemydata_runtime_version() -> bool:
 
 
 def _run_bundled_givemydata(args: list[str]) -> int:
-    """Run the packaged garmin-givemydata entry point with isolated arguments."""
+    """Run garmin-givemydata inside the controlled privacy worker boundary."""
     try:
         args = _with_no_trackpoints(_validate_upstream_sync_args(args))
     except ValueError as exc:
@@ -351,38 +674,74 @@ def _run_bundled_givemydata(args: list[str]) -> int:
     if not _validate_givemydata_runtime_version():
         return 1
 
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(errors="replace")
+
+    worker_credentials = {
+        name: value
+        for name in ("GARMIN_EMAIL", "GARMIN_PASSWORD")
+        if (value := os.environ.get(name))
+    }
+    known_sensitive_values = tuple(worker_credentials.values())
     original_argv = sys.argv
+    result: object = 0
     sys.argv = ["garmin-givemydata", *args]
     try:
-        for stream in (sys.stdout, sys.stderr):
-            reconfigure = getattr(stream, "reconfigure", None)
-            if callable(reconfigure):
-                reconfigure(errors="replace")
+        with _upstream_privacy_boundary(known_sensitive_values):
+            with _transient_worker_credentials(worker_credentials):
+                try:
+                    data_dir = Path(
+                        os.environ.get("GARMIN_DATA_DIR", default_db_path().parent)
+                    )
+                    driver_dir = data_dir / "drivers"
+                    driver_dir.mkdir(parents=True, exist_ok=True)
 
-        data_dir = Path(os.environ.get("GARMIN_DATA_DIR", default_db_path().parent))
-        driver_dir = data_dir / "drivers"
-        driver_dir.mkdir(parents=True, exist_ok=True)
+                    # SeleniumBase otherwise downloads Chrome drivers into its
+                    # installed package directory, which is read-only under
+                    # Program Files.
+                    from seleniumbase.core import browser_launcher
 
-        # SeleniumBase otherwise downloads Chrome drivers into its installed
-        # package directory, which is read-only under Program Files.
-        from seleniumbase.core import browser_launcher
+                    browser_launcher.override_driver_dir(str(driver_dir))
 
-        browser_launcher.override_driver_dir(str(driver_dir))
+                    # Import only after logging and output protections are active:
+                    # the pinned upstream currently initializes its debug handler
+                    # in main(), but the boundary remains safe if that moves to
+                    # import time in a compatible build.
+                    from garmin_givemydata import main as givemydata_main
 
-        from garmin_givemydata import main as givemydata_main
-
-        result = givemydata_main()
-    except SystemExit as exc:
-        if exc.code is None:
-            return 0
-        if isinstance(exc.code, int):
-            return exc.code
-        print(exc.code, file=sys.stderr)
-        return 1
+                    result = givemydata_main()
+                except SystemExit as exc:
+                    if exc.code is None:
+                        result = 0
+                    elif isinstance(exc.code, int):
+                        result = exc.code
+                    else:
+                        print(exc.code, file=sys.stderr)
+                        result = 1
+                except Exception:
+                    traceback.print_exc(file=sys.stderr)
+                    result = 1
+    except Exception:
+        diagnostic = _sanitize_diagnostic_text(
+            traceback.format_exc(),
+            known_sensitive_values=known_sensitive_values,
+        )
+        print(diagnostic, file=sys.stderr, end="")
+        result = 1
     finally:
         sys.argv = original_argv
 
-    return int(result) if isinstance(result, int) else 0
+    if result is None:
+        return 0
+    if type(result) is int:
+        return result
+    print(
+        "[ERROR] garmin-givemydata returned an unsupported result.",
+        file=sys.stderr,
+    )
+    return 1
 
 
 def run_sync(
@@ -430,9 +789,7 @@ def run_sync(
 
     data_dir = db_path.parent
 
-    env = os.environ.copy()
-    env["GARMIN_DATA_DIR"] = str(data_dir)
-    env["PYTHONUNBUFFERED"] = "1"
+    env = _build_garmin_worker_environment(data_dir)
     if chrome:
         _clear_stale_chrome_profile_locks(data_dir / "browser_profile")
 
@@ -452,6 +809,7 @@ def run_sync(
         cmd.extend(validated_extra_args)
 
     if cmd:
+        cmd = _controlled_givemydata_worker_cmd(cmd)
         cmd = _with_no_trackpoints(cmd)
 
     sync_cwd = data_dir
