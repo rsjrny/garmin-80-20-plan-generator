@@ -1356,8 +1356,8 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                     # ``cellClicked`` is reliably forwarded by NiceGUI's AG Grid
                     # wrapper. Keep ``rowClicked`` as a compatibility fallback;
                     # the selected-id guard prevents duplicate refreshes.
-                    grid.on("cellClicked", select_row)
-                    grid.on("rowClicked", select_row)
+                    grid.on("cellClicked", select_row, args=["data"])
+                    grid.on("rowClicked", select_row, args=["data"])
 
             @ui.refreshable
             def detail_panel() -> None:
