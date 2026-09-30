@@ -28,7 +28,7 @@ _TIME_EPSILON_SECONDS = 1e-9
 class TemporalSample:
     """One timestamped trackpoint observation used by temporal metrics."""
 
-    timestamp_utc: str | datetime | float
+    timestamp_utc: str | datetime | float | None
     speed_mps: float | None = None
     heart_rate_bpm: float | None = None
     power_w: float | None = None
@@ -62,6 +62,26 @@ class TemporalMetricResult:
     paired_power_coverage: float | None
 
 
+@dataclass(frozen=True)
+class TemporalEvidence:
+    """Normalized observations and exact support supplied by the temporal engine.
+
+    This is deliberately metric-neutral. Methodology evaluators decide which
+    signal is authoritative, while this value remains the single owner of
+    timestamp parsing, duplicate handling, the gap rule, and final-sample
+    behavior.
+    """
+
+    observations_received: int
+    parseable_observations: int
+    observed_start_seconds: float | None
+    observed_end_seconds: float | None
+    observed_window_seconds: float | None
+    temporal_supported_seconds: float
+    temporal_unsupported_seconds: float | None
+    intervals: tuple[TemporalInterval, ...]
+
+
 def build_temporal_intervals(
     samples: Iterable[TemporalSample],
 ) -> list[TemporalInterval]:
@@ -72,8 +92,69 @@ def build_temporal_intervals(
     by time means an out-of-order ``seq`` cannot create negative duration.
     """
 
+    _received, distinct = _normalize_temporal_samples(samples)
+    return _build_intervals(distinct)
+
+
+def _build_intervals(
+    distinct: list[tuple[float, TemporalSample]],
+) -> list[TemporalInterval]:
+    intervals: list[TemporalInterval] = []
+    for index in range(len(distinct) - 1):
+        start_s, sample = distinct[index]
+        end_s = distinct[index + 1][0]
+        duration_s = end_s - start_s
+        if duration_s <= _TIME_EPSILON_SECONDS:
+            continue
+        if duration_s > MAX_CONTIGUOUS_GAP_SECONDS:
+            continue
+        intervals.append(
+            TemporalInterval(
+                start_s=start_s,
+                end_s=end_s,
+                speed_mps=_nonnegative_or_none(sample.speed_mps),
+                heart_rate_bpm=_hr_or_none(sample.heart_rate_bpm),
+                power_w=_nonnegative_or_none(sample.power_w),
+            )
+        )
+    return intervals
+
+
+def build_temporal_evidence(
+    samples: Iterable[TemporalSample],
+) -> TemporalEvidence:
+    """Return interval support plus known unsupported time for one sample stream."""
+    materialized = tuple(samples)
+    received, distinct = _normalize_temporal_samples(materialized)
+    intervals = tuple(_build_intervals(distinct))
+    observed_window = (
+        distinct[-1][0] - distinct[0][0] if len(distinct) >= 2 else None
+    )
+    supported = sum(interval.duration_s for interval in intervals)
+    unsupported = (
+        max(0.0, observed_window - supported)
+        if observed_window is not None
+        else None
+    )
+    return TemporalEvidence(
+        observations_received=received,
+        parseable_observations=len(distinct),
+        observed_start_seconds=None if not distinct else distinct[0][0],
+        observed_end_seconds=None if not distinct else distinct[-1][0],
+        observed_window_seconds=observed_window,
+        temporal_supported_seconds=supported,
+        temporal_unsupported_seconds=unsupported,
+        intervals=intervals,
+    )
+
+
+def _normalize_temporal_samples(
+    samples: Iterable[TemporalSample],
+) -> tuple[int, list[tuple[float, TemporalSample]]]:
     parsed: list[tuple[float, int, int, TemporalSample]] = []
+    received = 0
     for input_order, sample in enumerate(samples):
+        received += 1
         timestamp_s = _timestamp_seconds(sample.timestamp_utc)
         if timestamp_s is None:
             continue
@@ -91,25 +172,7 @@ def build_temporal_intervals(
         else:
             distinct.append((timestamp_s, sample))
 
-    intervals: list[TemporalInterval] = []
-    for index in range(len(distinct) - 1):
-        start_s, sample = distinct[index]
-        end_s = distinct[index + 1][0]
-        duration_s = end_s - start_s
-        if duration_s <= _TIME_EPSILON_SECONDS:
-            continue
-        if duration_s > MAX_CONTIGUOUS_GAP_SECONDS + _TIME_EPSILON_SECONDS:
-            continue
-        intervals.append(
-            TemporalInterval(
-                start_s=start_s,
-                end_s=end_s,
-                speed_mps=_nonnegative_or_none(sample.speed_mps),
-                heart_rate_bpm=_hr_or_none(sample.heart_rate_bpm),
-                power_w=_nonnegative_or_none(sample.power_w),
-            )
-        )
-    return intervals
+    return received, distinct
 
 
 def calculate_temporal_metrics(
@@ -341,7 +404,7 @@ def _half_overlap(
     return max(0.0, interval.end_s - max(interval.start_s, midpoint_s))
 
 
-def _timestamp_seconds(value: str | datetime | float) -> float | None:
+def _timestamp_seconds(value: str | datetime | float | None) -> float | None:
     try:
         if isinstance(value, datetime):
             parsed = value

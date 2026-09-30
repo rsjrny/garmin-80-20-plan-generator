@@ -82,13 +82,19 @@ def account_segments(
     }
 
 
-def _seconds(value: Any, field_name: str) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-        raise DomainError(f"{field_name} must be a non-negative integer")
-    return value
+def _seconds(value: Any, field_name: str) -> Decimal:
+    if isinstance(value, bool) or isinstance(value, float):
+        raise DomainError(f"{field_name} must be exact non-negative seconds")
+    try:
+        result = Decimal(value)
+    except Exception as exc:
+        raise DomainError(f"{field_name} must be exact non-negative seconds") from exc
+    if not result.is_finite() or result < 0:
+        raise DomainError(f"{field_name} must be exact non-negative seconds")
+    return result
 
 
-def _percent(numerator: int, denominator: int) -> str:
+def _percent(numerator: Decimal, denominator: Decimal) -> str:
     if denominator == 0:
         return "0"
     value = (Decimal(numerator) * Decimal(100) / Decimal(denominator)).quantize(
@@ -124,6 +130,183 @@ def interpret_distribution(
     if configured_tolerance is not None:
         result["tolerance_reason"] = "NO_FROZEN_V1_NUMERIC_PASS_BAND"
     return result
+
+
+def aggregate_runtime_results(
+    *,
+    activity_results: Sequence[Mapping[str, Any]],
+    include: Sequence[str] = (
+        "WEEK",
+        "ROLLING_FOUR_COMPLETED_WEEKS",
+        "PHASE",
+        "REVISION",
+    ),
+    completed_weeks: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Aggregate exact native result durations into canonical ISO-week windows."""
+    grouped: dict[str, dict[str, Any]] = {}
+    phase_totals: dict[str, dict[str, Any]] = {}
+    unassigned_phase_results = 0
+    completed = set(completed_weeks)
+    for result in activity_results:
+        raw_date = result.get("local_activity_date")
+        try:
+            day = date.fromisoformat(str(raw_date))
+        except ValueError as exc:
+            raise DomainError("runtime results require an ISO local_activity_date") from exc
+        iso_year, iso_week, _ = day.isocalendar()
+        label = f"{iso_year:04d}-W{iso_week:02d}"
+        bucket = grouped.setdefault(
+            label,
+            {
+                "week": label,
+                "low_seconds": Decimal(0),
+                "moderate_seconds": Decimal(0),
+                "high_seconds": Decimal(0),
+                "complete": label in completed,
+                "_qualities": [],
+                "_metric_supported_seconds": Decimal(0),
+                "_unsupported_seconds": Decimal(0),
+                "_unsupported_unknown": False,
+            },
+        )
+        category = result.get("category_seconds")
+        if not isinstance(category, Mapping):
+            raise DomainError("Fitzgerald runtime result lacks category_seconds")
+        bucket["low_seconds"] += _seconds(category.get("LOW", 0), "LOW")
+        bucket["moderate_seconds"] += _seconds(category.get("MODERATE", 0), "MODERATE")
+        bucket["high_seconds"] += _seconds(category.get("HIGH", 0), "HIGH")
+        quality = result.get("quality")
+        if quality not in {"VALID", "PARTIAL", "INSUFFICIENT", "UNAVAILABLE"}:
+            raise DomainError("Fitzgerald runtime result lacks a valid evidence quality")
+        coverage = result.get("coverage")
+        if not isinstance(coverage, Mapping):
+            raise DomainError("Fitzgerald runtime result lacks metric coverage")
+        supported = _seconds(
+            coverage.get("metric_supported_seconds", 0),
+            "metric_supported_seconds",
+        )
+        raw_unsupported = coverage.get("unsupported_seconds")
+        bucket["_qualities"].append(quality)
+        bucket["_metric_supported_seconds"] += supported
+        if raw_unsupported is None:
+            bucket["_unsupported_unknown"] = True
+        else:
+            bucket["_unsupported_seconds"] += _seconds(
+                raw_unsupported, "unsupported_seconds"
+            )
+        phase = result.get("phase")
+        if isinstance(phase, str) and phase.strip():
+            phase_bucket = phase_totals.setdefault(
+                phase,
+                {
+                    "low_seconds": Decimal(0),
+                    "moderate_seconds": Decimal(0),
+                    "high_seconds": Decimal(0),
+                    "_qualities": [],
+                    "_metric_supported_seconds": Decimal(0),
+                    "_unsupported_seconds": Decimal(0),
+                    "_unsupported_unknown": False,
+                },
+            )
+            phase_bucket["low_seconds"] += _seconds(category.get("LOW", 0), "LOW")
+            phase_bucket["moderate_seconds"] += _seconds(
+                category.get("MODERATE", 0), "MODERATE"
+            )
+            phase_bucket["high_seconds"] += _seconds(
+                category.get("HIGH", 0), "HIGH"
+            )
+            phase_bucket["_qualities"].append(quality)
+            phase_bucket["_metric_supported_seconds"] += supported
+            if raw_unsupported is None:
+                phase_bucket["_unsupported_unknown"] = True
+            else:
+                phase_bucket["_unsupported_seconds"] += _seconds(
+                    raw_unsupported, "unsupported_seconds"
+                )
+        else:
+            unassigned_phase_results += 1
+    aggregate = distribution_windows(
+        local_calendar_weeks=list(grouped.values()),
+        include=include,
+    )
+    for week, bucket in grouped.items():
+        aggregate[week].update(_runtime_evidence_summary((bucket,)))
+    context = aggregate.setdefault("context", {})
+    completed_buckets = [
+        grouped[week]
+        for week in sorted(grouped)
+        if grouped[week].get("complete") is True
+    ][-4:]
+    if "ROLLING_FOUR_COMPLETED_WEEKS" in include:
+        context["ROLLING_FOUR_COMPLETED_WEEKS"].update(
+            _runtime_evidence_summary(completed_buckets)
+        )
+    if "REVISION" in include:
+        context["REVISION"].update(
+            _runtime_evidence_summary(tuple(grouped[week] for week in sorted(grouped)))
+        )
+    if "PHASE" in include:
+        context["PHASE"] = {
+            "coverage": (
+                "FULL_WINDOW"
+                if phase_totals and unassigned_phase_results == 0
+                else "PARTIAL_WINDOW"
+            ),
+            "phases": {
+                phase: {
+                    key: value
+                    for key, value in phase_totals[phase].items()
+                    if not key.startswith("_")
+                }
+                | _runtime_evidence_summary((phase_totals[phase],))
+                for phase in sorted(phase_totals)
+            },
+            "unassigned_activity_count": unassigned_phase_results,
+            "status": "UNRATED",
+        }
+    return aggregate
+
+
+def _runtime_evidence_summary(
+    buckets: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    qualities = [
+        str(quality)
+        for bucket in buckets
+        for quality in bucket.get("_qualities", ())
+    ]
+    if not qualities or all(item == "UNAVAILABLE" for item in qualities):
+        quality = "UNAVAILABLE"
+    elif all(item == "VALID" for item in qualities):
+        quality = "VALID"
+    elif not any(item in {"VALID", "PARTIAL"} for item in qualities):
+        quality = "INSUFFICIENT"
+    else:
+        quality = "PARTIAL"
+    supported = sum(
+        (
+            _seconds(bucket.get("_metric_supported_seconds", 0), "metric_supported_seconds")
+            for bucket in buckets
+        ),
+        Decimal(0),
+    )
+    unsupported_unknown = any(
+        bucket.get("_unsupported_unknown") is True for bucket in buckets
+    )
+    unsupported = None if unsupported_unknown else sum(
+        (
+            _seconds(bucket.get("_unsupported_seconds", 0), "unsupported_seconds")
+            for bucket in buckets
+        ),
+        Decimal(0),
+    )
+    return {
+        "evidence_quality": quality,
+        "evidence_status": "UNRATED" if quality == "VALID" else "UNKNOWN",
+        "metric_supported_seconds": supported,
+        "unsupported_seconds": unsupported,
+    }
 
 
 def distribution_windows(

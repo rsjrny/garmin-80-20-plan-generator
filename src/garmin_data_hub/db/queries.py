@@ -2,6 +2,7 @@ import json
 import logging
 import math
 import sqlite3
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 import pandas as pd
@@ -33,6 +34,19 @@ PHASE_2D_TEMPORAL_METRIC_COLUMNS = (
     "peak_power_300s_w",
     "peak_power_1200s_w",
 )
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeActivityEvidence:
+    """Targeted read model for one confirmed compliance activity."""
+
+    activity_id: int
+    activity_type: str | None
+    local_calendar_date: str | None
+    elapsed_duration_seconds: float | None
+    moving_duration_seconds: float | None
+    distance_meters: float | None
+    samples: tuple[TemporalSample, ...]
 
 
 def current_temporal_metric_projection_sql(
@@ -585,6 +599,59 @@ def calculate_activity_temporal_metrics(
             power_w=row[4],
         )
         for row in rows
+    )
+
+
+def load_runtime_activity_evidence(
+    conn: sqlite3.Connection, activity_id: int
+) -> RuntimeActivityEvidence | None:
+    """Load one activity and only its ordered trackpoints for native compliance."""
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(activity)")}
+
+    def selected(name: str) -> str:
+        return f"a.{name}" if name in columns else "NULL"
+
+    calendar_day = activity_calendar_day_sql(conn, table_alias="a")
+    row = conn.execute(
+        f"""
+        SELECT a.activity_id,
+               {selected('activity_type')} AS activity_type,
+               {calendar_day} AS local_calendar_date,
+               {selected('elapsed_duration_seconds')} AS elapsed_duration_seconds,
+               {selected('moving_duration_seconds')} AS moving_duration_seconds,
+               {selected('distance_meters')} AS distance_meters
+        FROM activity a WHERE a.activity_id=?
+        """,
+        (activity_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    points = conn.execute(
+        """
+        SELECT seq, timestamp_utc, speed_mps, heart_rate_bpm, power_w
+        FROM activity_trackpoints
+        WHERE activity_id=?
+        ORDER BY timestamp_utc, seq
+        """,
+        (activity_id,),
+    ).fetchall()
+    return RuntimeActivityEvidence(
+        activity_id=int(row[0]),
+        activity_type=None if row[1] is None else str(row[1]),
+        local_calendar_date=None if row[2] is None else str(row[2]),
+        elapsed_duration_seconds=row[3],
+        moving_duration_seconds=row[4],
+        distance_meters=row[5],
+        samples=tuple(
+            TemporalSample(
+                seq=point[0],
+                timestamp_utc=point[1],
+                speed_mps=point[2],
+                heart_rate_bpm=point[3],
+                power_w=point[4],
+            )
+            for point in points
+        ),
     )
 
 

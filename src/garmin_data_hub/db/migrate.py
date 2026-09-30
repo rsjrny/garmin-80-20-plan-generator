@@ -5,7 +5,7 @@ import sqlite3
 
 logger = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION = 9
+CURRENT_SCHEMA_VERSION = 10
 
 
 def _ensure_schema_migrations_table(conn: sqlite3.Connection) -> None:
@@ -366,7 +366,8 @@ def _migration_9_add_immutable_plan_revisions(
     marker = "--  A2) IMMUTABLE PLAN REVISIONS (DATA HUB-OWNED)"
     try:
         revision_ddl = schema_sql[schema_sql.index(marker) :]
-        revision_ddl = revision_ddl[: revision_ddl.index("-- =========================\n--  B)")]
+        end_marker = "--  A3) ACTIVITY / REVISION-WORKOUT MATCHES (DATA HUB-OWNED)"
+        revision_ddl = revision_ddl[: revision_ddl.index(end_marker)]
     except ValueError as exc:
         raise sqlite3.OperationalError("revision schema marker is missing") from exc
     revision_ddl = "\n".join(
@@ -376,6 +377,64 @@ def _migration_9_add_immutable_plan_revisions(
         sql = statement.strip()
         if sql:
             conn.execute(sql)
+
+
+def _migration_10_add_activity_workout_match(
+    conn: sqlite3.Connection, schema_sql: str
+) -> None:
+    """Add explicit immutable revision-workout to upstream-activity matches."""
+    # Keep these as individual statements so the caller's savepoint remains
+    # the transaction boundary (executescript would commit implicitly).
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS activity_workout_match (
+          activity_workout_match_id INTEGER PRIMARY KEY,
+          revision_id TEXT NOT NULL,
+          workout_id TEXT NOT NULL,
+          activity_id INTEGER NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('CANDIDATE','CONFIRMED','REJECTED')),
+          source TEXT NOT NULL CHECK (source IN ('MANUAL','RECONCILIATION','IMPORTED')),
+          confidence TEXT NOT NULL CHECK (confidence IN ('HIGH','MEDIUM','LOW','UNKNOWN')),
+          reviewer TEXT,
+          reason TEXT,
+          created_at_utc TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+          updated_at_utc TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+          CHECK (
+            status != 'CONFIRMED'
+            OR (
+              length(trim(COALESCE(reviewer, ''))) > 0
+              AND length(trim(COALESCE(reason, ''))) > 0
+            )
+          ),
+          UNIQUE (revision_id, workout_id, activity_id),
+          FOREIGN KEY (revision_id, workout_id)
+            REFERENCES plan_revision_workout(revision_id, workout_id) ON DELETE RESTRICT,
+          FOREIGN KEY (activity_id) REFERENCES activity(activity_id) ON DELETE RESTRICT
+        )
+        """
+    )
+    conn.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS uq_activity_workout_match_confirmed_workout
+        ON activity_workout_match(revision_id, workout_id) WHERE status='CONFIRMED'"""
+    )
+    conn.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS uq_activity_workout_match_confirmed_activity
+        ON activity_workout_match(activity_id) WHERE status='CONFIRMED'"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_activity_workout_match_status
+        ON activity_workout_match(status, revision_id, workout_id, activity_id)"""
+    )
+    conn.execute(
+        """CREATE TRIGGER IF NOT EXISTS trg_activity_workout_match_confirmed_no_update
+        BEFORE UPDATE ON activity_workout_match WHEN OLD.status='CONFIRMED'
+        BEGIN SELECT RAISE(ABORT, 'confirmed activity/workout matches are immutable'); END"""
+    )
+    conn.execute(
+        """CREATE TRIGGER IF NOT EXISTS trg_activity_workout_match_confirmed_no_delete
+        BEFORE DELETE ON activity_workout_match WHEN OLD.status='CONFIRMED'
+        BEGIN SELECT RAISE(ABORT, 'confirmed activity/workout matches are immutable'); END"""
+    )
 
 
 def _fix_trackpoint_cascade(conn: sqlite3.Connection) -> None:
@@ -550,6 +609,11 @@ def apply_schema(conn: sqlite3.Connection, schema_path: Path | None = None) -> N
             "add immutable plan revision persistence",
             lambda: _migration_9_add_immutable_plan_revisions(conn, schema_sql),
         ),
+        (
+            10,
+            "add explicit activity workout matches",
+            lambda: _migration_10_add_activity_workout_match(conn, schema_sql),
+        ),
     ]
 
     current_version = _get_current_schema_version(conn)
@@ -587,6 +651,8 @@ def apply_schema(conn: sqlite3.Connection, schema_path: Path | None = None) -> N
         _migration_8_add_archive_reconciliation(conn)
     if recorded_version >= 9:
         _migration_9_add_immutable_plan_revisions(conn, schema_sql)
+    if recorded_version >= 10:
+        _migration_10_add_activity_workout_match(conn, schema_sql)
 
     # Keep baseline DDL idempotent so new installs and reruns remain safe.
     conn.executescript(schema_sql)

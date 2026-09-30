@@ -46,6 +46,8 @@ from garmin_data_hub.plan_methodology.revision_repository import (
     load_revision,
     update_approved_revision,
 )
+from garmin_data_hub.plan_methodology.activity_workout_match import create_match
+from garmin_data_hub.plan_methodology.runtime_compliance import evaluate_confirmed_match
 from garmin_data_hub.plan_methodology.revisions import PlanRevisionCandidate
 from garmin_data_hub.plan_methodology.segments import PlannedWorkout, WorkoutSegment
 
@@ -53,7 +55,9 @@ from garmin_data_hub.plan_methodology.segments import PlannedWorkout, WorkoutSeg
 def _database(tmp_path, name="revision.db"):
     path = tmp_path / name
     conn = sqlite3.connect(path)
-    conn.execute("CREATE TABLE activity(activity_id INTEGER PRIMARY KEY)")
+    conn.execute(
+        "CREATE TABLE activity(activity_id INTEGER PRIMARY KEY, activity_type TEXT)"
+    )
     apply_schema(conn, schema_sql_path())
     conn.close()
     return path
@@ -181,6 +185,161 @@ def _approve(path, candidate, parent_hash=None, hook=None):
     )
 
 
+def test_confirmed_match_resolves_frozen_revision_and_targeted_activity(tmp_path):
+    path = _database(tmp_path, "runtime.db")
+    _approve(path, _fitzgerald_candidate())
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA foreign_keys=ON")
+    try:
+        conn.execute(
+            "INSERT INTO activity(activity_id,activity_type) VALUES (77,'running')"
+        )
+        conn.executemany(
+            """INSERT INTO activity_trackpoints(
+            activity_id,seq,timestamp_utc,speed_mps,heart_rate_bpm)
+            VALUES (77,?,?,?,?)""",
+            [
+                (0, "2026-10-01T12:00:00Z", 3.2, 145),
+                (1, "2026-10-01T12:00:30Z", 3.2, 145),
+            ],
+        )
+        create_match(
+            conn,
+            revision_id="rev-a",
+            workout_id="workout-1",
+            activity_id=77,
+            status="CONFIRMED",
+            source="MANUAL",
+            confidence="HIGH",
+            reviewer="tester",
+            reason="explicit identity review",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = evaluate_confirmed_match(
+        path, revision_id="rev-a", workout_id="workout-1"
+    )
+    assert result["revision_id"] == "rev-a"
+    assert result["activity_id"] == 77
+    assert result["primary_metric"] == "SPEED"
+    assert result["coverage"]["metric_supported_seconds"] == Decimal("30.0")
+
+
+def test_runtime_uses_frozen_speed_threshold_for_hr_primary_secondary_evidence(tmp_path):
+    path = _database(tmp_path, "runtime-secondary.db")
+    candidate = _fitzgerald_candidate()
+    hr_primary = IntensityPrescription(
+        methodology_id=MethodologyId.FITZGERALD_80_20_RUNNING_V1,
+        native_target=FitzgeraldTarget.ZONE_3,
+        primary=MetricRange(
+            Metric.HEART_RATE,
+            "bpm",
+            Decimal("160.0"),
+            Decimal("175.1"),
+            True,
+            False,
+        ),
+        secondary=MetricRange(
+            Metric.SPEED,
+            "m/s",
+            Decimal("3.76"),
+            Decimal("4.12"),
+            True,
+            False,
+        ),
+        derivation_ref="F80-SEVEN-ZONE-1.0.0",
+        confidence=Confidence.REDUCED,
+        data_quality_requirement="VALID_HR",
+        parameter_snapshot_ref="threshold-hr-1",
+    )
+    workout = replace(
+        candidate.workouts[0],
+        segments=tuple(
+            replace(segment, prescription=hr_primary)
+            for segment in candidate.workouts[0].segments
+        ),
+    )
+    candidate = replace(
+        candidate,
+        parameter_snapshot={
+            "lthr": {"evidence_class": "MEASURED", "value": "170"},
+            "pace": {"evidence_class": "MEASURED", "value": "4"},
+        },
+        workouts=(workout,),
+    )
+    _approve(path, candidate)
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA foreign_keys=ON")
+    try:
+        conn.execute(
+            "INSERT INTO activity(activity_id,activity_type) VALUES (78,'running')"
+        )
+        conn.executemany(
+            """INSERT INTO activity_trackpoints(
+            activity_id,seq,timestamp_utc,speed_mps,heart_rate_bpm)
+            VALUES (78,?,?,?,?)""",
+            [
+                (0, "2026-10-01T12:00:00Z", 4.0, 170),
+                (1, "2026-10-01T12:00:30Z", 4.0, 170),
+            ],
+        )
+        create_match(
+            conn,
+            revision_id="rev-a",
+            workout_id="workout-1",
+            activity_id=78,
+            status="CONFIRMED",
+            source="MANUAL",
+            confidence="HIGH",
+            reviewer="tester",
+            reason="explicit identity review",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = evaluate_confirmed_match(
+        path, revision_id="rev-a", workout_id="workout-1"
+    )
+    secondary = result["secondary_evidence"]
+    assert result["primary_metric"] == "HEART_RATE"
+    assert secondary["metric"] == "SPEED"
+    assert sum(secondary["native_zone_seconds"].values()) == Decimal("30.0")
+    assert secondary["coverage"]["quality"] == "VALID"
+
+
+def test_runtime_rejects_non_running_activity_before_methodology_evaluation(tmp_path):
+    path = _database(tmp_path, "runtime-non-running.db")
+    _approve(path, _fitzgerald_candidate())
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA foreign_keys=ON")
+    try:
+        conn.execute(
+            "INSERT INTO activity(activity_id,activity_type) VALUES (79,'cycling')"
+        )
+        create_match(
+            conn,
+            revision_id="rev-a",
+            workout_id="workout-1",
+            activity_id=79,
+            status="CONFIRMED",
+            source="MANUAL",
+            confidence="HIGH",
+            reviewer="tester",
+            reason="explicit identity review",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with pytest.raises(DomainError, match="non-running"):
+        evaluate_confirmed_match(
+            path, revision_id="rev-a", workout_id="workout-1"
+        )
+
+
 def test_v9_schema_is_additive_idempotent_and_has_expected_integrity(tmp_path):
     path = _database(tmp_path)
     conn = sqlite3.connect(path)
@@ -189,7 +348,7 @@ def test_v9_schema_is_additive_idempotent_and_has_expected_integrity(tmp_path):
         conn.commit()
         apply_schema(conn, schema_sql_path())
         apply_schema(conn, schema_sql_path())
-        assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == CURRENT_SCHEMA_VERSION == 9
+        assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == CURRENT_SCHEMA_VERSION == 10
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert {"training_plan", "plan_revision", "plan_revision_workout", "plan_workout_segment"} <= tables
         columns = {row[1] for row in conn.execute("PRAGMA table_info(planned_workout)")}
@@ -221,7 +380,7 @@ def test_prior_v8_database_upgrades_without_mutating_legacy_rows(tmp_path):
         conn.commit()
         apply_schema(conn, schema_sql_path())
         assert conn.execute("SELECT workout_name, source_plan_id FROM planned_workout").fetchall() == [("Legacy v8", None)]
-        assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 9
+        assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 10
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     finally:
         conn.close()
@@ -279,7 +438,7 @@ def test_recorded_v9_repairs_an_incomplete_restart_state(tmp_path):
         assert conn.execute(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='plan_revision'"
         ).fetchone()[0] == 1
-        assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 9
+        assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 10
     finally:
         conn.close()
 

@@ -145,6 +145,60 @@ CREATE INDEX IF NOT EXISTS idx_plan_workout_segment_target
   ON plan_workout_segment(prescription_methodology_id, prescription_native_target);
 
 -- =========================
+--  A3) ACTIVITY / REVISION-WORKOUT MATCHES (DATA HUB-OWNED)
+-- =========================
+CREATE TABLE IF NOT EXISTS activity_workout_match (
+  activity_workout_match_id INTEGER PRIMARY KEY,
+  revision_id               TEXT NOT NULL,
+  workout_id                TEXT NOT NULL,
+  activity_id               INTEGER NOT NULL,
+  status                    TEXT NOT NULL
+    CHECK (status IN ('CANDIDATE', 'CONFIRMED', 'REJECTED')),
+  source                    TEXT NOT NULL
+    CHECK (source IN ('MANUAL', 'RECONCILIATION', 'IMPORTED')),
+  confidence                TEXT NOT NULL
+    CHECK (confidence IN ('HIGH', 'MEDIUM', 'LOW', 'UNKNOWN')),
+  reviewer                  TEXT,
+  reason                    TEXT,
+  created_at_utc            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at_utc            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  CHECK (
+    status != 'CONFIRMED'
+    OR (
+      length(trim(COALESCE(reviewer, ''))) > 0
+      AND length(trim(COALESCE(reason, ''))) > 0
+    )
+  ),
+  UNIQUE (revision_id, workout_id, activity_id),
+  FOREIGN KEY (revision_id, workout_id)
+    REFERENCES plan_revision_workout(revision_id, workout_id) ON DELETE RESTRICT,
+  FOREIGN KEY (activity_id) REFERENCES activity(activity_id) ON DELETE RESTRICT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_activity_workout_match_confirmed_workout
+  ON activity_workout_match(revision_id, workout_id)
+  WHERE status = 'CONFIRMED';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_activity_workout_match_confirmed_activity
+  ON activity_workout_match(activity_id)
+  WHERE status = 'CONFIRMED';
+CREATE INDEX IF NOT EXISTS idx_activity_workout_match_status
+  ON activity_workout_match(status, revision_id, workout_id, activity_id);
+
+CREATE TRIGGER IF NOT EXISTS trg_activity_workout_match_confirmed_no_update
+BEFORE UPDATE ON activity_workout_match
+WHEN OLD.status = 'CONFIRMED'
+BEGIN
+  SELECT RAISE(ABORT, 'confirmed activity/workout matches are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_activity_workout_match_confirmed_no_delete
+BEFORE DELETE ON activity_workout_match
+WHEN OLD.status = 'CONFIRMED'
+BEGIN
+  SELECT RAISE(ABORT, 'confirmed activity/workout matches are immutable');
+END;
+
+-- =========================
 --  B) DERIVED / CALCULATED METRICS
 -- =========================
 CREATE TABLE IF NOT EXISTS activity_metrics (
