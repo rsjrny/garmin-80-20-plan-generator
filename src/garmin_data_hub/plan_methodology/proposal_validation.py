@@ -32,6 +32,7 @@ from .domain import (
 from .prescriptions import IntensityPrescription
 from .revisions import PlanRevisionCandidate
 from .segments import PlannedWorkout, WorkoutSegment
+from .workout_vocabulary import RUNNING_WORKOUT_FAMILIES, WORKOUT_FAMILIES
 
 
 AI_PROPOSAL_SCHEMA = "garmin-data-hub.plan-proposal"
@@ -46,23 +47,6 @@ MAX_EXPANDED_SEGMENTS_PER_WORKOUT = 256
 MAX_TEXT_LENGTH = 4_000
 MAX_ID_LENGTH = 128
 MAX_JSON_NESTING = 8
-
-WORKOUT_FAMILIES = frozenset(
-    {
-        "RECOVERY",
-        "AEROBIC",
-        "LONG_AEROBIC",
-        "MODERATE_DEVELOPMENT",
-        "HIGH_INTENSITY_INTERVALS",
-        "RACE_SPECIFIC",
-        "EVENT_DAY",
-        "STRENGTH",
-        "MOBILITY",
-        "REST",
-        "CUSTOM_STRUCTURED",
-    }
-)
-RUNNING_WORKOUT_FAMILIES = WORKOUT_FAMILIES - {"STRENGTH", "MOBILITY", "REST"}
 
 # These names are rejected anywhere in model-authored structure.  Closed-key
 # validation catches all other unknown fields, but this list gives authority

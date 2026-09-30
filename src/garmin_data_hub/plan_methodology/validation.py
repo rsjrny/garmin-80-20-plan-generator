@@ -7,6 +7,7 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Any, Callable, Iterable, Mapping
 
+from .canonical import canonical_json
 from .domain import DomainError
 
 
@@ -135,7 +136,21 @@ def _coerce_finding(value: ValidationFinding | Mapping[str, Any], layer: Validat
 def _coerce_layer(
     values: Iterable[ValidationFinding | Mapping[str, Any]], layer: ValidationLayer
 ) -> tuple[ValidationFinding, ...]:
-    return tuple(_coerce_finding(value, layer) for value in values)
+    findings = tuple(_coerce_finding(value, layer) for value in values)
+    return tuple(
+        sorted(
+            findings,
+            key=lambda item: (
+                item.rule_id,
+                item.workout_id or "",
+                item.segment_id or "",
+                item.severity.value,
+                item.owner,
+                item.message,
+                canonical_json(item.evidence),
+            ),
+        )
+    )
 
 
 def validate_candidate(

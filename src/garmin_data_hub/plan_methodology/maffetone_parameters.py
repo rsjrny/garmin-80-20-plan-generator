@@ -14,7 +14,7 @@ def _allowed_adjustment(value: Any) -> bool:
 
 
 def validate_adjustment(
-    *, selected_adjustment: int, confirmed: bool, provenance: str, **_: Any
+    *, selected_adjustment: int, confirmed: bool, provenance: str | None = None, **_: Any
 ) -> dict[str, Any]:
     allowed = sorted(ALLOWED_MAF_ADJUSTMENTS)
     if not _allowed_adjustment(selected_adjustment):
@@ -24,7 +24,7 @@ def validate_adjustment(
             "reason": "INVALID_ADJUSTMENT",
             "severity": "ERROR",
         }
-    if not confirmed or provenance != "USER_SELECTED":
+    if confirmed is not True or provenance != "USER_SELECTED":
         return {
             "accepted": False,
             "allowed_adjustments": allowed,
@@ -57,7 +57,7 @@ def derive(
             not isinstance(manual_ceiling, int)
             or isinstance(manual_ceiling, bool)
             or manual_ceiling <= 0
-            or not confirmed
+            or confirmed is not True
             or manual_provenance != "MANUAL_AGE_EXCEPTION"
         ):
             return {
@@ -73,7 +73,7 @@ def derive(
             "formula": "MANUAL_AGE_EXCEPTION",
             "severity": "ERROR",
         }
-    if not confirmed:
+    if confirmed is not True:
         return {
             "blocked": True,
             "ceiling_bpm": None,
@@ -95,17 +95,22 @@ def persistable_snapshot(**values: Any) -> dict[str, Any]:
     # This is deliberately an allowlist. Raw questionnaire/health fields are
     # not copied even if a caller supplies them.
     selected_adjustment = values.get("selected_adjustment")
-    confirmed = bool(values.get("confirmed", False))
+    confirmed = values.get("confirmed") is True
     if not _allowed_adjustment(selected_adjustment):
         raise DomainError("selected_adjustment must be one of -10, -5, 0, +5")
     if not confirmed:
         selected_adjustment = None
     return {
         "formula_version": values.get("formula_version"),
+        "questionnaire_version": values.get("questionnaire_version"),
         "calculation_date": values.get("calculation_date"),
         "completed_age": values.get("completed_age"),
+        "age_provenance": values.get("age_provenance"),
         "selected_adjustment": selected_adjustment,
         "confirmed": confirmed,
+        "ceiling_bpm": values.get("ceiling_bpm"),
+        "lower_bpm": values.get("lower_bpm"),
+        "provenance": values.get("provenance"),
         "contains_raw_questionnaire_answers": False,
         "severity": "ERROR",
     }

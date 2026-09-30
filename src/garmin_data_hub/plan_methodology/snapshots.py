@@ -162,7 +162,7 @@ class MaffetoneParameterSnapshot:
             or self.selected_adjustment not in ALLOWED_MAF_ADJUSTMENTS
         ):
             raise DomainError("selected_adjustment must be one of -10, -5, 0, +5")
-        if not self.confirmed:
+        if self.confirmed is not True:
             raise DomainError("MAF adjustment requires explicit confirmation")
         if self.provenance != "USER_SELECTED":
             raise DomainError("ordinary MAF adjustment provenance must be USER_SELECTED")

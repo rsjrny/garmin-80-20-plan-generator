@@ -196,6 +196,25 @@ def validate_manifest(*, manifest: Mapping[str, Any]) -> dict[str, Any]:
     return {"valid": valid, "immutable": True}
 
 
+def resolve_methodology_policy(*, methodology_id: str) -> MethodologyPolicy:
+    """Return the selected localized policy without branching in generic callers."""
+
+    method = parse_enum(MethodologyId, methodology_id, "methodology_id")
+    if method is MethodologyId.FITZGERALD_80_20_RUNNING_V1:
+        from .fitzgerald_policy import POLICY
+
+        return POLICY
+    if method is MethodologyId.MAFFETONE_RUNNING_V1:
+        from .maffetone_policy import POLICY
+
+        return POLICY
+    raise DomainError("legacy methodology has no named-method policy")
+
+
+def validate_methodology_candidate(*, methodology_id: str, candidate: Any) -> Any:
+    return resolve_methodology_policy(methodology_id=methodology_id).validate(candidate)
+
+
 def register_local_definition(*, definition: Mapping[str, Any]) -> dict[str, Any]:
     local = MethodologyDefinition(
         methodology_id=str(definition["methodology_id"]),
