@@ -8,7 +8,7 @@ This note explains **what comes directly from `garmin-givemydata`** versus **wha
 |---|---|---|
 | `activity` | `garmin-givemydata` | Canonical per-activity summary data imported from Garmin Connect |
 | `activity_splits` | `garmin-givemydata` | Split/lap-level summary data |
-| `activity_trackpoint` | Garmin Data Hub | App-ingested per-sample FIT trackpoints (HR, speed, power, temp, altitude, etc.) |
+| `activity_trackpoints` | Garmin Data Hub | App-ingested per-sample FIT/GPX/TCX trackpoints (HR, speed, power, temp, altitude, etc.) |
 | `athlete_profile` | Garmin Data Hub | App-calculated and/or user-overridden HR/FTP profile values |
 | `activity_metrics` | Garmin Data Hub | Cached and derived metrics used by charts, compliance, and analysis pages |
 
@@ -24,11 +24,12 @@ value, distinct from missing data.
 
 ## Current refresh path
 
-After sync, the app runs:
-
-1. `refresh_post_sync_tables()`
-2. `update_athlete_profile()`
-3. `refresh_persisted_activity_metrics()`
+After pinned upstream sync completes with `--no-trackpoints`, Garmin Data Hub
+ingests new/changed archives through its app-owned trackpoint path. It then runs
+`refresh_post_sync_tables()`, which updates the athlete profile and refreshes
+the targeted activity/provenance rows. Incremental refresh can perform a bounded
+top-off for rows still identified as stale; it is not an unconditional global
+rebuild. See [Validated Data and Sync Architecture](validated-architecture.md).
 
 Relevant code:
 
@@ -57,13 +58,13 @@ These live in `activity_metrics`, but their underlying values come from `activit
 | `training_effect_anaerobic` | `activity.anaerobic_training_effect` | Directly sourced from imported activity summary |
 | `total_ascent_m` | `activity.elevation_gain` or trackpoint-derived total | Trackpoint total overrides when available |
 | `total_descent_m` | `activity.elevation_loss` or trackpoint-derived total | Trackpoint total overrides when available |
-| `min_altitude_m` | `activity.min_elevation` or `activity_trackpoint.altitude_m` | Trackpoints preferred when present |
-| `max_altitude_m` | `activity.max_elevation` or `activity_trackpoint.altitude_m` | Trackpoints preferred when present |
+| `min_altitude_m` | `activity.min_elevation` or `activity_trackpoints.altitude_m` | Trackpoints preferred when present |
+| `max_altitude_m` | `activity.max_elevation` or `activity_trackpoints.altitude_m` | Trackpoints preferred when present |
 | `min_temperature_c` | `activity.min_temperature` or trackpoint aggregate | Trackpoints preferred when present |
 | `max_temperature_c` | `activity.max_temperature` or trackpoint aggregate | Trackpoints preferred when present |
 | `avg_temperature_c` | derived from min/max temp or trackpoint aggregate | Average is app-computed |
 
-### B) App-derived from `activity`, `activity_trackpoint`, and/or `athlete_profile`
+### B) App-derived from `activity`, `activity_trackpoints`, and/or `athlete_profile`
 
 | `activity_metrics` column | Derived from | Notes |
 |---|---|---|
@@ -79,11 +80,11 @@ These live in `activity_metrics`, but their underlying values come from `activit
 | `variability_index` | `norm_power / avg_power` | App-derived |
 | `efficiency_factor` | `norm_power / average_hr` or `speed / average_hr` | App-derived |
 | `pace_decoupling_pct` | elapsed-time speed-vs-HR first/second half comparison | App-derived; always speed-based |
-| `peak_power_5s_w` | exact-duration time-weighted mean of `activity_trackpoint.power_w` | App-derived |
-| `peak_power_30s_w` | exact-duration time-weighted mean of `activity_trackpoint.power_w` | App-derived |
-| `peak_power_60s_w` | exact-duration time-weighted mean of `activity_trackpoint.power_w` | App-derived |
-| `peak_power_300s_w` | exact-duration time-weighted mean of `activity_trackpoint.power_w` | App-derived |
-| `peak_power_1200s_w` | exact-duration time-weighted mean of `activity_trackpoint.power_w` | App-derived |
+| `peak_power_5s_w` | exact-duration time-weighted mean of `activity_trackpoints.power_w` | App-derived |
+| `peak_power_30s_w` | exact-duration time-weighted mean of `activity_trackpoints.power_w` | App-derived |
+| `peak_power_60s_w` | exact-duration time-weighted mean of `activity_trackpoints.power_w` | App-derived |
+| `peak_power_300s_w` | exact-duration time-weighted mean of `activity_trackpoints.power_w` | App-derived |
+| `peak_power_1200s_w` | exact-duration time-weighted mean of `activity_trackpoints.power_w` | App-derived |
 | `power_zone_1_s` ... `power_zone_7_s` | power trackpoints + effective FTP | App-derived power zone totals |
 
 #### Temporal support used by power peaks and decoupling
@@ -119,9 +120,15 @@ HR-supported intervals independently of workload.
 |---|---|---|
 | `hrmax_calc` / `lthr_calc` | `athlete_profile` | App-calculated HR profile |
 | `hrmax_override` / `lthr_override` | `athlete_profile` | User override values |
-| `ftp_calc` | `athlete_profile` | App-estimated FTP from recent power-enabled ride activities |
+| `ftp_calc` | `athlete_profile` | Running FTP: 95% of the strongest complete exact 1200-second running power peak |
 | `ftp_override` | `athlete_profile` | User override FTP |
-| `resting_hr` | `athlete_profile` | Optional user-supplied resting HR |
+| `resting_hr` | `athlete_profile` | Median of the latest 7 Garmin daily values (`daily_summary` preferred over same-day `sleep`); metric fallback is 60 |
+
+Automatic HRmax accepts candidates from 100 through 220 bpm only after at least
+five seconds of measured trackpoint HR within 2 bpm. Estimated LTHR is
+`round(validated HRmax * 0.86)`. Automatic evidence is stale after 90 days for
+HRmax/LTHR, 180 days for running FTP, and 14 days for resting HR. Manual
+overrides and automatic calculation provenance remain distinct.
 
 ### D) Currently present in schema but **not yet populated** by the active refresh logic
 
@@ -179,7 +186,7 @@ If you need:
 
 - **raw Garmin summary values** → query `activity`
 - **lap/split values** → query `activity_splits`
-- **sample-level HR/power/GPS values** → query `activity_trackpoint`
+- **sample-level HR/power/GPS values** → query `activity_trackpoints`
 - **UI-ready derived metrics** → query `activity_metrics`
 
 ---

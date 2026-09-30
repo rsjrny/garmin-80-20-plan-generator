@@ -11,14 +11,14 @@ The project syncs Garmin data using `garmin-givemydata`, applies app-specific sc
 - **Sync source:** `garmin-givemydata`
 - **Primary local database:** `%LOCALAPPDATA%\GarminDataHub\garmin.db`
 - **Optional DB override:** `GARMIN_DATA_HUB_DB`
-- **Post-sync refresh:** schema updates, athlete profile refresh, and `activity_metrics` derived-metric rebuilds
-- **Trackpoints:** incrementally ingested from new/changed FIT archives for mapping and analysis
+- **Post-sync refresh:** schema updates, app-owned archive ingestion, and targeted metric/provenance refresh
+- **Trackpoints:** incrementally ingested by Garmin Data Hub from new/changed FIT/GPX/TCX archives
 
 ## Main Capabilities
 
 - Garmin Connect login on the Sync page, optional Windows Credential Manager
   storage, and visible-browser MFA
-- Incremental FIT trackpoint ingestion into `activity_trackpoint`
+- Incremental archive ingestion into `activity_trackpoints`
 - Activity analysis with map and detail views
 - Derived metrics including HR zones, TRIMP/TSS, FTP estimates, and power zones
 - Charts for training load, pace/power trends, and power profile analysis
@@ -146,14 +146,12 @@ average, and range statistics. Missing values are excluded from statistics.
 The complete response remains available under **Raw JSON**; no AI call is needed
 to produce these summaries.
 
-#### Available MCP Tools
+#### Common MCP Tools
 
-1. **garmin_schema** — View database schema (tables, row counts, columns)
-2. **garmin_query** — Execute read-only SELECT queries with preset templates
-3. **garmin_health_summary** — Fetch daily health metrics (HR, stress, body battery) by date range
-4. **garmin_activities** — List activities with filtering by type, date, and limit
-5. **garmin_trends** — Retrieve metric trends (weekly or monthly aggregation)
-6. **garmin_sync** — Trigger manual sync and view sync status
+The exact read-only catalog is discovered from the bundled upstream runtime.
+Typical tools inspect the schema, execute guarded SELECT queries, list
+activities, and summarize health or trends. Use the dedicated **Garmin Sync**
+page for writable synchronization.
 
 #### Requirements
 
@@ -176,8 +174,8 @@ to produce these summaries.
 - **Error handling:** Timeouts, retries, and clear error messages
 - **Read-only enforcement:** lookups use SQLite read-only connections and skip upstream startup migrations
 - **Exact database selection:** custom filenames and sandbox databases are supported
-- **Sync:** `garmin_sync` checks freshness unless **Pull fresh data from Garmin** is selected
-  (upstream sync requires the standard `garmin.db` filename)
+- **No writable alternative:** Data Query does not replace the canonical Garmin
+  Sync workflow
 
 #### Troubleshooting
 
@@ -256,7 +254,21 @@ python -m garmin_data_hub.cli_backup_ingest --visible
 Helpful sync options:
 
 - `--days <N>` — limit sync window
-- `--db <path>` — use a custom SQLite path
+- `--db <path>` — choose the writable database directory; the filename must be
+  exactly `garmin.db`
+
+Writable sync accepts arbitrary directories but rejects alternate database
+filenames. Read-only application features can still open custom SQLite
+filenames. Sync is user-initiated; automatic Windows scheduled sync is not a
+supported feature. The canonical flow pins `garmin-givemydata` 0.1.12, invokes
+it with `--no-trackpoints`, then performs app-owned archive ingestion and
+targeted metric/provenance refresh. See
+[Validated Data and Sync Architecture](docs/validated-architecture.md).
+
+For local recovery, exit the application before copying `garmin.db` and keep
+the backup separate from the live data directory. The database contains Garmin
+history plus app-owned settings, plans, metrics, and provenance; local activity
+archives are also useful when recovering trackpoints without a new download.
 
 ### Garmin Login and MFA
 
@@ -283,10 +295,9 @@ Garmin Data Hub does not collect or save the MFA code.
 
 Choose **Forget saved login** to remove the saved email/password credential.
 This does not remove the separate Garmin browser profile or revoke an already
-active Garmin session. It also does not delete a legacy plaintext
-`%LOCALAPPDATA%\GarminDataHub\.env` created by direct CLI use. Credentials are
-passed to the sync helper through its process environment, not through
-command-line arguments or sync logs.
+active Garmin session. Credentials are passed through the hardened sync worker,
+not through command-line arguments or sync logs. Legacy plaintext `.env`
+credential storage is unsupported.
 
 The one-time editor also permits a sync without saving the login by clearing
 **Remember on this Windows account**, but the editor will be needed again when no
@@ -318,28 +329,29 @@ Install its pinned build toolchain with `.venv\Scripts\python.exe -m pip install
 Example build command:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 1.0.0
+powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 1.3.2
 ```
 
 Signed installer-only release:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 1.0.0 -InstallerOnly -SignInstaller -CertificateThumbprint "<cert-sha1-thumbprint>"
+powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 1.3.2 -InstallerOnly -SignInstaller -CertificateThumbprint "<cert-sha1-thumbprint>"
 ```
 
 `garmin-givemydata` packaging behavior:
 
-- Build uses PyPI package install/upgrade into `.venv`
-- Use `-GivemydataPypiSpec` to pin a specific PyPI version when needed
+- The supported runtime is exactly `garmin-givemydata==0.1.12`
+- The default build specification is pinned to that version; use
+  `-SkipGivemydataUpdate` only to validate an already installed matching pin
 
 Examples:
 
 ```powershell
 # Reproducible release build
-powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 1.0.0 -GivemydataPypiSpec "garmin-givemydata==0.1.12"
+powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 1.3.2 -GivemydataPypiSpec "garmin-givemydata==0.1.12"
 
 # Validate the already-installed upstream version without updating it
-powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 1.0.0 -SkipGivemydataUpdate
+powershell -ExecutionPolicy Bypass -File .\packaging\build.ps1 -Version 1.3.2 -SkipGivemydataUpdate
 ```
 
 It will:
@@ -349,6 +361,7 @@ It will:
 - bundle the `garmin-givemydata` runtime inside the frozen sync CLI
 - copy outputs under `release/<version>/`
 - build a complete portable ZIP, corresponding-source archives, and SHA-256 checksums
+- write `SOURCE-COMMIT.txt` so artifacts carry their source commit provenance
 - optionally build the installer via Inno Setup when available
 - optionally sign the installer with Authenticode
 
@@ -379,6 +392,7 @@ Core dependencies are defined in `pyproject.toml`, including:
 - Download artifacts under `scripts/downloads/` are gitignored
 - Build/release artifacts under `build/` and `release/` are not intended for source control
 - Metric/source lineage reference: `docs/activity-metrics-data-lineage.md`
+- Validated sync/database architecture: `docs/validated-architecture.md`
 
 ## License
 

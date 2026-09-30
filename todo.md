@@ -1,12 +1,25 @@
 # Training app backlog
 
-Last audited against the repository on 2026-09-27. Completed migration notes and other historical implementation logs have been removed; Git history remains the source for that detail.
+Last audited against the repository on 2026-09-30. Completed migration notes and other historical implementation logs have been removed; Git history remains the source for that detail.
 
 ## Recently completed
 
 - [x] Data Query renders MCP list-of-object responses as structured, bounded tables, with charts for dated numeric data and raw JSON/text fallbacks for nested or non-tabular payloads. Regression coverage is in `tests/test_mcp_results.py`.
 
 ## Current priorities
+
+### Deferred validated architecture work
+
+- [ ] Phase 3G metric-refresh performance: deferred because the single-user
+  targeted refresh has no demonstrated production performance problem.
+- [ ] Windows code signing: deferred for single-user use; revisit before broader
+  distribution.
+- [ ] In-app version/commit display: release artifacts currently carry
+  provenance in `SOURCE-COMMIT.txt`; UI display is deferred.
+- [ ] Phase 3F legacy callable surfaces: keep quarantined and revisit only with
+  evidence.
+- [ ] Phase 3I DB/UI seam refactor: deferred because there is no demonstrated
+  correctness need.
 
 ### Data Query
 

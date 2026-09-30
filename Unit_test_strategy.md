@@ -4,14 +4,17 @@ This project uses `pytest` with the test root configured in `pyproject.toml` as 
 
 ## 1. Current Test Layout
 
-Active regression coverage currently lives in:
+Representative active regression coverage includes:
 
 - `tests/conftest.py` — temporary SQLite fixture setup
-- `tests/test_cli_trackpoints.py` — CLI / trackpoint ingest behavior
-- `tests/test_metrics_refresh.py` — derived metrics, FTP/power zones, refresh regressions
+- `tests/test_trackpoint_parser_wiring.py` and `tests/test_phase3m5a_identity_and_gpx.py` — archive identity and trackpoint ingestion
+- `tests/test_metrics_refresh.py` and `tests/test_temporal_metrics.py` — derived metrics and elapsed-time semantics
+- `tests/test_phase3d2_threshold_service.py` — automatic thresholds and provenance
 - `tests/test_plan_persistence.py` — plan persistence behavior
 - `tests/test_schema_migrations.py` — schema evolution checks
-- `tests/test_sync_progress.py` — framework-neutral sync progress/completion heuristics
+- `tests/test_sync_progress.py` and `tests/test_sync_job_lifecycle.py` — sync progress and lifecycle
+- `tests/test_phase3e1_failure_contracts.py` — credential, privacy, and failure boundaries
+- `tests/test_frozen_sync_packaging.py` and `tests/test_phase3h1_bundled_runtime_diagnostic.py` — frozen runtime packaging
 
 ## 2. What to Prioritize
 
@@ -19,7 +22,9 @@ Active regression coverage currently lives in:
 - **SQLite schema changes** — migrations must remain backward-compatible
 - **Sync lifecycle** — progress heuristics and completion detection should survive UI changes
 - **Plan persistence** — saved plans and settings must round-trip cleanly
-- **CLI behavior** — help/entry points and trackpoint ingest should stay functional
+- **CLI behavior** — public help/entry points, writable DB guards, trackpoint
+  ingestion, internal argument rejection, and the safe bundled-runtime
+  diagnostic should stay functional
 
 ## 3. Test Style
 
@@ -40,7 +45,7 @@ python -m pytest
 Run the most relevant sync/metrics regression checks:
 
 ```powershell
-python -m pytest tests/test_sync_progress.py tests/test_metrics_refresh.py
+python -m pytest tests/test_sync_progress.py tests/test_metrics_refresh.py tests/test_temporal_metrics.py
 ```
 
 ## 5. Coverage Goals
