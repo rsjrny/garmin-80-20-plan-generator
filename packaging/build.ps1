@@ -590,7 +590,7 @@ Write-Host "  Project source archive: $SourceArchive" -ForegroundColor Green
 
 Write-Host "  Smoke-testing packaged CLI entry points..." -ForegroundColor Cyan
 Invoke-PackagedSmokeTest -Executable $ExpectedCliExePath -Arguments @("--help")
-Invoke-PackagedSmokeTest -Executable $ExpectedCliExePath -Arguments @("--_run-bundled-givemydata", "--help")
+Invoke-PackagedSmokeTest -Executable $ExpectedCliExePath -Arguments @("--_check-bundled-givemydata")
 Write-Host "  Packaged CLI smoke tests passed." -ForegroundColor Green
 
 $PortableArchive = Join-Path $ReleaseDir "GarminDataHub-$Version-portable.zip"

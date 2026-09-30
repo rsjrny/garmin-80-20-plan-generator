@@ -41,6 +41,7 @@ from garmin_data_hub.paths import default_db_path, ensure_app_dirs
 logger = logging.getLogger(__name__)
 
 _BUNDLED_GIVEMYDATA_FLAG = "--_run-bundled-givemydata"
+_BUNDLED_GIVEMYDATA_DIAGNOSTIC_FLAG = "--_check-bundled-givemydata"
 _GIVEMYDATA_DISTRIBUTION = "garmin-givemydata"
 _SUPPORTED_GIVEMYDATA_VERSION = "0.1.12"
 _ORIGINAL_CANONICAL_INGESTER = ingest_trackpoints_from_archives
@@ -663,6 +664,47 @@ def _validate_givemydata_runtime_version() -> bool:
     return True
 
 
+def _check_bundled_givemydata_runtime() -> int:
+    """Verify the pinned upstream runtime without entering sync machinery."""
+    try:
+        importlib.import_module("garmin_givemydata")
+    except Exception:
+        print(
+            "[ERROR] Bundled Garmin runtime is not available.",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        installed_version = importlib.metadata.version(_GIVEMYDATA_DISTRIBUTION)
+    except importlib.metadata.PackageNotFoundError:
+        print(
+            "[ERROR] Bundled Garmin runtime metadata is not available.",
+            file=sys.stderr,
+        )
+        return 1
+    except Exception:
+        print(
+            "[ERROR] Bundled Garmin runtime metadata could not be read.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if installed_version != _SUPPORTED_GIVEMYDATA_VERSION:
+        print(
+            "[ERROR] Bundled Garmin runtime version mismatch: "
+            f"requires {_SUPPORTED_GIVEMYDATA_VERSION}, found {installed_version}.",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(
+        "[OK] Bundled Garmin runtime available: "
+        f"garmin-givemydata {installed_version}."
+    )
+    return 0
+
+
 def _run_bundled_givemydata(args: list[str]) -> int:
     """Run garmin-givemydata inside the controlled privacy worker boundary."""
     try:
@@ -981,6 +1023,15 @@ def run_sync(
 
 
 def main():
+    # This packaging-only check is intentionally dispatched before the normal
+    # worker and its sync-argument allowlist. It imports no authentication,
+    # browser, database, archive, or synchronization path.
+    if (
+        len(sys.argv) > 1
+        and sys.argv[1] == _BUNDLED_GIVEMYDATA_DIAGNOSTIC_FLAG
+    ):
+        raise SystemExit(_check_bundled_givemydata_runtime())
+
     if len(sys.argv) > 1 and sys.argv[1] == _BUNDLED_GIVEMYDATA_FLAG:
         raise SystemExit(_run_bundled_givemydata(sys.argv[2:]))
 
