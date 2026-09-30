@@ -4,10 +4,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import date
+from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
 from .domain import DomainError, LoadMode, MeasureRole, SegmentKind, Sport, parse_enum
 from .prescriptions import IntensityPrescription
+
+
+def _freeze_metadata(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return MappingProxyType({str(key): _freeze_metadata(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_metadata(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        raise DomainError("unordered workout metadata is not supported")
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +116,13 @@ class PlannedWorkout:
     description: str
     segments: tuple[WorkoutSegment, ...]
     event_flag: bool = False
+    workout_id: str | None = None
+    ordinal: int | None = None
+    title: str | None = None
+    phase: str | None = None
+    quality_flag: bool = False
+    long_run_flag: bool = False
+    metadata: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "sport", parse_enum(Sport, self.sport, "sport"))
@@ -115,6 +133,12 @@ class PlannedWorkout:
             raise DomainError("planned workout requires ordered leaf segments")
         if any(not isinstance(segment, WorkoutSegment) for segment in self.segments):
             raise DomainError("planned workout segments must be workout segment leaves")
+        if self.ordinal is not None and (
+            not isinstance(self.ordinal, int) or isinstance(self.ordinal, bool) or self.ordinal < 0
+        ):
+            raise DomainError("workout ordinal must be a non-negative integer")
+        if self.metadata is not None:
+            object.__setattr__(self, "metadata", _freeze_metadata(self.metadata))
 
 
 def _role(value: Any) -> MeasureRole | None:

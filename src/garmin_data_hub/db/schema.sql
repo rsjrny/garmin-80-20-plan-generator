@@ -16,8 +16,133 @@ CREATE TABLE IF NOT EXISTS planned_workout (
     planned_duration_s REAL,
     planned_tss        REAL,
     structure_json     TEXT,
+    source_plan_id     TEXT,
+    source_revision_id TEXT,
+    source_workout_id  TEXT,
     created_at         TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
+
+CREATE INDEX IF NOT EXISTS idx_planned_workout_revision_projection
+  ON planned_workout(source_plan_id, source_revision_id);
+
+-- =========================
+--  A2) IMMUTABLE PLAN REVISIONS (DATA HUB-OWNED)
+-- =========================
+CREATE TABLE IF NOT EXISTS training_plan (
+  plan_id             TEXT PRIMARY KEY,
+  current_revision_id TEXT,
+  origin              TEXT NOT NULL DEFAULT 'NATIVE'
+    CHECK (origin IN ('NATIVE', 'LEGACY_CONVERSION')),
+  created_at_utc      TEXT NOT NULL,
+  FOREIGN KEY (plan_id, current_revision_id)
+    REFERENCES plan_revision(plan_id, revision_id)
+    ON DELETE RESTRICT DEFERRABLE INITIALLY DEFERRED
+);
+
+CREATE TABLE IF NOT EXISTS plan_revision (
+  revision_id              TEXT PRIMARY KEY,
+  plan_id                  TEXT NOT NULL,
+  parent_revision_id       TEXT,
+  revision_reason          TEXT NOT NULL,
+  methodology_id           TEXT NOT NULL,
+  methodology_version      INTEGER NOT NULL CHECK (methodology_version >= 0),
+  content_sha256           TEXT NOT NULL UNIQUE
+    CHECK (
+      length(content_sha256) = 64
+      AND content_sha256 = lower(content_sha256)
+      AND content_sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+  manifest_json            TEXT NOT NULL,
+  goal_snapshot_json       TEXT NOT NULL,
+  athlete_snapshot_json    TEXT NOT NULL,
+  parameter_snapshot_json  TEXT NOT NULL,
+  constraints_json         TEXT NOT NULL DEFAULT '{}',
+  validation_summary_json  TEXT,
+  provenance_json          TEXT,
+  change_summary_json      TEXT,
+  approval_state           TEXT NOT NULL CHECK (approval_state = 'APPROVED'),
+  approved_by              TEXT NOT NULL,
+  approved_at_utc          TEXT NOT NULL,
+  created_at_utc           TEXT NOT NULL,
+  UNIQUE (plan_id, revision_id),
+  FOREIGN KEY (plan_id) REFERENCES training_plan(plan_id) ON DELETE RESTRICT,
+  FOREIGN KEY (plan_id, parent_revision_id)
+    REFERENCES plan_revision(plan_id, revision_id) ON DELETE RESTRICT
+);
+
+CREATE INDEX IF NOT EXISTS idx_plan_revision_plan_approved
+  ON plan_revision(plan_id, approved_at_utc, revision_id);
+CREATE INDEX IF NOT EXISTS idx_plan_revision_parent
+  ON plan_revision(plan_id, parent_revision_id);
+CREATE INDEX IF NOT EXISTS idx_plan_revision_methodology
+  ON plan_revision(methodology_id, methodology_version);
+
+CREATE TABLE IF NOT EXISTS plan_revision_workout (
+  revision_id             TEXT NOT NULL,
+  workout_id              TEXT NOT NULL,
+  workout_ordinal         INTEGER NOT NULL CHECK (workout_ordinal >= 0),
+  scheduled_date          TEXT NOT NULL,
+  sport                   TEXT NOT NULL,
+  family                  TEXT NOT NULL,
+  purpose                 TEXT NOT NULL,
+  title                   TEXT,
+  description             TEXT NOT NULL,
+  phase                   TEXT,
+  event_flag              INTEGER NOT NULL DEFAULT 0 CHECK (event_flag IN (0, 1)),
+  quality_flag            INTEGER NOT NULL DEFAULT 0 CHECK (quality_flag IN (0, 1)),
+  long_run_flag           INTEGER NOT NULL DEFAULT 0 CHECK (long_run_flag IN (0, 1)),
+  workout_metadata_json   TEXT NOT NULL DEFAULT '{}',
+  PRIMARY KEY (revision_id, workout_id),
+  UNIQUE (revision_id, workout_ordinal),
+  FOREIGN KEY (revision_id) REFERENCES plan_revision(revision_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_plan_revision_workout_calendar
+  ON plan_revision_workout(revision_id, scheduled_date, workout_ordinal);
+
+CREATE TABLE IF NOT EXISTS plan_workout_segment (
+  revision_id                    TEXT NOT NULL,
+  workout_id                     TEXT NOT NULL,
+  segment_ordinal                INTEGER NOT NULL CHECK (segment_ordinal >= 0),
+  segment_kind                   TEXT NOT NULL,
+  purpose                        TEXT,
+  load_mode                      TEXT NOT NULL CHECK (load_mode IN ('DURATION', 'DISTANCE', 'OPEN')),
+  duration_seconds               INTEGER CHECK (duration_seconds IS NULL OR duration_seconds > 0),
+  duration_role                  TEXT CHECK (duration_role IS NULL OR duration_role IN ('AUTHORITATIVE', 'ESTIMATED')),
+  distance_metres                INTEGER CHECK (distance_metres IS NULL OR distance_metres > 0),
+  distance_role                  TEXT CHECK (distance_role IS NULL OR distance_role IN ('AUTHORITATIVE', 'ESTIMATED')),
+  repeat_group                   TEXT,
+  repeat_iteration               INTEGER CHECK (repeat_iteration IS NULL OR repeat_iteration > 0),
+  duration_conversion_ref        TEXT,
+  prescription_methodology_id    TEXT,
+  prescription_native_target     TEXT,
+  primary_metric                 TEXT,
+  primary_unit                   TEXT,
+  primary_lower                  TEXT,
+  primary_upper                  TEXT,
+  primary_lower_inclusive        INTEGER CHECK (primary_lower_inclusive IS NULL OR primary_lower_inclusive IN (0, 1)),
+  primary_upper_inclusive        INTEGER CHECK (primary_upper_inclusive IS NULL OR primary_upper_inclusive IN (0, 1)),
+  secondary_metric               TEXT,
+  secondary_unit                 TEXT,
+  secondary_lower                TEXT,
+  secondary_upper                TEXT,
+  secondary_lower_inclusive      INTEGER CHECK (secondary_lower_inclusive IS NULL OR secondary_lower_inclusive IN (0, 1)),
+  secondary_upper_inclusive      INTEGER CHECK (secondary_upper_inclusive IS NULL OR secondary_upper_inclusive IN (0, 1)),
+  ceiling_value                  TEXT,
+  ceiling_inclusive              INTEGER CHECK (ceiling_inclusive IS NULL OR ceiling_inclusive IN (0, 1)),
+  derivation_ref                 TEXT,
+  confidence                     TEXT,
+  data_quality_requirement       TEXT,
+  parameter_snapshot_ref         TEXT,
+  confidence_reason              TEXT,
+  prescription_qualifiers_json   TEXT NOT NULL DEFAULT '{}',
+  PRIMARY KEY (revision_id, workout_id, segment_ordinal),
+  FOREIGN KEY (revision_id, workout_id)
+    REFERENCES plan_revision_workout(revision_id, workout_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_plan_workout_segment_target
+  ON plan_workout_segment(prescription_methodology_id, prescription_native_target);
 
 -- =========================
 --  B) DERIVED / CALCULATED METRICS

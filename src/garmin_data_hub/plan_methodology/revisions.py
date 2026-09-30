@@ -54,6 +54,8 @@ class PlanRevisionCandidate:
     workouts: tuple[Any, ...] = ()
     provenance: Mapping[str, Any] | None = None
     validation_summary: Mapping[str, Any] | None = None
+    constraints: Mapping[str, Any] | None = None
+    change_summary: Mapping[str, Any] | None = None
     approval_state: ApprovalState = ApprovalState.CANDIDATE
 
     def __post_init__(self) -> None:
@@ -72,6 +74,10 @@ class PlanRevisionCandidate:
             object.__setattr__(self, "provenance", _freeze(self.provenance))
         if self.validation_summary is not None:
             object.__setattr__(self, "validation_summary", _freeze(self.validation_summary))
+        if self.constraints is not None:
+            object.__setattr__(self, "constraints", _freeze(self.constraints))
+        if self.change_summary is not None:
+            object.__setattr__(self, "change_summary", _freeze(self.change_summary))
 
     @property
     def content_hash(self) -> str:
@@ -87,6 +93,8 @@ class PlanRevisionCandidate:
                 "workouts": self.workouts,
                 "provenance": self.provenance,
                 "validation_summary": self.validation_summary,
+                "constraints": self.constraints,
+                "change_summary": self.change_summary,
             }
         )
 

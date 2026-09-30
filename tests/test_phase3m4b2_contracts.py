@@ -21,7 +21,11 @@ from garmin_data_hub import cli_backup_ingest
 from garmin_data_hub import paths as hub_paths
 from garmin_data_hub.analytics import post_sync_refresh
 from garmin_data_hub.db import migrate as db_migrate
-from garmin_data_hub.db.migrate import apply_schema, get_current_schema_version
+from garmin_data_hub.db.migrate import (
+    CURRENT_SCHEMA_VERSION,
+    apply_schema,
+    get_current_schema_version,
+)
 from garmin_data_hub.ingest import trackpoints
 from garmin_data_hub.paths import schema_sql_path
 
@@ -953,7 +957,7 @@ def test_35_v8_ledger_shape_constraints_and_indexes(tmp_path: Path) -> None:
     _activity_database(db_path)
 
     with sqlite3.connect(db_path) as conn:
-        assert get_current_schema_version(conn) == 8
+        assert get_current_schema_version(conn) == CURRENT_SCHEMA_VERSION
         columns = {
             row[1]: {"type": row[2], "notnull": row[3], "default": row[4]}
             for row in conn.execute(f"PRAGMA table_info({LEDGER_TABLE})")
@@ -1024,7 +1028,9 @@ def test_36_v8_migration_is_idempotent(tmp_path: Path) -> None:
             (LEDGER_TABLE,),
         ).fetchone()[0]
 
-    assert versions == [(version, 1) for version in range(1, 9)]
+    assert versions == [
+        (version, 1) for version in range(1, CURRENT_SCHEMA_VERSION + 1)
+    ]
     assert table_count == 1
 
 
@@ -1053,7 +1059,7 @@ def test_37_v8_does_not_change_upstream_owned_activity_shape(tmp_path: Path) -> 
         after_sql = conn.execute(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='activity'"
         ).fetchone()[0]
-        assert get_current_schema_version(conn) == 8
+        assert get_current_schema_version(conn) == CURRENT_SCHEMA_VERSION
 
     assert after == before
     assert after_sql == before_sql
@@ -1066,8 +1072,9 @@ def test_38_v7_to_v8_preserves_existing_v7_provenance(tmp_path: Path) -> None:
             "CREATE TABLE activity (activity_id INTEGER PRIMARY KEY, start_time_gmt TEXT)"
         )
         apply_schema(conn, schema_sql_path())
-        # Once v8 exists, this creates the same starting point as a real v7 DB.
-        conn.execute("DELETE FROM schema_migrations WHERE version=8")
+        # Once current schema exists, this creates the same starting point as a
+        # real v7 DB so all later additive migrations replay together.
+        conn.execute("DELETE FROM schema_migrations WHERE version >= 8")
         conn.execute(f"DROP TABLE IF EXISTS {LEDGER_TABLE}")
         conn.execute(
             """
@@ -1115,7 +1122,7 @@ def test_38_v7_to_v8_preserves_existing_v7_provenance(tmp_path: Path) -> None:
             "SELECT ftp_calc, ftp_calculation_id FROM athlete_profile WHERE profile_id=1"
         ).fetchone()
 
-        assert get_current_schema_version(conn) == 8
+        assert get_current_schema_version(conn) == CURRENT_SCHEMA_VERSION
 
     assert metric == (321.0, 6, 155, 250, 48)
     assert threshold == (250, "threshold-v7", "activities", '{"count": 3}')

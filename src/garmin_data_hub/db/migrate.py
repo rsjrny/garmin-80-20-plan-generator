@@ -5,7 +5,7 @@ import sqlite3
 
 logger = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION = 8
+CURRENT_SCHEMA_VERSION = 9
 
 
 def _ensure_schema_migrations_table(conn: sqlite3.Connection) -> None:
@@ -346,6 +346,38 @@ def _migration_8_add_archive_reconciliation(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_9_add_immutable_plan_revisions(
+    conn: sqlite3.Connection, schema_sql: str
+) -> None:
+    """Add Data Hub-owned revision tables without changing legacy plan rows."""
+    if _table_exists(conn, "planned_workout"):
+        for column_name in ("source_plan_id", "source_revision_id", "source_workout_id"):
+            _add_column_if_missing(conn, "planned_workout", column_name, "TEXT")
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_planned_workout_revision_projection
+            ON planned_workout(source_plan_id, source_revision_id)
+            """
+        )
+
+    # Extract only the additive PLAN-2.3 DDL from the packaged baseline so fresh
+    # and upgraded databases cannot drift. Each statement runs under the caller's
+    # migration savepoint; unlike executescript, this does not commit implicitly.
+    marker = "--  A2) IMMUTABLE PLAN REVISIONS (DATA HUB-OWNED)"
+    try:
+        revision_ddl = schema_sql[schema_sql.index(marker) :]
+        revision_ddl = revision_ddl[: revision_ddl.index("-- =========================\n--  B)")]
+    except ValueError as exc:
+        raise sqlite3.OperationalError("revision schema marker is missing") from exc
+    revision_ddl = "\n".join(
+        line for line in revision_ddl.splitlines() if not line.lstrip().startswith("--")
+    )
+    for statement in revision_ddl.split(";"):
+        sql = statement.strip()
+        if sql:
+            conn.execute(sql)
+
+
 def _fix_trackpoint_cascade(conn: sqlite3.Connection) -> None:
     """Remove ON DELETE CASCADE from activity_trackpoints if present.
 
@@ -513,6 +545,11 @@ def apply_schema(conn: sqlite3.Connection, schema_path: Path | None = None) -> N
             "add historical archive reconciliation ledger",
             lambda: _migration_8_add_archive_reconciliation(conn),
         ),
+        (
+            9,
+            "add immutable plan revision persistence",
+            lambda: _migration_9_add_immutable_plan_revisions(conn, schema_sql),
+        ),
     ]
 
     current_version = _get_current_schema_version(conn)
@@ -548,6 +585,8 @@ def apply_schema(conn: sqlite3.Connection, schema_path: Path | None = None) -> N
         _migration_7_add_threshold_calculation_provenance(conn)
     if recorded_version >= 8:
         _migration_8_add_archive_reconciliation(conn)
+    if recorded_version >= 9:
+        _migration_9_add_immutable_plan_revisions(conn, schema_sql)
 
     # Keep baseline DDL idempotent so new installs and reruns remain safe.
     conn.executescript(schema_sql)
