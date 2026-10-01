@@ -5,7 +5,7 @@ import sqlite3
 
 logger = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION = 10
+CURRENT_SCHEMA_VERSION = 11
 
 
 def _ensure_schema_migrations_table(conn: sqlite3.Connection) -> None:
@@ -437,6 +437,43 @@ def _migration_10_add_activity_workout_match(
     )
 
 
+def _migration_11_add_legacy_plan_conversion(
+    conn: sqlite3.Connection, schema_sql: str
+) -> None:
+    """Add immutable legacy-conversion provenance and the canonical active view."""
+    if not _table_exists(conn, "planned_workout"):
+        planned_workout_sql = ""
+        for line in schema_sql.splitlines():
+            planned_workout_sql += line + "\n"
+            if sqlite3.complete_statement(planned_workout_sql):
+                if "CREATE TABLE IF NOT EXISTS planned_workout" in planned_workout_sql:
+                    conn.execute(planned_workout_sql.strip())
+                    break
+                planned_workout_sql = ""
+    for column_name in ("source_plan_id", "source_revision_id", "source_workout_id"):
+        _add_column_if_missing(conn, "planned_workout", column_name, "TEXT")
+
+    marker = "--  A4) EXPLICIT LEGACY PLAN CONVERSION (DATA HUB-OWNED)"
+    end_marker = "--  B) DERIVED / CALCULATED METRICS"
+    try:
+        conversion_ddl = schema_sql[schema_sql.index(marker) :]
+        conversion_ddl = conversion_ddl[: conversion_ddl.index(end_marker)]
+    except ValueError as exc:
+        raise sqlite3.OperationalError(
+            "legacy conversion schema marker is missing"
+        ) from exc
+    statement = ""
+    for line in conversion_ddl.splitlines():
+        if line.lstrip().startswith("--"):
+            continue
+        statement += line + "\n"
+        if sqlite3.complete_statement(statement):
+            conn.execute(statement.strip())
+            statement = ""
+    if statement.strip():
+        raise sqlite3.OperationalError("incomplete legacy conversion schema")
+
+
 def _fix_trackpoint_cascade(conn: sqlite3.Connection) -> None:
     """Remove ON DELETE CASCADE from activity_trackpoints if present.
 
@@ -614,6 +651,11 @@ def apply_schema(conn: sqlite3.Connection, schema_path: Path | None = None) -> N
             "add explicit activity workout matches",
             lambda: _migration_10_add_activity_workout_match(conn, schema_sql),
         ),
+        (
+            11,
+            "add explicit legacy plan conversion",
+            lambda: _migration_11_add_legacy_plan_conversion(conn, schema_sql),
+        ),
     ]
 
     current_version = _get_current_schema_version(conn)
@@ -653,6 +695,8 @@ def apply_schema(conn: sqlite3.Connection, schema_path: Path | None = None) -> N
         _migration_9_add_immutable_plan_revisions(conn, schema_sql)
     if recorded_version >= 10:
         _migration_10_add_activity_workout_match(conn, schema_sql)
+    if recorded_version >= 11:
+        _migration_11_add_legacy_plan_conversion(conn, schema_sql)
 
     # Keep baseline DDL idempotent so new installs and reruns remain safe.
     conn.executescript(schema_sql)

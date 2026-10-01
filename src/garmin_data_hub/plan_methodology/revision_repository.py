@@ -113,6 +113,7 @@ class ApprovalResult:
 
 
 FailureHook = Callable[[str, sqlite3.Connection], None]
+TransactionHook = Callable[[str, sqlite3.Connection], None]
 
 
 def _utc_now() -> datetime:
@@ -425,6 +426,145 @@ def _replace_projection(
     return len(rows)
 
 
+def _approve_revision_on_connection(
+    conn: sqlite3.Connection,
+    candidate: PlanRevisionCandidate,
+    *,
+    expected_content_hash: str,
+    approved_by: str,
+    expected_parent_content_hash: str | None = None,
+    approved_at: datetime | None = None,
+    plan_origin: str = "NATIVE",
+    failure_hook: FailureHook | None = None,
+    transaction_hook: TransactionHook | None = None,
+) -> ApprovalResult:
+    """Persist and activate a candidate using a caller-owned transaction."""
+    actual_hash = _check_candidate(candidate, expected_content_hash)
+    if not approved_by:
+        raise RevisionPersistenceError("approved_by is required")
+    timestamp = approved_at or _utc_now()
+    if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+        raise RevisionPersistenceError("approved_at must include a timezone")
+    methodology_id, methodology_version = _manifest_columns(candidate)
+    plan_row = conn.execute(
+        "SELECT current_revision_id FROM training_plan WHERE plan_id = ?",
+        (candidate.plan_id,),
+    ).fetchone()
+    if plan_row is None:
+        if candidate.parent_revision_id is not None:
+            raise StaleRevisionError("candidate parent does not exist")
+        conn.execute(
+            "INSERT INTO training_plan(plan_id, current_revision_id, origin, created_at_utc) VALUES (?,NULL,?,?)",
+            (candidate.plan_id, plan_origin, _iso(timestamp)),
+        )
+        current_revision_id = None
+        _call_hook(failure_hook, "after_plan_insert", conn)
+    else:
+        current_revision_id = plan_row["current_revision_id"]
+    if current_revision_id != candidate.parent_revision_id:
+        raise StaleRevisionError(
+            f"stale candidate parent: expected {candidate.parent_revision_id!r}, current {current_revision_id!r}"
+        )
+    if current_revision_id is not None:
+        parent = conn.execute(
+            "SELECT content_sha256 FROM plan_revision WHERE revision_id=? AND plan_id=?",
+            (current_revision_id, candidate.plan_id),
+        ).fetchone()
+        current_parent_hash = None if parent is None else str(parent["content_sha256"])
+        if expected_parent_content_hash != current_parent_hash:
+            raise StaleRevisionError("active parent content identity changed")
+
+    conn.execute(
+        """
+        INSERT INTO plan_revision(
+          revision_id, plan_id, parent_revision_id, revision_reason,
+          methodology_id, methodology_version, content_sha256,
+          manifest_json, goal_snapshot_json, athlete_snapshot_json,
+          parameter_snapshot_json, constraints_json,
+          validation_summary_json, provenance_json, change_summary_json,
+          approval_state, approved_by, approved_at_utc, created_at_utc
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            candidate.revision_id,
+            candidate.plan_id,
+            candidate.parent_revision_id,
+            candidate.reason.value,
+            methodology_id,
+            methodology_version,
+            actual_hash,
+            _document("manifest", candidate.manifest),
+            _document("goal-snapshot", candidate.goal_snapshot),
+            _document("athlete-snapshot", candidate.athlete_snapshot),
+            _document("parameter-snapshot", candidate.parameter_snapshot),
+            _document("constraints", candidate.constraints),
+            _document("validation-summary", candidate.validation_summary)
+            if candidate.validation_summary is not None
+            else None,
+            _document("provenance", candidate.provenance)
+            if candidate.provenance is not None
+            else None,
+            _document("change-summary", candidate.change_summary)
+            if candidate.change_summary is not None
+            else None,
+            ApprovalState.APPROVED.value,
+            approved_by,
+            _iso(timestamp),
+            _iso(timestamp),
+        ),
+    )
+    _call_hook(failure_hook, "after_revision_insert", conn)
+
+    for workout in candidate.workouts:
+        conn.execute(
+            """
+            INSERT INTO plan_revision_workout(
+              revision_id, workout_id, workout_ordinal, scheduled_date,
+              sport, family, purpose, title, description, phase,
+              event_flag, quality_flag, long_run_flag, workout_metadata_json
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                candidate.revision_id,
+                workout.workout_id,
+                workout.ordinal,
+                workout.scheduled_date.isoformat(),
+                workout.sport.value,
+                workout.family,
+                workout.purpose,
+                workout.title,
+                workout.description,
+                workout.phase,
+                int(workout.event_flag),
+                int(workout.quality_flag),
+                int(workout.long_run_flag),
+                _json(workout.metadata),
+            ),
+        )
+    _call_hook(failure_hook, "after_workout_insert", conn)
+
+    for workout in candidate.workouts:
+        for ordinal, segment in enumerate(workout.segments):
+            _insert_segment(
+                conn, candidate.revision_id, workout.workout_id or "", ordinal, segment
+            )
+    _call_hook(failure_hook, "after_segment_insert", conn)
+    if transaction_hook is not None:
+        transaction_hook("before_projection", conn)
+    _call_hook(failure_hook, "during_projection", conn)
+    projected = _replace_projection(conn, candidate)
+    if transaction_hook is not None:
+        transaction_hook("after_projection", conn)
+    _call_hook(failure_hook, "before_active_pointer_update", conn)
+    conn.execute(
+        "UPDATE training_plan SET current_revision_id=? WHERE plan_id=?",
+        (candidate.revision_id, candidate.plan_id),
+    )
+    if transaction_hook is not None:
+        transaction_hook("after_active_pointer_update", conn)
+    return ApprovalResult(candidate.plan_id, candidate.revision_id, actual_hash, projected)
+
+
 def _approve_revision_db(
     db_path: Path | str,
     candidate: PlanRevisionCandidate,
@@ -436,124 +576,25 @@ def _approve_revision_db(
     plan_origin: str = "NATIVE",
     failure_hook: FailureHook | None = None,
 ) -> ApprovalResult:
-    actual_hash = _check_candidate(candidate, expected_content_hash)
-    if not approved_by:
-        raise RevisionPersistenceError("approved_by is required")
-    timestamp = approved_at or _utc_now()
-    if timestamp.tzinfo is None or timestamp.utcoffset() is None:
-        raise RevisionPersistenceError("approved_at must include a timezone")
-    methodology_id, methodology_version = _manifest_columns(candidate)
-
     conn = connect_sqlite(Path(db_path))
     started = False
     try:
         conn.execute("BEGIN IMMEDIATE")
         started = True
-        plan_row = conn.execute(
-            "SELECT current_revision_id FROM training_plan WHERE plan_id = ?",
-            (candidate.plan_id,),
-        ).fetchone()
-        if plan_row is None:
-            if candidate.parent_revision_id is not None:
-                raise StaleRevisionError("candidate parent does not exist")
-            conn.execute(
-                "INSERT INTO training_plan(plan_id, current_revision_id, origin, created_at_utc) VALUES (?,NULL,?,?)",
-                (candidate.plan_id, plan_origin, _iso(timestamp)),
-            )
-            current_revision_id = None
-        else:
-            current_revision_id = plan_row["current_revision_id"]
-        if current_revision_id != candidate.parent_revision_id:
-            raise StaleRevisionError(
-                f"stale candidate parent: expected {candidate.parent_revision_id!r}, current {current_revision_id!r}"
-            )
-        if current_revision_id is not None:
-            parent = conn.execute(
-                "SELECT content_sha256 FROM plan_revision WHERE revision_id=? AND plan_id=?",
-                (current_revision_id, candidate.plan_id),
-            ).fetchone()
-            current_parent_hash = None if parent is None else str(parent["content_sha256"])
-            if expected_parent_content_hash != current_parent_hash:
-                raise StaleRevisionError("active parent content identity changed")
-
-        conn.execute(
-            """
-            INSERT INTO plan_revision(
-              revision_id, plan_id, parent_revision_id, revision_reason,
-              methodology_id, methodology_version, content_sha256,
-              manifest_json, goal_snapshot_json, athlete_snapshot_json,
-              parameter_snapshot_json, constraints_json,
-              validation_summary_json, provenance_json, change_summary_json,
-              approval_state, approved_by, approved_at_utc, created_at_utc
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """,
-            (
-                candidate.revision_id,
-                candidate.plan_id,
-                candidate.parent_revision_id,
-                candidate.reason.value,
-                methodology_id,
-                methodology_version,
-                actual_hash,
-                _document("manifest", candidate.manifest),
-                _document("goal-snapshot", candidate.goal_snapshot),
-                _document("athlete-snapshot", candidate.athlete_snapshot),
-                _document("parameter-snapshot", candidate.parameter_snapshot),
-                _document("constraints", candidate.constraints),
-                _document("validation-summary", candidate.validation_summary) if candidate.validation_summary is not None else None,
-                _document("provenance", candidate.provenance) if candidate.provenance is not None else None,
-                _document("change-summary", candidate.change_summary) if candidate.change_summary is not None else None,
-                ApprovalState.APPROVED.value,
-                approved_by,
-                _iso(timestamp),
-                _iso(timestamp),
-            ),
-        )
-        _call_hook(failure_hook, "after_revision_insert", conn)
-
-        for workout in candidate.workouts:
-            conn.execute(
-                """
-                INSERT INTO plan_revision_workout(
-                  revision_id, workout_id, workout_ordinal, scheduled_date,
-                  sport, family, purpose, title, description, phase,
-                  event_flag, quality_flag, long_run_flag, workout_metadata_json
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                """,
-                (
-                    candidate.revision_id,
-                    workout.workout_id,
-                    workout.ordinal,
-                    workout.scheduled_date.isoformat(),
-                    workout.sport.value,
-                    workout.family,
-                    workout.purpose,
-                    workout.title,
-                    workout.description,
-                    workout.phase,
-                    int(workout.event_flag),
-                    int(workout.quality_flag),
-                    int(workout.long_run_flag),
-                    _json(workout.metadata),
-                ),
-            )
-        _call_hook(failure_hook, "after_workout_insert", conn)
-
-        for workout in candidate.workouts:
-            for ordinal, segment in enumerate(workout.segments):
-                _insert_segment(conn, candidate.revision_id, workout.workout_id or "", ordinal, segment)
-        _call_hook(failure_hook, "after_segment_insert", conn)
-        _call_hook(failure_hook, "during_projection", conn)
-        projected = _replace_projection(conn, candidate)
-        _call_hook(failure_hook, "before_active_pointer_update", conn)
-        conn.execute(
-            "UPDATE training_plan SET current_revision_id=? WHERE plan_id=?",
-            (candidate.revision_id, candidate.plan_id),
+        result = _approve_revision_on_connection(
+            conn,
+            candidate,
+            expected_content_hash=expected_content_hash,
+            approved_by=approved_by,
+            expected_parent_content_hash=expected_parent_content_hash,
+            approved_at=approved_at,
+            plan_origin=plan_origin,
+            failure_hook=failure_hook,
         )
         _call_hook(failure_hook, "before_commit", conn)
         conn.commit()
         started = False
-        return ApprovalResult(candidate.plan_id, candidate.revision_id, actual_hash, projected)
+        return result
     except BaseException:
         if started:
             conn.rollback()

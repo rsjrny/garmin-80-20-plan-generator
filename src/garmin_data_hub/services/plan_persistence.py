@@ -23,7 +23,7 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _ACTIVE_PLAN_SQL = """
     SELECT scheduled_date, workout_name, description, planned_distance_m,
            planned_duration_s, planned_tss, structure_json
-    FROM planned_workout
+    FROM active_planned_workout
 """
 
 
@@ -207,7 +207,7 @@ def save_imported_plan(
             conn.execute(
                 """
                 SELECT COUNT(*)
-                FROM planned_workout
+                FROM active_planned_workout
                 WHERE scheduled_date BETWEEN ? AND ?
                 """,
                 (replace_start, replace_end),

@@ -238,7 +238,7 @@ def dashboard_data(db_path: Path, *, item_limit: int = 8) -> dict[str, Any]:
             SELECT COUNT(*) AS sessions, MIN(scheduled_date) AS start_date,
                    MAX(scheduled_date) AS end_date,
                    SUM(COALESCE(planned_duration_s, 0)) AS duration_s
-            FROM planned_workout
+            FROM active_planned_workout
             """
         ).fetchone()
         upcoming = _rows(
@@ -248,7 +248,7 @@ def dashboard_data(db_path: Path, *, item_limit: int = 8) -> dict[str, Any]:
                        planned_duration_s / 60.0 AS duration_min,
                        planned_distance_m / 1000.0 AS distance_km,
                        planned_tss AS tss
-                FROM planned_workout
+                FROM active_planned_workout
                 WHERE scheduled_date >= ?
                 ORDER BY scheduled_date, planned_workout_id
                 LIMIT ?
@@ -407,7 +407,7 @@ def plan_rows(db_path: Path) -> list[dict[str, Any]]:
                        planned_duration_s / 60.0 AS duration_min,
                        planned_distance_m / 1000.0 AS distance_km,
                        planned_tss AS tss, structure_json
-                FROM planned_workout
+                FROM active_planned_workout
                 ORDER BY scheduled_date, planned_workout_id
                 """
             )
@@ -483,7 +483,7 @@ def compliance_data(db_path: Path) -> dict[str, Any]:
                     SELECT scheduled_date AS day,
                            SUM(COALESCE(planned_distance_m, 0)) AS planned_distance_m,
                            SUM(COALESCE(planned_duration_s, 0)) AS planned_duration_s
-                    FROM planned_workout GROUP BY scheduled_date
+                    FROM active_planned_workout GROUP BY scheduled_date
                 ), actual AS (
                     SELECT {activity_day} AS day,
                            SUM(COALESCE(distance_meters, 0)) AS actual_distance_m,
@@ -502,8 +502,8 @@ def compliance_data(db_path: Path) -> dict[str, Any]:
                 LEFT JOIN actual ON actual.day = days.day
                 WHERE days.day <= ?
                   AND days.day BETWEEN
-                      COALESCE((SELECT MIN(scheduled_date) FROM planned_workout), days.day)
-                      AND COALESCE((SELECT MAX(scheduled_date) FROM planned_workout), days.day)
+                      COALESCE((SELECT MIN(scheduled_date) FROM active_planned_workout), days.day)
+                      AND COALESCE((SELECT MAX(scheduled_date) FROM active_planned_workout), days.day)
                 ORDER BY days.day
                 """,
                 (date.today().isoformat(),),

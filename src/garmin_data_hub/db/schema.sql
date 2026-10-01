@@ -199,6 +199,132 @@ BEGIN
 END;
 
 -- =========================
+--  A4) EXPLICIT LEGACY PLAN CONVERSION (DATA HUB-OWNED)
+-- =========================
+CREATE TABLE IF NOT EXISTS legacy_plan_conversion (
+  canonical_legacy_plan_id   TEXT PRIMARY KEY,
+  source_namespace           TEXT NOT NULL
+    CHECK (source_namespace = 'garmin_data_hub.planned_workout.rowset.v1'),
+  source_membership_sha256   TEXT NOT NULL
+    CHECK (
+      length(source_membership_sha256) = 64
+      AND source_membership_sha256 = lower(source_membership_sha256)
+      AND source_membership_sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+  source_snapshot_sha256     TEXT NOT NULL
+    CHECK (
+      length(source_snapshot_sha256) = 64
+      AND source_snapshot_sha256 = lower(source_snapshot_sha256)
+      AND source_snapshot_sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+  target_plan_id             TEXT NOT NULL UNIQUE,
+  initial_revision_id        TEXT NOT NULL UNIQUE,
+  selected_methodology_id    TEXT NOT NULL
+    CHECK (selected_methodology_id IN (
+      'FITZGERALD_80_20_RUNNING_V1', 'MAFFETONE_RUNNING_V1'
+    )),
+  conversion_version         TEXT NOT NULL,
+  conversion_source          TEXT NOT NULL
+    CHECK (conversion_source IN (
+      'USER_ACTION', 'APPLICATION_COMMAND', 'REVIEWED_MIGRATION'
+    )),
+  converted_by               TEXT NOT NULL CHECK (length(trim(converted_by)) > 0),
+  converted_at_utc           TEXT NOT NULL CHECK (length(trim(converted_at_utc)) > 0),
+  UNIQUE (source_namespace, source_membership_sha256),
+  FOREIGN KEY (target_plan_id, initial_revision_id)
+    REFERENCES plan_revision(plan_id, revision_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS legacy_plan_conversion_source_workout (
+  canonical_legacy_plan_id TEXT NOT NULL,
+  planned_workout_id       INTEGER NOT NULL UNIQUE,
+  source_ordinal           INTEGER NOT NULL CHECK (source_ordinal >= 0),
+  PRIMARY KEY (canonical_legacy_plan_id, planned_workout_id),
+  UNIQUE (canonical_legacy_plan_id, source_ordinal),
+  FOREIGN KEY (canonical_legacy_plan_id)
+    REFERENCES legacy_plan_conversion(canonical_legacy_plan_id) ON DELETE RESTRICT,
+  FOREIGN KEY (planned_workout_id)
+    REFERENCES planned_workout(planned_workout_id) ON DELETE RESTRICT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_planned_workout_revision_projection
+  ON planned_workout(source_plan_id, source_revision_id, source_workout_id)
+  WHERE source_plan_id IS NOT NULL
+    AND source_revision_id IS NOT NULL
+    AND source_workout_id IS NOT NULL;
+
+CREATE TRIGGER IF NOT EXISTS trg_legacy_plan_conversion_no_update
+BEFORE UPDATE ON legacy_plan_conversion
+BEGIN
+  SELECT RAISE(ABORT, 'legacy plan conversion provenance is immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_legacy_plan_conversion_no_delete
+BEFORE DELETE ON legacy_plan_conversion
+BEGIN
+  SELECT RAISE(ABORT, 'legacy plan conversion provenance is immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_legacy_plan_conversion_source_no_update
+BEFORE UPDATE ON legacy_plan_conversion_source_workout
+BEGIN
+  SELECT RAISE(ABORT, 'legacy plan conversion membership is immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_legacy_plan_conversion_source_no_delete
+BEFORE DELETE ON legacy_plan_conversion_source_workout
+BEGIN
+  SELECT RAISE(ABORT, 'legacy plan conversion membership is immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_mapped_legacy_planned_workout_no_update
+BEFORE UPDATE ON planned_workout
+WHEN EXISTS (
+  SELECT 1 FROM legacy_plan_conversion_source_workout AS source_map
+  WHERE source_map.planned_workout_id = OLD.planned_workout_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'mapped legacy planned workouts are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_mapped_legacy_planned_workout_no_delete
+BEFORE DELETE ON planned_workout
+WHEN EXISTS (
+  SELECT 1 FROM legacy_plan_conversion_source_workout AS source_map
+  WHERE source_map.planned_workout_id = OLD.planned_workout_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'mapped legacy planned workouts cannot be deleted');
+END;
+
+CREATE VIEW IF NOT EXISTS active_planned_workout AS
+SELECT pw.*
+FROM planned_workout AS pw
+WHERE
+  (
+    pw.source_plan_id IS NULL
+    AND pw.source_revision_id IS NULL
+    AND pw.source_workout_id IS NULL
+    AND NOT EXISTS (
+      SELECT 1
+      FROM legacy_plan_conversion_source_workout AS source_map
+      WHERE source_map.planned_workout_id = pw.planned_workout_id
+    )
+  )
+  OR
+  (
+    pw.source_plan_id IS NOT NULL
+    AND pw.source_revision_id IS NOT NULL
+    AND pw.source_workout_id IS NOT NULL
+    AND EXISTS (
+      SELECT 1
+      FROM training_plan AS target
+      WHERE target.plan_id = pw.source_plan_id
+        AND target.current_revision_id = pw.source_revision_id
+    )
+  );
+
+-- =========================
 --  B) DERIVED / CALCULATED METRICS
 -- =========================
 CREATE TABLE IF NOT EXISTS activity_metrics (

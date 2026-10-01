@@ -1411,7 +1411,7 @@ def insert_planned_workout(
 
 
 GET_PLANNED_MIN_MAX_SQL = (
-    "SELECT MIN(scheduled_date), MAX(scheduled_date) FROM planned_workout"
+    "SELECT MIN(scheduled_date), MAX(scheduled_date) FROM active_planned_workout"
 )
 
 DELETE_SETTING_SQL = "DELETE FROM app_settings WHERE key = ?"

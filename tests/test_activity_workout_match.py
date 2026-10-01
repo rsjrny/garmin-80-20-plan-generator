@@ -46,7 +46,7 @@ def _database(tmp_path):
 def test_match_migration_and_confirmed_uniqueness(tmp_path):
     conn = _database(tmp_path)
     try:
-        assert CURRENT_SCHEMA_VERSION == 10
+        assert CURRENT_SCHEMA_VERSION == 11
         first = create_match(
             conn,
             revision_id="r",
@@ -136,7 +136,13 @@ def test_v10_table_and_version_record_roll_back_together(tmp_path, monkeypatch):
     try:
         conn.execute("CREATE TABLE activity(activity_id INTEGER PRIMARY KEY)")
         apply_schema(conn, schema_sql_path())
-        conn.execute("DELETE FROM schema_migrations WHERE version=10")
+        conn.execute("DELETE FROM schema_migrations WHERE version>=10")
+        conn.execute("DROP VIEW active_planned_workout")
+        conn.execute("DROP TRIGGER trg_mapped_legacy_planned_workout_no_update")
+        conn.execute("DROP TRIGGER trg_mapped_legacy_planned_workout_no_delete")
+        conn.execute("DROP TABLE legacy_plan_conversion_source_workout")
+        conn.execute("DROP TABLE legacy_plan_conversion")
+        conn.execute("DROP INDEX uq_planned_workout_revision_projection")
         conn.execute("DROP TRIGGER trg_activity_workout_match_confirmed_no_update")
         conn.execute("DROP TRIGGER trg_activity_workout_match_confirmed_no_delete")
         conn.execute("DROP TABLE activity_workout_match")

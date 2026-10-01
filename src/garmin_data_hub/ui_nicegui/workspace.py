@@ -419,7 +419,7 @@ def _existing_by_date(
             """
             SELECT scheduled_date, workout_name, planned_duration_s,
                    planned_distance_m, planned_tss, description, structure_json
-            FROM planned_workout
+            FROM active_planned_workout
             WHERE scheduled_date BETWEEN ? AND ?
             ORDER BY scheduled_date, planned_workout_id
             """,
