@@ -13,7 +13,6 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from garmin_data_hub.db.migrate import apply_schema
 from garmin_data_hub.db.sqlite import connect_sqlite
 from garmin_data_hub.paths import default_db_path, schema_sql_path
-from garmin_data_hub.services.ai_plan_import import PlanImportError
 from garmin_data_hub.services.codex_prerequisites import (
     NODE_DOWNLOAD_URL,
     OPENAI_CODEX_AUTH_URL,
@@ -825,7 +824,14 @@ def create_ui(db_path: Path, *, sandboxed: bool) -> None:
                         prompt = str(packet["chatgpt"]["copyable_prompt"])
                     prompt_editor.value = prompt
                     state["prompt_packet"] = packet
-                    job.start(packet, prompt=prompt, executable=cli_path)
+                    job.start(
+                        packet,
+                        prompt=prompt,
+                        executable=cli_path,
+                        reviewer=lambda response: review_proposal(
+                            context, packet, response
+                        ),
+                    )
                 except sqlite3.Error:
                     ui.notify(
                         "Workspace preferences could not be saved; "
@@ -868,20 +874,14 @@ def create_ui(db_path: Path, *, sandboxed: bool) -> None:
                 progress.set_visibility(False)
                 cancel_button.set_visibility(False)
                 cancel_button.enable()
-                if snapshot.state == "completed" and snapshot.response_json:
-                    try:
-                        state["review"] = review_proposal(
-                            context_holder["value"],
-                            state["packet"],
-                            snapshot.response_json,
-                        )
-                    except (PlanImportError, KeyError, TypeError, ValueError) as exc:
-                        status_label.text = "Codex returned an invalid proposal."
-                        ui.notify(str(exc), color="negative", multi_line=True)
-                    else:
-                        status_label.text = "Proposal ready for review."
-                        tabs.set_value(review_tab)
-                        render_review.refresh()
+                if snapshot.state == "completed" and snapshot.review:
+                    state["review"] = snapshot.review
+                    status_label.text = "Proposal ready for review."
+                    tabs.set_value(review_tab)
+                    render_review.refresh()
+                elif snapshot.state == "rejected":
+                    status_label.text = snapshot.error or "Codex proposal rejected."
+                    ui.notify(status_label.text, color="negative", multi_line=True)
                 elif snapshot.state == "cancelled":
                     status_label.text = "Generation cancelled; nothing was saved."
                 elif snapshot.state == "failed":

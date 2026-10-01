@@ -14,7 +14,7 @@ import json
 import math
 from pathlib import Path
 import re
-from typing import Any
+from typing import Any, Iterable
 
 from garmin_data_hub.exports.forever.calendar_builder import DayPlan
 from garmin_data_hub.exports.forever.models import (
@@ -65,14 +65,14 @@ _TOP_REQUIRED = frozenset(
         "event",
         "analysis",
         "workouts",
+        "nutrition_targets",
+        "rationale",
     }
 )
 _TOP_OPTIONAL = frozenset(
     {
         "nutrition_guidance",
-        "nutrition_targets",
         "strength_guidance",
-        "rationale",
         "warnings",
     }
 )
@@ -154,6 +154,105 @@ class PlanSafetyError(PlanImportError):
 
 class StalePlanResponseError(PlanContractError):
     """The response does not echo the expected request or active-plan hash."""
+
+
+@dataclass(frozen=True)
+class ValidationFinding:
+    """Privacy-minimized evidence explaining one rejected proposal rule."""
+
+    stage: str
+    rule_id: str
+    path: str
+    expected: str
+    actual_type: str
+    actual_value: bool | int | float | str | None = None
+    severity: str = "error"
+    blocking: bool = True
+
+    def to_safe_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "stage": self.stage,
+            "rule_id": self.rule_id,
+            "path": self.path,
+            "expected": self.expected,
+            "actual_type": self.actual_type,
+            "severity": self.severity,
+            "blocking": self.blocking,
+        }
+        if self.actual_value is not None:
+            result["actual_value"] = self.actual_value
+        return result
+
+
+class PlanValidationError(PlanContractError, PlanSafetyError):
+    """One or more deterministic, privacy-safe validation findings."""
+
+    def __init__(self, findings: Iterable[ValidationFinding]):
+        ordered = order_validation_findings(findings)
+        if not ordered:
+            raise ValueError("PlanValidationError requires at least one finding")
+        self.findings = ordered
+        first = ordered[0]
+        suffix = "" if len(ordered) == 1 else f" ({len(ordered)} findings total)"
+        super().__init__(f"{first.path}: {first.expected}{suffix}")
+
+
+_FINDING_STAGE_ORDER = {
+    "contract": 0,
+    "workouts": 1,
+    "nutrition": 2,
+    "text": 3,
+    "policy": 4,
+    "locked_context": 5,
+}
+
+
+def order_validation_findings(
+    findings: Iterable[ValidationFinding],
+) -> tuple[ValidationFinding, ...]:
+    """Return stable validation evidence independent of input traversal order."""
+
+    return tuple(
+        sorted(
+            findings,
+            key=lambda item: (
+                _FINDING_STAGE_ORDER.get(item.stage, 99),
+                item.path,
+                item.rule_id,
+                item.expected,
+                item.actual_type,
+                repr(item.actual_value),
+            ),
+        )
+    )
+
+
+def validation_findings(exc: PlanImportError) -> tuple[ValidationFinding, ...]:
+    """Return safe structured evidence for both aggregate and legacy failures."""
+
+    if isinstance(exc, PlanValidationError):
+        return exc.findings
+    message = str(exc)
+    path_match = re.search(r"(\$[^\s:;]+)", message)
+    path = path_match.group(1).rstrip(".,") if path_match else "$"
+    if isinstance(exc, StalePlanResponseError):
+        rule_id = "locked_echo"
+        expected = "value must match the locked request context"
+    elif isinstance(exc, PlanSafetyError):
+        rule_id = "safety_validation"
+        expected = "proposal must satisfy the local safety policy"
+    else:
+        rule_id = "contract_validation"
+        expected = "value must satisfy the response contract"
+    return (
+        ValidationFinding(
+            stage="contract",
+            rule_id=rule_id,
+            path=path,
+            expected=expected,
+            actual_type="redacted",
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -324,7 +423,10 @@ def parse_chatgpt_plan(
     """
 
     document = _load_document(payload)
-    if type(minimum_strength_sessions_per_week) is not int or not 0 <= minimum_strength_sessions_per_week <= 3:
+    if (
+        type(minimum_strength_sessions_per_week) is not int
+        or not 0 <= minimum_strength_sessions_per_week <= 3
+    ):
         raise ValueError("minimum_strength_sessions_per_week must be between 0 and 3")
     _require_keys(document, "$", _TOP_REQUIRED, _TOP_OPTIONAL)
 
@@ -349,6 +451,14 @@ def parse_chatgpt_plan(
         expected_active_plan_sha256,
         "active_plan_sha256",
     )
+
+    findings = _collect_validation_findings(
+        document,
+        minimum_strength_sessions_per_week=minimum_strength_sessions_per_week,
+        training_method=training_method,
+    )
+    if findings:
+        raise PlanValidationError(findings)
 
     athlete_data = _object(document["athlete"], "$.athlete", _ATHLETE_KEYS)
     event_data = _object(document["event"], "$.event", _EVENT_KEYS)
@@ -387,7 +497,6 @@ def parse_chatgpt_plan(
     rationale = _text(
         document.get("rationale", ""),
         "$.rationale",
-        allow_empty=True,
         max_length=4_000,
     )
     warnings = _guidance(document.get("warnings", []), "$.warnings")
@@ -424,6 +533,344 @@ def parse_chatgpt_plan(
         rationale=rationale,
         warnings=warnings,
     )
+
+
+def _safe_actual(value: Any, *, allow_string: bool = False) -> tuple[str, Any]:
+    """Describe an invalid value without retaining arbitrary generated text."""
+
+    if value is None:
+        return "null", None
+    if type(value) is bool:
+        return "boolean", value
+    if type(value) is int:
+        return "integer", value
+    if type(value) is float:
+        return "number", value if math.isfinite(value) else None
+    if type(value) is str:
+        return "string", value if allow_string and len(value) <= 40 else None
+    if type(value) is list:
+        return "array", len(value)
+    if type(value) is dict:
+        return "object", len(value)
+    return type(value).__name__, None
+
+
+def _finding(
+    stage: str,
+    rule_id: str,
+    path: str,
+    expected: str,
+    actual: Any,
+    *,
+    allow_string: bool = False,
+) -> ValidationFinding:
+    actual_type, actual_value = _safe_actual(actual, allow_string=allow_string)
+    return ValidationFinding(
+        stage=stage,
+        rule_id=rule_id,
+        path=path,
+        expected=expected,
+        actual_type=actual_type,
+        actual_value=actual_value,
+    )
+
+
+def _raw_date(value: Any) -> date | None:
+    if type(value) is not str or _DATE_RE.fullmatch(value) is None:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _collect_validation_findings(
+    document: dict[str, Any],
+    *,
+    minimum_strength_sessions_per_week: int,
+    training_method: object,
+) -> tuple[ValidationFinding, ...]:
+    """Collect independent semantic failures without weakening strict parsing."""
+
+    findings: list[ValidationFinding] = []
+    event = document.get("event")
+    athlete = document.get("athlete")
+    workouts = document.get("workouts")
+    start = _raw_date(event.get("start_date")) if type(event) is dict else None
+    event_date = _raw_date(event.get("event_date")) if type(event) is dict else None
+    event_sport = event.get("sport") if type(event) is dict else None
+
+    if type(workouts) is list and event_date is not None:
+        event_items = [
+            (index, item)
+            for index, item in enumerate(workouts)
+            if type(item) is dict and _raw_date(item.get("date")) == event_date
+        ]
+        valid_race = [
+            (index, item)
+            for index, item in event_items
+            if item.get("intensity") == "race"
+            and (event_sport == "other" or item.get("sport") == event_sport)
+        ]
+        if len(event_items) != 1 or len(valid_race) != 1:
+            findings.append(
+                _finding(
+                    "workouts",
+                    "race_invariant",
+                    "$.workouts",
+                    (
+                        "exactly one total workout is required on event.event_date, "
+                        "and it must be the race-intensity workout matching event.sport"
+                    ),
+                    len(event_items),
+                )
+            )
+
+    if start is not None and event_date is not None and start <= event_date:
+        findings.extend(
+            _collect_nutrition_findings(
+                document.get("nutrition_targets"), start=start, event_date=event_date
+            )
+        )
+
+    findings.extend(_collect_text_findings(document))
+
+    age = athlete.get("age") if type(athlete) is dict else None
+    run_days = event.get("run_days_per_week") if type(event) is dict else None
+    if (
+        type(workouts) is list
+        and start is not None
+        and event_date is not None
+        and type(age) is int
+        and type(run_days) is int
+    ):
+        try:
+            report = evaluate_training_policy(
+                workouts,
+                start=start,
+                event_date=event_date,
+                age=age,
+                run_days_per_week=run_days,
+                minimum_strength_sessions_per_week=minimum_strength_sessions_per_week,
+                training_method=training_method,
+            )
+        except (TypeError, ValueError):
+            report = None
+        if report is not None:
+            for issue in report.errors:
+                if issue.code == "race_session":
+                    continue
+                path = _policy_issue_path(issue, workouts)
+                findings.append(
+                    _finding(
+                        "policy",
+                        issue.code,
+                        path,
+                        _safe_policy_expectation(issue.code),
+                        issue.week if issue.week is not None else issue.iso_date,
+                        allow_string=issue.iso_date is not None and issue.week is None,
+                    )
+                )
+    return order_validation_findings(findings)
+
+
+def _collect_nutrition_findings(
+    value: Any, *, start: date, event_date: date
+) -> list[ValidationFinding]:
+    if type(value) is not list:
+        return []
+    findings: list[ValidationFinding] = []
+    expected_days = (event_date - start).days + 1
+    if len(value) != expected_days:
+        findings.append(
+            _finding(
+                "nutrition",
+                "nutrition_exact_coverage",
+                "$.nutrition_targets",
+                (
+                    f"exactly one item is required for every calendar date from "
+                    f"{start.isoformat()} through {event_date.isoformat()} inclusive"
+                ),
+                len(value),
+            )
+        )
+
+    seen: set[date] = set()
+    covered: set[date] = set()
+    range_pairs = (
+        ("carbohydrate_g_per_kg_min", "carbohydrate_g_per_kg_max"),
+        ("protein_g_per_kg_min", "protein_g_per_kg_max"),
+        ("fat_g_per_kg_min", "fat_g_per_kg_max"),
+        (
+            "during_training_carbohydrate_g_per_hour_min",
+            "during_training_carbohydrate_g_per_hour_max",
+        ),
+    )
+    for index, item in enumerate(value):
+        if type(item) is not dict:
+            continue
+        path = f"$.nutrition_targets[{index}]"
+        target_date = _raw_date(item.get("date"))
+        if target_date is not None:
+            if not start <= target_date <= event_date:
+                findings.append(
+                    _finding(
+                        "nutrition",
+                        "nutrition_outside_window",
+                        f"{path}.date",
+                        "date must be inside the inclusive plan window",
+                        item.get("date"),
+                        allow_string=True,
+                    )
+                )
+            elif target_date in seen:
+                findings.append(
+                    _finding(
+                        "nutrition",
+                        "nutrition_duplicate_date",
+                        f"{path}.date",
+                        "each plan date must appear exactly once",
+                        item.get("date"),
+                        allow_string=True,
+                    )
+                )
+            else:
+                covered.add(target_date)
+            seen.add(target_date)
+
+        for minimum_key, maximum_key in range_pairs:
+            minimum_value = item.get(minimum_key)
+            maximum_value = item.get(maximum_key)
+            if minimum_key.startswith("during_training") and (
+                (minimum_value is None) != (maximum_value is None)
+            ):
+                findings.append(
+                    _finding(
+                        "nutrition",
+                        "nutrition_during_training_pair",
+                        path,
+                        (
+                            "during-training carbohydrate minimum and maximum must "
+                            "both be null or both be numeric"
+                        ),
+                        f"{type(minimum_value).__name__}/{type(maximum_value).__name__}",
+                    )
+                )
+                continue
+            if (
+                type(minimum_value) in (int, float)
+                and type(maximum_value) in (int, float)
+                and math.isfinite(minimum_value)
+                and math.isfinite(maximum_value)
+                and minimum_value > maximum_value
+            ):
+                findings.append(
+                    _finding(
+                        "nutrition",
+                        "nutrition_minimum_maximum",
+                        f"{path}.{minimum_key}",
+                        f"{minimum_key} must not exceed {maximum_key}",
+                        minimum_value,
+                    )
+                )
+
+    missing_count = expected_days - len(covered)
+    if missing_count > 0:
+        findings.append(
+            _finding(
+                "nutrition",
+                "nutrition_missing_date",
+                "$.nutrition_targets",
+                "every date in the inclusive plan window must be present once",
+                missing_count,
+            )
+        )
+    return findings
+
+
+def _collect_text_findings(document: dict[str, Any]) -> list[ValidationFinding]:
+    findings: list[ValidationFinding] = []
+    rationale = document.get("rationale")
+    if type(rationale) is str:
+        if not rationale.strip():
+            findings.append(
+                _finding(
+                    "text", "text_required", "$.rationale",
+                    "rationale must be a non-empty string", rationale,
+                )
+            )
+        elif len(rationale.strip()) > 4_000:
+            findings.append(
+                _finding(
+                    "text", "text_length", "$.rationale",
+                    "rationale must contain at most 4000 characters",
+                    len(rationale.strip()),
+                )
+            )
+    analysis = document.get("analysis")
+    notes = analysis.get("notes") if type(analysis) is dict else None
+    if type(notes) is str and len(notes.strip()) > 4_000:
+        findings.append(
+            _finding(
+                "text", "text_length", "$.analysis.notes",
+                "analysis.notes must contain at most 4000 characters",
+                len(notes.strip()),
+            )
+        )
+    for field in ("warnings", "strength_guidance", "nutrition_guidance"):
+        items = document.get(field)
+        if type(items) is not list:
+            continue
+        if len(items) > 50:
+            findings.append(
+                _finding(
+                    "text", "text_item_count", f"$.{field}",
+                    f"{field} must contain at most 50 strings", len(items),
+                )
+            )
+        for index, item in enumerate(items):
+            if type(item) is str and len(item.strip()) > 1_000:
+                findings.append(
+                    _finding(
+                        "text", "text_length", f"$.{field}[{index}]",
+                        "guidance and warning items must contain at most 1000 characters",
+                        len(item.strip()),
+                    )
+                )
+    return findings
+
+
+def _policy_issue_path(issue: Any, workouts: list[Any]) -> str:
+    if issue.iso_date:
+        for index, item in enumerate(workouts):
+            if type(item) is dict and item.get("date") == issue.iso_date:
+                return f"$.workouts[{index}]"
+    return "$.workouts"
+
+
+def _safe_policy_expectation(code: str) -> str:
+    expectations = {
+        "daily_session_cap": "a date may contain at most three sessions",
+        "rest_active_mix": "a rest session must not coexist with an active session",
+        "daily_hard_cap": "a date may contain at most one hard or race session",
+        "run_day_cap": "weekly run days must not exceed the configured limit",
+        "hard_day_cap": "weekly hard/race sessions must not exceed the age-based limit",
+        "strength_cap": "a week may contain at most three strength sessions",
+        "strength_minimum": (
+            "each qualifying full Base, Build, Peak, or Maintenance week must "
+            "contain the configured minimum number of strength sessions"
+        ),
+        "duration_cap": "weekly training duration must not exceed 2400 minutes",
+        "tss_cap": "weekly training stress must not exceed 1500 TSS",
+        "run_progression": "weekly run distance increase must not exceed 10 percent",
+        "training_method_intensity": (
+            "Maffetone non-race endurance sessions must use only easy or recovery intensity"
+        ),
+        "consecutive_hard_days": "hard or race sessions must not occur on consecutive days",
+        "invalid_date": "workout date must be a valid ISO calendar date",
+        "outside_window": "workout date must be inside the plan window",
+    }
+    return expectations.get(code, "proposal must satisfy the local training policy")
 
 
 def _load_document(payload: bytes | str | dict[str, Any]) -> dict[str, Any]:
@@ -718,11 +1165,24 @@ def _parse_nutrition_targets(
     start: date,
     event_date: date,
 ) -> tuple[ImportedNutritionTarget, ...]:
-    """Validate optional v1 date-linked macro targets for every plan day."""
+    """Validate required v1 date-linked macro targets for every plan day."""
     if type(value) is not list:
         raise PlanContractError("$.nutrition_targets must be an array.")
     if not value:
-        return ()
+        raise PlanValidationError(
+            (
+                _finding(
+                    "nutrition",
+                    "nutrition_exact_coverage",
+                    "$.nutrition_targets",
+                    (
+                        "exactly one item is required for every calendar date from "
+                        f"{start.isoformat()} through {event_date.isoformat()} inclusive"
+                    ),
+                    0,
+                ),
+            )
+        )
     plan_days = (event_date - start).days + 1
     if len(value) != plan_days:
         raise PlanContractError(

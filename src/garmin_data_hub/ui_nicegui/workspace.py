@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 import time
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from garmin_data_hub.db.migrate import apply_schema
 from garmin_data_hub.db import queries as db_queries
@@ -17,7 +18,12 @@ from garmin_data_hub.db.sqlite import connect_sqlite
 from garmin_data_hub.paths import schema_sql_path
 from garmin_data_hub.services.ai_plan_import import (
     ImportedTrainingPlan,
+    PlanImportError,
+    StalePlanResponseError,
+    ValidationFinding,
+    order_validation_findings,
     parse_chatgpt_plan,
+    validation_findings,
 )
 from garmin_data_hub.services.athlete_metrics_service import get_athlete_metrics
 from garmin_data_hub.services.coaching_packet import build_coaching_packet
@@ -53,6 +59,7 @@ PREFERENCE_TO_SETTING = {
 PROMPT_SETTING_KEY = "chatgpt_exchange_prompt_template"
 REQUEST_ID_TOKEN = "{{CURRENT_REQUEST_ID}}"
 PLAN_HASH_TOKEN = "{{CURRENT_ACTIVE_PLAN_SHA256}}"
+logger = logging.getLogger(__name__)
 
 
 def _as_date(value: object, fallback: date) -> date:
@@ -99,6 +106,7 @@ class ProposalReview:
     errors: tuple[str, ...]
     warnings: tuple[str, ...]
     changes: tuple[dict[str, str], ...]
+    findings: tuple[ValidationFinding, ...] = ()
 
     @property
     def can_apply(self) -> bool:
@@ -111,6 +119,8 @@ class GenerationSnapshot:
     elapsed_seconds: float
     response_json: str | None
     error: str | None
+    review: ProposalReview | None = None
+    findings: tuple[ValidationFinding, ...] = ()
 
 
 @dataclass
@@ -125,6 +135,8 @@ class GenerationJob:
     _elapsed: float = field(default=0.0, init=False)
     _response_json: str | None = field(default=None, init=False)
     _error: str | None = field(default=None, init=False)
+    _review: ProposalReview | None = field(default=None, init=False)
+    _findings: tuple[ValidationFinding, ...] = field(default=(), init=False)
 
     def start(
         self,
@@ -132,6 +144,7 @@ class GenerationJob:
         *,
         prompt: str,
         executable: str | None = None,
+        reviewer: Callable[[str], ProposalReview] | None = None,
     ) -> None:
         with self._lock:
             if self._state in {"running", "cancelling"}:
@@ -142,6 +155,8 @@ class GenerationJob:
             self._elapsed = 0.0
             self._response_json = None
             self._error = None
+            self._review = None
+            self._findings = ()
 
         def update_elapsed(value: float) -> None:
             with self._lock:
@@ -156,6 +171,35 @@ class GenerationJob:
                     cancel_event=self._cancel_event,
                     progress_callback=update_elapsed,
                 )
+                response_json = result.response_json
+                review: ProposalReview | None = None
+                if reviewer is not None:
+                    review, findings, stale = _review_generated_response(
+                        reviewer, response_json
+                    )
+                    if findings:
+                        _log_rejection(packet, findings, attempt=1)
+                    if findings and not stale:
+                        retry_prompt = _retry_prompt(prompt, findings)
+                        retry_result = generate_plan_with_codex(
+                            packet,
+                            prompt=retry_prompt,
+                            executable=executable,
+                            cancel_event=self._cancel_event,
+                            progress_callback=update_elapsed,
+                        )
+                        response_json = retry_result.response_json
+                        review, findings, _ = _review_generated_response(
+                            reviewer, response_json
+                        )
+                        if findings:
+                            _log_rejection(packet, findings, attempt=2)
+                    if findings:
+                        with self._lock:
+                            self._state = "rejected"
+                            self._findings = findings
+                            self._error = _rejection_summary(findings)
+                        return
             except CodexPlanGenerationError as exc:
                 with self._lock:
                     self._state = (
@@ -169,7 +213,8 @@ class GenerationJob:
             else:
                 with self._lock:
                     self._state = "completed"
-                    self._response_json = result.response_json
+                    self._response_json = response_json
+                    self._review = review
             finally:
                 with self._lock:
                     if self._started is not None:
@@ -200,7 +245,74 @@ class GenerationJob:
                 elapsed_seconds=elapsed,
                 response_json=self._response_json,
                 error=self._error,
+                review=self._review,
+                findings=self._findings,
             )
+
+
+def _review_generated_response(
+    reviewer: Callable[[str], ProposalReview], response_json: str
+) -> tuple[ProposalReview | None, tuple[ValidationFinding, ...], bool]:
+    """Review a temporary response and retain only safe findings on rejection."""
+
+    try:
+        review = reviewer(response_json)
+    except PlanImportError as exc:
+        return None, validation_findings(exc), isinstance(exc, StalePlanResponseError)
+    if review.can_apply:
+        return review, (), False
+    findings = review.findings or (
+        ValidationFinding(
+            stage="locked_context",
+            rule_id="review_rejected",
+            path="$",
+            expected="proposal must match locked context and local policy",
+            actual_type="redacted",
+        ),
+    )
+    return None, order_validation_findings(findings), False
+
+
+def _retry_prompt(prompt: str, findings: tuple[ValidationFinding, ...]) -> str:
+    correction_data = [finding.to_safe_dict() for finding in findings]
+    return (
+        f"{prompt.rstrip()}\n\n"
+        "The prior JSON response was rejected by local validation. Correct every "
+        "finding below and return a complete replacement JSON object using the "
+        "same locked request context. The findings are privacy-minimized and are "
+        "the only details retained from the rejected response.\n"
+        f"<validation_findings_json>\n"
+        f"{json.dumps(correction_data, ensure_ascii=False, sort_keys=True)}\n"
+        "</validation_findings_json>"
+    )
+
+
+def _rejection_summary(findings: tuple[ValidationFinding, ...]) -> str:
+    count = len(findings)
+    noun = "finding" if count == 1 else "findings"
+    first = findings[0]
+    return (
+        f"Codex proposal rejected: {count} validation {noun}. "
+        f"First: {first.rule_id} at {first.path}."
+    )
+
+
+def _log_rejection(
+    packet: Mapping[str, Any],
+    findings: tuple[ValidationFinding, ...],
+    *,
+    attempt: int,
+) -> None:
+    diagnostic = {
+        "event": "codex_proposal_rejected",
+        "attempt": attempt,
+        "request_id": str(packet.get("request_id", "")),
+        "active_plan_sha256": str(packet.get("active_plan_sha256", "")),
+        "findings": [finding.to_safe_dict() for finding in findings],
+    }
+    logger.warning("Codex proposal validation diagnostics: %s", json.dumps(
+        diagnostic, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+    ))
 
 
 def create_database_snapshot(source: Path, target: Path) -> Path:
@@ -377,37 +489,60 @@ def save_workspace_prompt(
     save_plan_setting(db_path, PROMPT_SETTING_KEY, template)
 
 
-def _locked_context_errors(
+def _locked_context_validation(
     plan: ImportedTrainingPlan, packet: Mapping[str, Any]
-) -> list[str]:
+) -> tuple[list[str], list[ValidationFinding]]:
     athlete = packet["context"]["athlete"]
     event = packet["context"]["event"]
     current_plan = packet["context"]["current_plan"]
     expected = (
-        (plan.inputs.event.start_date, current_plan["window_start"], "plan start date"),
-        (plan.inputs.event.event_date, current_plan["window_end"], "event date"),
-        (plan.inputs.event.distance, event["distance"], "event distance"),
+        (
+            plan.inputs.event.start_date,
+            current_plan["window_start"],
+            "plan start date",
+            "$.event.start_date",
+        ),
+        (
+            plan.inputs.event.event_date,
+            current_plan["window_end"],
+            "event date",
+            "$.event.event_date",
+        ),
+        (plan.inputs.event.distance, event["distance"], "event distance", "$.event.distance"),
         (
             plan.inputs.event.run_days_per_week,
             event["run_days_per_week"],
             "run-days setting",
+            "$.event.run_days_per_week",
         ),
-        (plan.inputs.athlete.age, athlete["age"], "athlete age"),
-        (plan.inputs.athlete.hrmax, athlete["hrmax_bpm"], "HRmax"),
-        (plan.inputs.athlete.lthr, athlete["lthr_bpm"], "LTHR"),
+        (plan.inputs.athlete.age, athlete["age"], "athlete age", "$.athlete.age"),
+        (plan.inputs.athlete.hrmax, athlete["hrmax_bpm"], "HRmax", "$.athlete.hrmax_bpm"),
+        (plan.inputs.athlete.lthr, athlete["lthr_bpm"], "LTHR", "$.athlete.lthr_bpm"),
         (
             plan.inputs.athlete.sodium_mg_per_hr_hot,
             athlete["sodium_mg_per_hour"],
             "sodium setting",
+            "$.athlete.sodium_mg_per_hour",
         ),
-        (plan.primary_sport, athlete["primary_sport"], "primary sport"),
-        (plan.event_sport, event["sport"], "event sport"),
+        (plan.primary_sport, athlete["primary_sport"], "primary sport", "$.athlete.primary_sport"),
+        (plan.event_sport, event["sport"], "event sport", "$.event.sport"),
     )
-    return [
+    mismatches = [item for item in expected if item[0] != item[1]]
+    errors = [
         f"The response changed {label}: expected {wanted!r}, got {actual!r}."
-        for actual, wanted, label in expected
-        if actual != wanted
+        for actual, wanted, label, _ in mismatches
     ]
+    findings = [
+        ValidationFinding(
+            stage="locked_context",
+            rule_id="locked_context_mismatch",
+            path=path,
+            expected="value must equal the locked coaching context",
+            actual_type=type(actual).__name__,
+        )
+        for actual, _, _, path in mismatches
+    ]
+    return errors, findings
 
 
 def _existing_by_date(
@@ -573,7 +708,7 @@ def review_proposal(
         minimum_strength_sessions_per_week=1,
         training_method=context.training_method,
     )
-    errors = _locked_context_errors(plan, packet)
+    errors, findings = _locked_context_validation(plan, packet)
     policy = evaluate_training_policy(
         plan.workouts,
         start=context.plan_start,
@@ -585,6 +720,16 @@ def review_proposal(
         training_method=context.training_method,
     )
     errors.extend(f"Local policy: {issue.message}" for issue in policy.errors)
+    findings.extend(
+        ValidationFinding(
+            stage="policy",
+            rule_id=issue.code,
+            path="$.workouts",
+            expected="proposal must satisfy the local training policy",
+            actual_type="redacted",
+        )
+        for issue in policy.errors
+    )
     warnings = list(plan.warnings)
     warnings.extend(f"Local policy: {issue.message}" for issue in policy.warnings)
     return ProposalReview(
@@ -594,6 +739,7 @@ def review_proposal(
         errors=tuple(errors),
         warnings=tuple(warnings),
         changes=_plan_changes(context.db_path, plan),
+        findings=order_validation_findings(findings),
     )
 
 

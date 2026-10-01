@@ -1,0 +1,38 @@
+{
+  "schema_version": "garmin_coaching_packet.v1",
+  "request_id": "8ce379f9387298e724c66b45a7ec173a0e3ca0ce92c69a3939c647ab8f2e2bf1",
+  "active_plan_sha256": "227bd1b4c1d703fae635ced27db64b5bc04d75bc945acce19b9393ede4f6b15c",
+  "context": {
+    "athlete": {
+      "name": "Sanitized Athlete",
+      "age": 70,
+      "primary_sport": "run",
+      "hrmax_bpm": null,
+      "lthr_bpm": null,
+      "sodium_mg_per_hour": null,
+      "notes": ""
+    },
+    "event": {
+      "name": "Sanitized Running Event",
+      "sport": "run",
+      "distance": "10K",
+      "run_days_per_week": 4
+    },
+    "current_plan": {
+      "window_start": "2026-10-01",
+      "window_end": "2027-01-03",
+      "sessions": []
+    },
+    "training_constraints": {
+      "training_method": "maffetone",
+      "preferred_long_session_day": "Saturday",
+      "local_acceptance_policy": {
+        "maf_hr_cap_bpm": 110,
+        "max_sessions_per_day": 3,
+        "max_run_days_per_week": 4,
+        "min_strength_sessions_per_full_base_build_week": 1,
+        "rest_and_active_sessions_same_day_allowed": false
+      }
+    }
+  }
+}

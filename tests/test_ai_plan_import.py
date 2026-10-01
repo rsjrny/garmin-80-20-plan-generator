@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import date, timedelta
 import json
 
 import pytest
@@ -20,8 +21,29 @@ REQUEST_ID = "a" * 64
 ACTIVE_PLAN_SHA256 = "b" * 64
 
 
+def _nutrition_targets(start: str, end: str) -> list[dict]:
+    first = date.fromisoformat(start)
+    last = date.fromisoformat(end)
+    return [
+        {
+            "date": (first + timedelta(days=offset)).isoformat(),
+            "day_type": "race" if first + timedelta(days=offset) == last else "easy",
+            "carbohydrate_g_per_kg_min": 4.0,
+            "carbohydrate_g_per_kg_max": 6.0,
+            "protein_g_per_kg_min": 1.4,
+            "protein_g_per_kg_max": 1.8,
+            "fat_g_per_kg_min": 0.8,
+            "fat_g_per_kg_max": 1.2,
+            "during_training_carbohydrate_g_per_hour_min": None,
+            "during_training_carbohydrate_g_per_hour_max": None,
+            "notes": "Food-agnostic educational range.",
+        }
+        for offset in range((last - first).days + 1)
+    ]
+
+
 def _valid_payload() -> dict:
-    return {
+    payload = {
         "contract": CHATGPT_PLAN_CONTRACT,
         "version": 1,
         "request_id": REQUEST_ID,
@@ -108,6 +130,8 @@ def _valid_payload() -> dict:
         "rationale": "The plan tapers volume while retaining one short quality session.",
         "warnings": ["Stop if pain changes running form."],
     }
+    payload["nutrition_targets"] = _nutrition_targets("2026-09-01", "2026-09-07")
+    return payload
 
 
 def test_parse_normalizes_for_existing_persistence_and_retains_exact_values():
@@ -268,17 +292,17 @@ def test_rejects_wrong_version_bad_hash_and_stale_echoes():
 def test_rejects_missing_out_of_range_or_non_race_event_workouts():
     payload = _valid_payload()
     payload["workouts"][-1]["date"] = "2026-09-06"
-    with pytest.raises(PlanSafetyError, match="only on event_date"):
+    with pytest.raises(PlanSafetyError, match="exactly one total workout"):
         parse_chatgpt_plan(payload)
 
     payload = _valid_payload()
     payload["workouts"][0]["date"] = "2026-08-31"
-    with pytest.raises(PlanContractError, match="outside"):
+    with pytest.raises(PlanContractError, match="inside the plan window"):
         parse_chatgpt_plan(payload)
 
     payload = _valid_payload()
     payload["workouts"][-1]["intensity"] = "easy"
-    with pytest.raises(PlanSafetyError, match="must be 'race'"):
+    with pytest.raises(PlanSafetyError, match="race-intensity workout"):
         parse_chatgpt_plan(payload)
 
 
@@ -358,7 +382,7 @@ def test_rejects_duplicate_excess_rest_or_hard_same_day_sessions():
             "tss": 0,
         }
     )
-    with pytest.raises(PlanSafetyError, match="cannot mix rest"):
+    with pytest.raises(PlanSafetyError, match="must not coexist"):
         parse_chatgpt_plan(payload)
 
     payload = _valid_payload()
@@ -372,7 +396,7 @@ def test_rejects_duplicate_excess_rest_or_hard_same_day_sessions():
         }
     )
     payload["workouts"].insert(3, second_hard)
-    with pytest.raises(PlanSafetyError, match="more than one hard/race"):
+    with pytest.raises(PlanSafetyError, match="hard/race sessions"):
         parse_chatgpt_plan(payload)
 
     payload = _valid_payload()
@@ -389,7 +413,7 @@ def test_rejects_duplicate_excess_rest_or_hard_same_day_sessions():
             }
         )
         payload["workouts"].insert(index + 1, extra)
-    with pytest.raises(PlanSafetyError, match="more than 3 sessions"):
+    with pytest.raises(PlanSafetyError, match="at most three sessions"):
         parse_chatgpt_plan(payload)
 
 
@@ -413,7 +437,7 @@ def test_rejects_unsafe_metrics_active_content_and_rest_mismatch():
 def test_rejects_age_capped_or_consecutive_hard_sessions():
     payload = _valid_payload()
     payload["athlete"]["age"] = 50
-    with pytest.raises(PlanSafetyError, match="age-based maximum is 1"):
+    with pytest.raises(PlanSafetyError, match="age-based limit"):
         parse_chatgpt_plan(payload)
 
     payload = _valid_payload()
@@ -427,7 +451,7 @@ def test_rejects_age_capped_or_consecutive_hard_sessions():
             "distance_km": 20,
         }
     )
-    with pytest.raises(PlanSafetyError, match="are consecutive"):
+    with pytest.raises(PlanSafetyError, match="must not occur on consecutive"):
         parse_chatgpt_plan(payload)
 
 
@@ -437,6 +461,7 @@ def test_rejects_run_volume_jump_over_ten_percent():
     payload["event"].update(
         {"event_date": "2026-09-21", "run_days_per_week": 4}
     )
+    payload["nutrition_targets"] = _nutrition_targets("2026-09-01", "2026-09-21")
     payload["workouts"] = [
         {
             "date": "2026-09-01",
@@ -500,5 +525,5 @@ def test_rejects_run_volume_jump_over_ten_percent():
         },
     ]
 
-    with pytest.raises(PlanSafetyError, match="increases 20.0%"):
+    with pytest.raises(PlanSafetyError, match="must not exceed 10 percent"):
         parse_chatgpt_plan(payload)
