@@ -1,10 +1,11 @@
 # Training app backlog
 
-Last audited against the repository on 2026-09-30. Completed migration notes and other historical implementation logs have been removed; Git history remains the source for that detail.
+Last audited against the repository on 2026-10-01. Completed migration notes and other historical implementation logs have been removed; Git history remains the source for that detail.
 
 ## Recently completed
 
 - [x] Data Query renders MCP list-of-object responses as structured, bounded tables, with charts for dated numeric data and raw JSON/text fallbacks for nested or non-tabular payloads. Regression coverage is in `tests/test_mcp_results.py`.
+- [x] Windows installer code signing is available through `packaging/build.ps1`, with SignTool discovery, certificate selection by thumbprint/subject/PFX, documented invocation, and packaging regression coverage.
 
 ## Current priorities
 
@@ -12,8 +13,6 @@ Last audited against the repository on 2026-09-30. Completed migration notes and
 
 - [ ] Phase 3G metric-refresh performance: deferred because the single-user
   targeted refresh has no demonstrated production performance problem.
-- [ ] Windows code signing: deferred for single-user use; revisit before broader
-  distribution.
 - [ ] In-app version/commit display: release artifacts currently carry
   provenance in `SOURCE-COMMIT.txt`; UI display is deferred.
 - [ ] Phase 3F legacy callable surfaces: keep quarantined and revisit only with
