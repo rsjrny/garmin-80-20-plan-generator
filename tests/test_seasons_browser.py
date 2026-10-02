@@ -1,4 +1,5 @@
 from pathlib import Path
+from season_browser_logs import application_logs
 
 from playwright.sync_api import expect, sync_playwright
 
@@ -15,7 +16,7 @@ def test_season_calendar_edit_link_and_stale_editor(tmp_path):
     original_hash = get_active_plan_sha256(db)
     process = _start_server(db, port := _free_loopback_port())
     errors = []
-    output = Path(__file__).resolve().parents[1] / "reports/yearly_y1"
+    output = Path(__file__).resolve().parents[1] / "reports/yearly_y3/compat_y1"
     output.mkdir(parents=True, exist_ok=True)
     try:
         with sync_playwright() as p:
@@ -96,7 +97,7 @@ def test_season_calendar_edit_link_and_stale_editor(tmp_path):
             acknowledgement.click()
             expect(acknowledgement).to_have_attribute("aria-checked", "true")
             page.get_by_role("button", name="Link reviewed plan", exact=True).click()
-            page.get_by_text("Event changes are saved as planning intent. The linked schedule stays in place until regeneration is available.", exact=True).wait_for()
+            page.get_by_text("Event changes are saved as planning intent. Preview and apply regeneration to update eligible future workouts.", exact=True).wait_for()
             assert get_active_plan_sha256(db) == original_hash
             expect(page.locator(".q-notification")).to_have_count(0, timeout=15000)
             page.evaluate("window.scrollTo(0, 0)")

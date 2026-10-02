@@ -58,7 +58,7 @@ def _database(tmp_path, name="legacy-conversion.db"):
     conn = sqlite3.connect(path)
     conn.execute("CREATE TABLE activity(activity_id INTEGER PRIMARY KEY)")
     apply_schema(conn, schema_sql_path())
-    assert CURRENT_SCHEMA_VERSION == 13
+    assert CURRENT_SCHEMA_VERSION == 14
     conn.execute(
         """
         INSERT INTO planned_workout(

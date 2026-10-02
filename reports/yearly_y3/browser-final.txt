@@ -1,0 +1,50 @@
+..F.                                                                     [100%]
+================================== FAILURES ===================================
+_____ test_incompatible_a_peaks_have_visible_conflicts_and_disabled_apply _____
+
+tmp_path = WindowsPath('C:/Users/russl/Documents/gitRepositories/Training_Planner/.tools/y3-browsers-2/test_incompatible_a_peaks_have0')
+
+    def test_incompatible_a_peaks_have_visible_conflicts_and_disabled_apply(tmp_path):
+        db=_test_database(tmp_path)
+        season=intent.create_season(db,intent.SeasonDraft("Conflicting peaks","2027-01-01","2027-12-31","America/New_York",
+            intent.SeasonInputs(starting_duration_seconds=10800,lthr=170)))
+        intent.save_event(db,season.season_id,intent.EventDraft("First marathon","2027-10-17","MAR"),expected_version=1)
+        intent.save_event(db,season.season_id,intent.EventDraft("Second marathon","2027-10-24","MAR"),expected_version=2)
+        original=get_active_plan_sha256(db)
+        process=_start_server(db,port:=_free_loopback_port())
+        try:
+            with sync_playwright() as p:
+                browser=p.chromium.launch(headless=True)
+                page=browser.new_page(viewport={"width":390,"height":844})
+                page.set_default_timeout(10000)
+                page.goto(f"http://127.0.0.1:{port}/seasons",wait_until="networkidle")
+                page.locator(".q-drawer__backdrop").click(position={"x":350,"y":120})
+                page.get_by_role("button",name="Preview yearly schedule",exact=True).click()
+                dialog=page.get_by_role("dialog")
+                dialog.get_by_label("I confirm this LTHR is a measured running threshold.",exact=True).click()
+                dialog.get_by_role("button",name="Generate preview",exact=True).click()
+                dialog=page.get_by_role("dialog")
+                dialog.get_by_text("First marathon recovery overlaps Second marathon taper. Separate peaks are infeasible; downgrade, move or cancel one.",exact=False).wait_for()
+                expect(dialog.get_by_role("button",name="Apply reviewed season",exact=True)).to_be_disabled()
+                assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+                page.screenshot(path=str(Path(__file__).resolve().parents[1]/"reports/yearly_y2/conflicts_narrow.png"))
+                assert get_active_plan_sha256(db)==original
+                browser.close()
+        finally:
+            server_output=_stop_server(process)
+>       assert "Traceback" not in server_output
+E       assert 'Traceback' not in 'NiceGUI rea...emote host\n'
+E         E           n_lost()>
+
+E           Traceback (most recent call last):
+E         ? +++++++++
+E             File "C:\Users\russl\AppData\Local\Programs\Python\Python313\Lib\asyncio\events.py", line 89, in _run
+E               self._context.run(self._callback, *self._args)...
+E         
+E         ...Full output truncated (5 lines hidden), use '-vv' to show
+E         'Traceback' is contained here::128: AssertionError
+
+
+tests\test_season_generation_browser.py=========================== short test summary info ===========================
+FAILED tests/test_season_generation_browser.py::test_incompatible_a_peaks_have_visible_conflicts_and_disabled_apply
+1 failed, 3 passed in 65.38s (0:01:05)

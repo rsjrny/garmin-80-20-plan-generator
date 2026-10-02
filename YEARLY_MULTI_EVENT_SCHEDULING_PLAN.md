@@ -1,6 +1,6 @@
 # Yearly Multi-Event Scheduling Plan
 
-Status: Y0 discovery, Y1 multiple-event foundation and Y2 initial yearly generation complete (2026-10-02); Y3 awaits separate authorization.
+Status: Y0–Y3 locally verified (2026-10-02); deterministic yearly generation and protected regeneration are implemented.
 
 ## Y0 architecture decision and handoff
 
@@ -97,6 +97,28 @@ decisions and limitations.
 Changes remain uncommitted; no push, deployment, packaged rebuild or live schedule
 apply. Y3 safe regeneration is the next separately authorized phase. Y0/Y1 handoff
 statements above describe their historical scope.
+
+## Y3 implementation and handoff
+
+Safe regeneration now offers calculated affected ranges, full-from-today and custom
+future dates. Complete merged revisions preserve history, completion, unresolved
+matches and protected manual/locked workouts; identified future overrides are
+explicit. Original prescriptions, parameter snapshots and confirmed matches survive
+through verified immutable origins. Fixed sessions consume generation capacity, and
+merged event/load/taper/recovery conflicts block apply.
+
+Workout protection includes locks, completion and reviewed timed prescription edits.
+The active calendar labels protection and preservation. Stale-preview checks, full
+revision/lineage/state/projection/nutrition/audit apply, duplicate retries and failure
+rollback are verified. Schema v14 adds protection/origins and preserves v13 audits.
+646 distinct checks, desktop/390px interactions, representative/native/converted
+fixtures and a private real v11→v14 backup are verified; the source database and live
+schedule were untouched. [Y3 evidence](reports/yearly_y3/README.md) and the roadmap
+record exact tests, transport-log handling, timings and limits.
+
+Changes remain uncommitted. Deferred Yearly 4 refinement, rollback, packaging and a
+live field trial require separate scope. Earlier Y0/Y1/Y2 handoffs retain their
+historical phase limitations.
 
 ## Objective
 

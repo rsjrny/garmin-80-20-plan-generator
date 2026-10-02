@@ -1,7 +1,7 @@
 # Training Planner Implementation Roadmap
 
 Created: 2026-10-02
-Status: T1, T2, C1, C2, Y1 and Y2 locally verified; G1 scope choice recorded; Y0 discovery complete; Y3 awaits authorization.
+Status: T1, T2, C1, C2, Y1, Y2 and Y3 locally verified; G1 scope choice recorded; Y0 discovery complete.
 
 ## Objective and source plans
 
@@ -119,7 +119,7 @@ Record available values, leaving unknown fields blank:
 | Y0 | Discovery complete | 2026-10-02 | Client settings unchanged | | | 264 existing tests and 5 synthetic discovery probes passed; no UI, visual checks not applicable | Uncommitted on e79bad7; docs/yearly-scheduling-architecture.md and handoff below |
 | Y1 | Locally verified | 2026-10-02 | Client settings unchanged | | | 408 scheduling/shared/browser tests passed; desktop/390px UI inspected; representative and real v11 snapshot upgrades preserved schedules | Uncommitted on e79bad7; handoff below |
 | Y2 | Locally verified | 2026-10-02 | Client settings unchanged | | | 611 distinct checks; desktop/390px; private v11→v13 migration; full-year timing | Uncommitted; reports/yearly_y2 and handoff below |
-| Y3 | Deferred | | | | | | |
+| Y3 | Locally verified | 2026-10-02 | Client settings unchanged | | | 646 distinct scheduling/shared/browser checks; desktop/390px; private v11→v14 migration; 366-day regeneration timing | Uncommitted; reports/yearly_y3 and handoff below |
 
 If account balance is inaccessible, report that fact and let the user provide the
 dashboard value. Local project files cannot enforce a hard account credit cap.
@@ -430,3 +430,80 @@ were unchanged.
 
 Next separately authorized phase: Y3 protection state, immutable origins, affected
 ranges, merged revisions and safe regeneration of existing seasons.
+
+## Y3 implementation and handoff — 2026-10-02
+
+Y3 implements reviewed regeneration of existing and explicitly adopted seasons.
+Calculated affected ranges envelope old/new event influence, add seven transition
+days, expand to Monday weeks and intersecting neighbors to a fixed point, then
+clip to the season/local today. Availability, athlete, fitness-history, bounds or
+explicit prescribing refresh changes recommend the full future season. From-today
+and custom ranges are selectable; full merged event/load/boundary validation blocks
+infeasible narrow ranges without silently enlarging the applied range.
+
+History, origin-confirmed/explicit completion, and unresolved candidate matches
+remain protected. Locked/manual future occurrences require exact per-preview
+opt-in IDs. Fixed dates reserve capacity, including rest; fixed running/hard/strength
+load consumes weekly capacity before generation. Unknown protected running duration
+and incompatible taper/recovery sessions block replacement. Cancelled protected
+races are retained with a warning until an eligible explicit override is reviewed.
+
+Unchanged/carried workouts retain their IDs and complete prescriptions except
+contiguous ordinal position. Changes get new identities with exact replacement
+diffs. Immutable flattened origins reference the first prescribing revision and
+are included in hashed revision content. Load verifies relational origins, original
+content, same-plan ancestor identity and flattened lineage. Activity matching routes
+carried identities to their origins; confirmed evidence and original parameter
+interpretation stay intact. Explicit confirmed parameter refresh affects new
+prescriptions only. Unsupported adopted prescriptions continue to block generation;
+confirmed refresh can introduce new running HR prescriptions alongside supported
+preserved pace prescriptions.
+
+Workout protection provides optimistic-version lock/completion controls and timed
+prescription previews. Manual edits use the same apply transaction and mark their
+new occurrence manual; the service also supports reviewed canonical manual creation.
+The editor supports timed sessions, retaining segment proportions/native targets;
+rest/event changes use season regeneration. Manual creation has a service API, no
+separate UI. Completion/manual provenance cannot be cleared. Removed state stays
+retained. The active calendar displays generated/adopted, locked, manual, completed
+and preserved status; revision history shows recorded preservation and overrides.
+
+Apply rechecks intent, all active/raw schedules, origins/protection/matches, parent
+hash, policy/generator, local date/timezone and override/range decisions under one
+BEGIN IMMEDIATE. It deterministically recomposes the reviewed candidate. Complete
+revision graph, projection/pointer, origins, new manual state, affected nutrition,
+season version and immutable audit commit together. Identical retry is a no-op;
+other stale previews reject. Failure injection covers all these transaction stages.
+
+Schema v14 adds empty protection/origin tables and expands the v13 audit mode CHECK
+through a row-preserving table rebuild. Current-version additive repairs also use a
+savepoint so failure leaves no partial repair. No prior revision document/hash is
+rewritten. Representative migrations, native/converted adoption and a private real
+v11 backup upgrade/replay retain source rows, hashes, matches, active schedule and
+foreign-key state. The private backup was removed; the source was not migrated.
+
+Verification and exact commands are in [Y3 evidence](reports/yearly_y3/README.md).
+646 distinct checks are verified across final combined scope (642 non-browser,
+four browser workflows). Desktop/390px diff, settings, manual preview, apply/history
+and calendar status were inspected. Raw browser logs retain a known Python/Windows
+Proactor socket-close WinError 10054; tests narrowly classify that stdlib callback
+while still rejecting application tracebacks/browser errors. A focused test ensures
+application frames and other transport errors remain failures. Prior Y1/Y2 visual
+artifacts were restored; compatibility captures live under yearly_y3.
+
+Synthetic 366-day/three-event regeneration preview took 0.404–0.453s, atomic apply
+1.275–1.463s, preserving 259 occurrences; these are local measurements. No live
+schedule apply, commit, push, deployment or packaged executable rebuild occurred.
+Client settings were unchanged; token/account-credit attribution is unavailable.
+
+The final combined suite passed 639 checks in 140.64s; the final calendar/browser
+and offline Plan UI run passed four checks, including three additional distinct
+Plan UI checks. git diff --check passed.
+
+Source: new season_regeneration.py, season_workouts.py and workout_origin.py;
+season_generation.py, season_schedule.py, canonical repository/matching, v14 DDL/
+migration and Seasons/calendar readers. Tests add regeneration/browser/log coverage
+and update older schema and Y2 UI expectations. README, source plan and architecture
+record the workflow. Stop at Y3; deferred Yearly 4 refinement/rollback, mixed methods,
+AI composition, automatic fitness-coverage collection, packaging and a live field
+trial need separate scope.

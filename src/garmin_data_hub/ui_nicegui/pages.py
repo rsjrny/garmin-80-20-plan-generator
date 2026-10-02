@@ -2332,7 +2332,7 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                             sum(
                                 1
                                 for row in schedule
-                                if row.get("sport") == "strength"
+                                if str(row.get("sport") or "").upper() == "STRENGTH"
                             ),
                         )
                     plan_tabs = ui.tabs().classes("w-full")
@@ -2343,7 +2343,17 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                         plan_tabs, value=workouts_tab
                     ).classes("w-full"):
                         with ui.tab_panel(workouts_tab):
-                            data_grid(display_schedule, height="34rem")
+                            grid = data_grid(display_schedule, height="34rem")
+                            if grid is not None:
+                                # Keep prescriptions and protection readable as the schedule grows.
+                                widths = {"date":115,"workout":210,"notes":320,"protection":220,"phase":150,"intensity":160}
+                                for column in grid.options["columnDefs"]:
+                                    if column["field"] in widths:
+                                        column["minWidth"] = widths[column["field"]]
+                                        column["width"] = widths[column["field"]]
+                                    if column["field"]=="protection":
+                                        column.update(wrapText=True,autoHeight=True)
+                                grid.update()
                         with ui.tab_panel(macros_tab):
                             data_grid(nutrition_rows(db_path), height="34rem")
 

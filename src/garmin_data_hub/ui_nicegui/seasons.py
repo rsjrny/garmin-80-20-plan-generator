@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from dataclasses import replace
+from uuid import uuid4
 from decimal import Decimal
 import json
 from pathlib import Path
@@ -11,6 +13,8 @@ from zoneinfo import ZoneInfo
 from garmin_data_hub.services import season_plans as plans
 from garmin_data_hub.services import season_generation as generation
 from garmin_data_hub.services.season_schedule import GenerationSettings
+from garmin_data_hub.services.season_regeneration import RegenerationRequest
+from garmin_data_hub.services import season_workouts
 from garmin_data_hub.services.baseline_plan_builder import BASELINE_DISTANCE_OPTIONS
 from garmin_data_hub.ui_nicegui.layout import page_heading, render_shell
 
@@ -191,9 +195,14 @@ def register_seasons_page(db_path: Path, *, sandboxed: bool) -> None:
                 ui.label("Generate season preview").classes("text-xl font-semibold")
                 ui.label("Review one continuous schedule using every saved event. Generation does not change your calendar.").classes("break-words")
                 if season.current_revision_id:
-                    ui.label("This preview uses the linked plan’s saved intensity parameters. Replacing its workouts is not available yet.").classes("break-words")
-                    confirmation = None
-                    adjustment = None
+                    ui.label("Preserved sessions keep their original intensity parameters. Review the replacement range and exact changes before applying.").classes("break-words")
+                    refresh_parameters = ui.checkbox("Use current athlete intensity settings for new prescriptions")
+                    if season.inputs.training_method=="eighty_twenty":
+                        confirmation = ui.checkbox("I confirm this LTHR is a measured running threshold.").props('aria-label="I confirm this LTHR is a measured running threshold."')
+                        adjustment = None
+                    else:
+                        adjustment = ui.select({-10:"-10 bpm",-5:"-5 bpm",0:"0 bpm",5:"+5 bpm"},label="MAF adjustment").classes("w-full")
+                        confirmation = ui.checkbox("I confirm the selected MAF adjustment.")
                 elif season.inputs.training_method == "eighty_twenty":
                     ui.label(f"Saved running LTHR: {season.inputs.lthr or 'not set'} bpm. Set it in Edit season if needed.")
                     confirmation = ui.checkbox("I confirm this LTHR is a measured running threshold.").props('aria-label="I confirm this LTHR is a measured running threshold."')
@@ -201,6 +210,16 @@ def register_seasons_page(db_path: Path, *, sandboxed: bool) -> None:
                 else:
                     adjustment = ui.select({-10:"-10 bpm",-5:"-5 bpm",0:"0 bpm",5:"+5 bpm"}, label="MAF adjustment").classes("w-full")
                     confirmation = ui.checkbox("I confirm the selected MAF adjustment.").props('aria-label="I confirm the selected MAF adjustment."')
+                mode = None
+                range_start = range_end = overrides = None
+                if season.current_revision_id:
+                    mode = ui.select({"AFFECTED":"Calculated affected range","FROM_TODAY":"Full schedule from today","CUSTOM":"Custom replacement range"},value="AFFECTED",label="Regeneration mode").classes("w-full")
+                    with ui.grid().classes("season-form w-full gap-3"):
+                        range_start = ui.input("Replacement start",value=max(season.start_date,datetime.now(ZoneInfo(season.timezone)).date().isoformat())).props("type=date").classes("w-full")
+                        range_end = ui.input("Replacement end",value=season.end_date).props("type=date").classes("w-full")
+                    eligible = [w for w in season_workouts.list_workouts(db_path,season.season_id) if any(r in w["reasons"] for r in ("locked","manually_edited","manually_created")) and not any(r in w["reasons"] for r in ("history","completed","unresolved_match"))]
+                    overrides = ui.select({w["workout_id"]:f'{w["date"]} · {w["title"]} · {", ".join(w["reasons"])}' for w in eligible},multiple=True,value=[],label="Explicitly replace protected future sessions").props("use-chips").classes("w-full")
+                    ui.label("Completion, history and unresolved activity matches cannot be overridden. Custom dates apply only in custom mode.").classes("text-sm break-words")
                 ui.label("Starting duration: " + (f"{season.inputs.starting_duration_seconds / 60:g} minutes/week" if season.inputs.starting_duration_seconds else "not set; add an explicit value in Edit season.")).classes("break-words")
                 error = ui.label("").classes("text-red-800 break-words")
 
@@ -209,7 +228,9 @@ def register_seasons_page(db_path: Path, *, sandboxed: bool) -> None:
                         settings = GenerationSettings(lthr_confirmed=confirmation.value if confirmation is not None and adjustment is None else False,
                             maf_adjustment=adjustment.value if adjustment is not None else None,
                             maf_confirmed=confirmation.value if confirmation is not None and adjustment is not None else False)
-                        preview = generation.preview_season(db_path,season.season_id,settings)
+                        request = RegenerationRequest(mode.value,range_start.value if mode.value=="CUSTOM" else None,
+                            range_end.value if mode.value=="CUSTOM" else None,tuple(overrides.value or ()),refresh_parameters.value) if mode else None
+                        preview = generation.preview_season(db_path,season.season_id,settings,request)
                     except (plans.SeasonError,sqlite3.Error,OSError,ValueError) as exc:
                         show_error(exc,error)
                         return
@@ -225,7 +246,28 @@ def register_seasons_page(db_path: Path, *, sandboxed: bool) -> None:
             with ui.dialog() as dialog, ui.card().classes("w-full max-w-5xl max-h-[90vh] overflow-y-auto min-w-0"):
                 ui.label("Season schedule preview").classes("text-xl font-semibold")
                 ui.label(f"{preview.season.start_date} → {preview.season.end_date} · {len(schedule.candidate.workouts)} sessions · {len(preview.events)} saved events").classes("break-words")
-                ui.label("Full generation preview" if preview.season.plan_id else "Initial schedule: all sessions are additions; no workouts are removed or preserved.").classes("text-slate-600 break-words")
+                if preview.regeneration:
+                    diff = schedule.candidate.change_summary
+                    ui.label(f'Replacement: {diff["range_start"]} → {diff["range_end"]} · {diff["mode"]}').classes("font-semibold break-words")
+                    ui.label(f'Recommended: {diff["recommended_start"]} → {diff["recommended_end"]}').classes("text-sm break-words")
+                    for reason in diff["range_reasons"]:
+                        ui.label(reason).classes("text-sm break-words")
+                    ui.label(f'{len(diff["added_workout_ids"])} additions · {len(diff["removed_workout_ids"])} removals · {len(diff["changed"])} replacements · {len(diff["preserved_workout_ids"])} preserved').classes("break-words")
+                    with ui.expansion("Workout changes and preservation",value=True).classes("w-full"):
+                        changes = [{"id":d["workout_id"],"date":d["date"],"action":"Preserved","reason":", ".join(d["reasons"]),"session":d["title"]} for d in diff["preserved"]]
+                        for w in schedule.candidate.workouts:
+                            if w.workout_id in diff["added_workout_ids"]:
+                                changes.append({"id":w.workout_id,"date":w.scheduled_date.isoformat(),"action":"Added","reason":"New prescription","session":w.title})
+                        changed_ids = {c["old_workout_id"] for c in diff["changed"]}
+                        for removed in diff.get("removed",()):
+                            changes.append({"id":removed["workout_id"],"date":removed["date"],
+                                "action":"Removed / replaced" if removed["workout_id"] in changed_ids else "Removed",
+                                "reason":"Revised event or training prescription","session":removed["title"]})
+                        ui.table(columns=[{"name":k,"label":k.title(),"field":k} for k in ("date","action","session","reason")],rows=sorted(changes,key=lambda r:r["date"]),row_key="id",pagination=8).classes("w-full")
+                    if diff["overrides"]:
+                        ui.label("Explicit replacement overrides: " + ", ".join(diff["overrides"])).classes("text-amber-900 break-all")
+                else:
+                    ui.label("Initial schedule: all sessions are additions; no workouts are removed or preserved.").classes("text-slate-600 break-words")
                 for message in preview.apply_blockers:
                     ui.label(message).classes("text-amber-900 break-words")
                 ui.label("Conflicts and warnings").classes("font-semibold")
@@ -278,6 +320,80 @@ def register_seasons_page(db_path: Path, *, sandboxed: bool) -> None:
                         button.disable()
             dialog.open()
 
+        def workout_controls(season: plans.Season) -> None:
+            with ui.dialog() as dialog, ui.card().classes("w-full max-w-3xl max-h-[90vh] overflow-y-auto"):
+                ui.label("Workout protection").classes("text-xl font-semibold")
+                ui.label("Lock future sessions or record explicit completion. Completed sessions and history are always retained.").classes("break-words")
+                items = season_workouts.list_workouts(db_path,season.season_id)
+                options = {w["workout_id"]:f'{w["date"]} · {w["title"]}' for w in items}
+                selected_workout = ui.select(options,label="Season workout",with_input=True).classes("w-full")
+                locked = ui.checkbox("Keep this workout locked")
+                completed = ui.checkbox("Record this workout as completed")
+                reason = ui.input("Protection reason").classes("w-full")
+                title = ui.input("Edited session title").classes("w-full")
+                minutes = ui.number("Edited session minutes",min=1,max=1440).classes("w-full")
+                override = ui.checkbox("I authorize editing this locked or manual future session")
+                ui.label("Prescription edits create a new reviewed revision. This editor supports timed sessions; event and rest prescriptions use season regeneration.").classes("text-sm break-words")
+                status = ui.label("").classes("break-words")
+                error = ui.label("").classes("text-red-800 break-words")
+                def choose(e):
+                    row = next((w for w in items if w["workout_id"]==e.value),None)
+                    if row:
+                        title.value = row["title"]
+                        w = row["workout"]
+                        minutes.value = sum(s.duration_seconds for s in w.segments)/60 if all(s.duration_seconds is not None for s in w.segments) else None
+                        locked.value = bool(row["state"].get("locked"))
+                        completed.value = "completed" in row["reasons"]
+                        status.text = "Preservation: " + (", ".join(row["reasons"]) or "Eligible future session")
+                        if completed.value:
+                            completed.disable()
+                        else:
+                            completed.enable()
+                selected_workout.on_value_change(choose)
+                def save():
+                    try:
+                        row = next((w for w in items if w["workout_id"]==selected_workout.value),None)
+                        if row is None:
+                            raise plans.SeasonError("Choose a workout.")
+                        season_workouts.set_workout_protection(db_path,season.season_id,row["workout_id"],
+                            expected_version=row["state"].get("version",0),editor="LOCAL_USER",reason=reason.value,
+                            locked=locked.value,explicitly_completed=True if completed.value else None)
+                    except (plans.SeasonError,sqlite3.Error,OSError,ValueError) as exc:
+                        show_error(exc,error)
+                        return
+                    dialog.close()
+                    content.refresh()
+                    ui.notify("Workout protection saved.",type="positive")
+                def preview_edit():
+                    try:
+                        row = next((w for w in items if w["workout_id"]==selected_workout.value),None)
+                        if row is None:
+                            raise plans.SeasonError("Choose a workout.")
+                        w = row["workout"]
+                        if w.event_flag or any(s.duration_seconds is None for s in w.segments):
+                            raise plans.SeasonError("Choose a timed training session for prescription editing.")
+                        total = _integer(Decimal(str(minutes.value))*60,"Edited duration")
+                        previous = sum(s.duration_seconds for s in w.segments)
+                        durations = [max(1,s.duration_seconds*total//previous) for s in w.segments]
+                        durations[-1] += total-sum(durations)
+                        if durations[-1]<1:
+                            raise plans.SeasonError("Duration is too short for this session’s segments.")
+                        edited = replace(w,workout_id=uuid4().hex,title=plans._text(title.value,"Session title"),
+                            segments=tuple(replace(s,duration_seconds=n) for s,n in zip(w.segments,durations)))
+                        request = RegenerationRequest("MANUAL_EDIT",override_workout_ids=(w.workout_id,) if override.value else (),
+                            manual_workout=edited,replaces_workout_id=w.workout_id)
+                        preview = generation.preview_season(db_path,season.season_id,GenerationSettings(),request)
+                    except (plans.SeasonError,sqlite3.Error,OSError,ValueError) as exc:
+                        show_error(exc,error)
+                        return
+                    dialog.close()
+                    review_preview(preview)
+                with ui.row().classes("w-full justify-end"):
+                    ui.button("Preview prescription edit",on_click=preview_edit).props("outline")
+                    ui.button("Close workout protection",on_click=dialog.close).props("flat")
+                    ui.button("Save workout protection",on_click=save)
+            dialog.open()
+
         @ui.refreshable
         def content() -> None:
             try:
@@ -308,12 +424,14 @@ def register_seasons_page(db_path: Path, *, sandboxed: bool) -> None:
                 ui.label("Available: " + ", ".join(plans.WEEKDAYS[d] for d in season.inputs.available_weekdays)).classes("break-words")
                 ui.label(f"Planning version {season.input_version}" + (f" · Linked revision {season.current_revision_id}" if season.plan_id else " · No linked schedule")).classes("text-sm text-slate-500 break-all")
                 if season.plan_id:
-                    ui.label("Event changes are saved as planning intent. The linked schedule stays in place until regeneration is available.").classes("text-amber-900 break-words")
+                    ui.label("Event changes are saved as planning intent. Preview and apply regeneration to update eligible future workouts.").classes("text-amber-900 break-words")
                 with ui.row().classes("gap-2"):
                     if season.status != "archived":
                         ui.button("Edit season", on_click=lambda: season_editor(season)).props("outline")
                     if season.status != "archived":
                         ui.button("Preview yearly schedule", icon="preview", on_click=lambda: generation_editor(season))
+                        if season.current_revision_id:
+                            ui.button("Workout protection",icon="lock",on_click=lambda: workout_controls(season)).props("outline")
                     ui.button("Restore season" if season.status == "archived" else "Archive season", on_click=lambda: archive(season)).props("flat")
             with ui.row().classes("w-full items-center justify-between"):
                 ui.label("Event calendar").classes("text-xl font-semibold")
@@ -354,6 +472,12 @@ def register_seasons_page(db_path: Path, *, sandboxed: bool) -> None:
                         ui.label(f'Revision {application["resulting_revision_id"]} · Reviewed by {application["approved_by"]}').classes("text-sm break-all")
                         review = json.loads(application["review_json"])
                         ui.label(review["rationale"]).classes("text-sm break-words")
+                        diff = review["diff"]
+                        ui.label(f'{len(diff.get("added_workout_ids",()))} additions · {len(diff.get("removed_workout_ids",()))} removals · {len(diff.get("preserved_workout_ids",()))} preserved').classes("text-sm break-words")
+                        with ui.expansion("Recorded preservation and overrides").classes("w-full"):
+                            for decision in review.get("preserved",()):
+                                ui.label(f'{decision["date"]} · {decision["title"]} · {", ".join(decision["reasons"])}').classes("text-sm break-words")
+                            ui.label("Replacement overrides: " + (", ".join(review.get("overrides",())) or "None")).classes("text-sm break-all")
                         with ui.expansion("Acknowledged warnings").classes("w-full"):
                             for warning in review["warnings"]:
                                 ui.label(warning["message"]).classes("text-sm text-amber-900 break-words")
@@ -385,6 +509,6 @@ def register_seasons_page(db_path: Path, *, sandboxed: bool) -> None:
 
         with ui.column().classes("gdh-page min-w-0"):
             page_heading("Seasons", "Organize a year of running events, priorities and availability.")
-            ui.label("Preview a continuous yearly schedule, then apply it to an empty future season.").classes("text-slate-600")
+            ui.label("Preview yearly training and safely revise eligible future workouts.").classes("text-slate-600")
             ui.link("Manage single-event plan", "/plan")
             content()

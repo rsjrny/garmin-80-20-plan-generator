@@ -313,7 +313,10 @@ def _weekday_order(inputs):
 def generate_season_schedule(season: intent.Season, events: tuple[intent.SeasonEvent, ...],
                              settings: GenerationSettings, *, today: date,
                              plan_id: str, revision_id: str,
-                             parent: PlanRevisionCandidate | None = None) -> SeasonSchedule:
+                             parent: PlanRevisionCandidate | None = None,
+                             fixed_workouts: tuple[PlannedWorkout, ...] = (),
+                             replacement_range: tuple[date,date] | None = None,
+                             refresh_parameters: bool = False) -> SeasonSchedule:
     """Generate one complete preview, including blocking findings and exact weekly load."""
     intent._validate_draft(intent.SeasonDraft(season.name,season.start_date,season.end_date,season.timezone,season.inputs))
     if type(today) is not date:
@@ -321,7 +324,7 @@ def generate_season_schedule(season: intent.Season, events: tuple[intent.SeasonE
     windows = event_windows(season,events)
     controls, issues = _timeline(season,windows)
     baseline = _baseline(season,settings,today,issues)
-    parameters = canonical_value(parent.parameter_snapshot) if parent else _parameters(season,settings,today)
+    parameters = canonical_value(parent.parameter_snapshot) if parent and not refresh_parameters else _parameters(season,settings,today)
     method = MethodologyId(intent.METHODS[season.inputs.training_method])
     manifest = canonical_value(parent.manifest) if parent else canonical_value(next(d.manifest for d in STATIC_DEFINITIONS if d.methodology_id == method))
     if manifest["methodology_id"] != method.value:
@@ -333,6 +336,9 @@ def generate_season_schedule(season: intent.Season, events: tuple[intent.SeasonE
         raise intent.SeasonError("Linked parameters are unsupported by deterministic yearly generation; retain the existing schedule.") from exc
     issues.append(ScheduleIssue("DISTANCE_AND_TSS_UNKNOWN", "warning",
         "Training distance and TSS are unknown. Duration progression is checked; distance growth and TSS caps cannot be verified from missing data."))
+    fixed_by_day = defaultdict(list)
+    for workout in fixed_workouts:
+        fixed_by_day[workout.scheduled_date].append(workout)
     planned = {w.event_date:w for w in windows if w.event.draft.status=="planned"}
     groups = defaultdict(list)
     for c in controls:
@@ -366,28 +372,53 @@ def generate_season_schedule(season: intent.Season, events: tuple[intent.SeasonE
         for d in event_days:
             if d not in available_events:
                 issues.append(ScheduleIssue("EVENT_UNAVAILABLE", "error", "Event date is unavailable. Update availability or move the event.", d.isoformat(), (planned[d].event.event_id,)))
-        chosen = set(available_events)
+        fixed_days = {c.day for c in days if c.day in fixed_by_day}
+        fixed_runs = {d for d in fixed_days if any(w.sport is Sport.RUNNING for w in fixed_by_day[d])}
+        chosen = set(available_events) | fixed_runs
         # Events consume the configured run-day slots; they never add a workout day.
         for dow in order:
             if len(chosen) >= season.inputs.run_days_per_week:
                 break
             d = week + timedelta(days=dow)
-            if start<=d<=end:
+            if start<=d<=end and d not in fixed_days:
                 chosen.add(d)
         nominal = set(order[:season.inputs.run_days_per_week])
         denominator = sum(2 if dow==long_dow else 1 for dow in nominal)
         # Use a full-week denominator even on a partial week; do not compress its load.
         budgets = {c.day:int(Decimal(envelope)*c.load_fraction*Decimal("0.75" if cutback else "1")*
                      Decimal(2 if c.day.weekday()==long_dow else 1)/Decimal(denominator)) for c in days}
+        fixed_seconds = sum(s.duration_seconds or 0 for d in fixed_days for w in fixed_by_day[d] if w.sport is Sport.RUNNING and not w.event_flag for s in w.segments)
+        total_budget = sum(budgets[d] for d in chosen if d in budgets)
+        free_budget = sum(budgets[d] for d in chosen if d in budgets and d not in fixed_days)
+        remaining = max(0,total_budget-fixed_seconds)
+        if free_budget and remaining<free_budget:
+            for d in chosen-fixed_days:
+                if d in budgets:
+                    budgets[d] = budgets[d]*remaining//free_budget
         event_count = len(event_days)
+        fixed_hard = sum(w.event_flag or w.quality_flag for d in fixed_days for w in fixed_by_day[d])
         hard_cap = get_intensity_cap(season.inputs.age) if method is MethodologyId.FITZGERALD_80_20_RUNNING_V1 else 1
         quality_day = None
-        if normal and not cutback and not event_count and hard_cap and method is MethodologyId.FITZGERALD_80_20_RUNNING_V1:
+        if normal and not cutback and not event_count and fixed_hard==0 and hard_cap and method is MethodologyId.FITZGERALD_80_20_RUNNING_V1:
             quality_day = next((c.day for c in days if c.day in chosen and c.day.weekday()!=long_dow and budgets[c.day]>=600 and c.phase in {"BUILD","EVENT_SPECIFIC"}),None)
-        strength_added = False
+        strength_added = any(w.sport is Sport.STRENGTH for d in fixed_days for w in fixed_by_day[d])
         week_rows = []
         for c in days:
             d = c.day
+            if d in fixed_by_day:
+                for fixed in fixed_by_day[d]:
+                    if fixed.scheduled_date>=today and c.phase in {"RECOVERY","TAPER"} and fixed.sport is Sport.RUNNING and not fixed.event_flag:
+                        duration = sum(s.duration_seconds or 0 for s in fixed.segments)
+                        if any(s.duration_seconds is None for s in fixed.segments):
+                            issues.append(ScheduleIssue("PROTECTED_LOAD_UNKNOWN","error","Preserved running load is unknown in taper/recovery; resolve the prescription or choose a wider range.",d.isoformat()))
+                        elif duration>budgets[d]:
+                            issues.append(ScheduleIssue("PROTECTED_PHASE_LOAD","error","Preserved running duration exceeds the new taper/recovery budget. Review a specific future override or revise event intent.",d.isoformat()))
+                    fixed = replace(fixed,ordinal=len(rows))
+                    rows.append(fixed)
+                    week_rows.append(fixed)
+                continue
+            if replacement_range and not replacement_range[0]<=d<=replacement_range[1]:
+                continue
             meta = {"schema_version":"season-workout.v1", "season_id":season.season_id,
                     "event_id":c.event_id,"influencing_event_ids":c.influencing_event_ids,
                     "generator_version":GENERATOR_VERSION,"policy_version":POLICY_VERSION,
@@ -470,7 +501,17 @@ def generate_season_schedule(season: intent.Season, events: tuple[intent.SeasonE
                      "week_loads":[asdict(w) for w in weeks]},
         change_summary={"mode":"FULL_PREVIEW" if parent else "INITIAL_FULL",
                         "added_workout_ids":[w.workout_id for w in rows],"preserved_workout_ids":[]})
-    issues.extend(validate_season_workload(season,events,candidate,weeks,baseline))
+    issues.extend(validate_season_workload(season,events,candidate,weeks,baseline,
+        today=today if fixed_workouts else None, preserved_event_ids={w.workout_id for w in fixed_workouts if w.event_flag},
+        controls=controls if fixed_workouts else None))
+    for w in fixed_workouts:
+        if w.scheduled_date<today:
+            continue
+        c = next((c for c in controls if c.day==w.scheduled_date),None)
+        if c and c.phase in {"TAPER","RECOVERY"} and w.sport is Sport.RUNNING:
+            if w.event_flag and c.phase=="RECOVERY" or w.quality_flag or (c.load_fraction==0 and w.sport is not Sport.REST):
+                issues.append(ScheduleIssue("PROTECTED_PHASE_CONFLICT","error",
+                    "A preserved session conflicts with taper/recovery. Resolve its protection or event intent and generate a fresh preview.",w.scheduled_date.isoformat()))
     method_findings = validate_methodology_candidate(methodology_id=method.value,candidate=candidate)
     for f in method_findings:
         if f.severity.value in {"ERROR","WARNING"}:
@@ -484,7 +525,7 @@ def generate_season_schedule(season: intent.Season, events: tuple[intent.SeasonE
     return SeasonSchedule(candidate,controls,windows,tuple(weeks),tuple(issues),baseline)
 
 
-def validate_season_workload(season, events, candidate, weeks, baseline):
+def validate_season_workload(season, events, candidate, weeks, baseline, *, today=None, preserved_event_ids=(), controls=None):
     """Validate combined local weeks; unknown event duration never becomes zero load."""
     issues = []
     by_day, by_week = defaultdict(list),defaultdict(list)
@@ -502,7 +543,8 @@ def validate_season_workload(season, events, candidate, weeks, baseline):
         matches = found[eid]
         if len(matches)!=1 or matches[0].scheduled_date.isoformat()!=e.draft.event_date or sum(s.distance_metres or 0 for s in matches[0].segments)!=e.distance_metres:
             issues.append(ScheduleIssue("EVENT_NOT_REPRESENTED","error","Each planned event requires exactly one correctly dated and distanced event session.",e.draft.event_date,(eid,)))
-    if set(found)-set(expected_events):
+    unexpected = [w for eid,ws in found.items() if eid not in expected_events for w in ws if w.workout_id not in preserved_event_ids]
+    if unexpected:
         issues.append(ScheduleIssue("UNEXPECTED_EVENT","error","The schedule contains an event absent from planned intent."))
     hard_dates = set()
     for d,rows in sorted(by_day.items()):
@@ -516,11 +558,14 @@ def validate_season_workload(season, events, candidate, weeks, baseline):
             issues.append(ScheduleIssue("DAILY_HARD_CAP","error","Only one hard/event session is permitted per day.",d.isoformat()))
         if hard:
             hard_dates.add(d)
-        if active and d.weekday() not in season.inputs.available_weekdays:
+        if active and (today is None or d>=today) and d.weekday() not in season.inputs.available_weekdays:
             issues.append(ScheduleIssue("UNAVAILABLE_DAY","error","Training falls on an unavailable day.",d.isoformat()))
     for d in hard_dates:
         if d-DAY in hard_dates:
             issues.append(ScheduleIssue("CONSECUTIVE_HARD_DAYS","error","Hard/event days must not be consecutive.",d.isoformat()))
+    control_by_week = defaultdict(list)
+    for control in controls or ():
+        control_by_week[monday(control.day)].append(control)
     last_normal = None
     duration_envelope = baseline
     return_pending = False
@@ -528,10 +573,11 @@ def validate_season_workload(season, events, candidate, weeks, baseline):
     for load in weeks:
         rows = by_week[date.fromisoformat(load.monday)]
         runs = [w for w in rows if w.sport is Sport.RUNNING]
-        if len({w.scheduled_date for w in runs})>season.inputs.run_days_per_week:
+        future_week = today is None or date.fromisoformat(load.monday)+timedelta(days=6)>=today
+        if future_week and len({w.scheduled_date for w in runs})>season.inputs.run_days_per_week:
             issues.append(ScheduleIssue("RUN_DAY_CAP","error","Combined events and training exceed configured weekly run days.",load.monday))
         hard_cap = get_intensity_cap(season.inputs.age) if season.inputs.training_method=="eighty_twenty" else 1
-        if sum(w.event_flag or w.quality_flag for w in runs)>hard_cap:
+        if future_week and sum(w.event_flag or w.quality_flag for w in runs)>hard_cap:
             issues.append(ScheduleIssue("WEEKLY_HARD_CAP","error",f"Combined event and quality load exceeds the {hard_cap}-day weekly cap.",load.monday))
         if sum(w.sport is Sport.STRENGTH for w in rows)>3:
             issues.append(ScheduleIssue("STRENGTH_CAP","error","More than three strength sessions in a local week.",load.monday))
@@ -539,14 +585,15 @@ def validate_season_workload(season, events, candidate, weeks, baseline):
         if sum(s.duration_seconds or 0 for w in nonrace for s in w.segments)>144000:
             issues.append(ScheduleIssue("WEEKLY_DURATION_CAP","error","Non-event training exceeds 40 hours in a local week.",load.monday))
         # TSS stays unknown in canonical generation, with no invented estimates.
-        if any(w.phase=="RECOVERY" for w in rows):
+        effective_phases = [c.phase for c in control_by_week[date.fromisoformat(load.monday)]] if controls else [w.phase for w in rows]
+        if "RECOVERY" in effective_phases:
             return_pending = True
         training_runs = [w for w in runs if not w.event_flag]
         known_duration = all(s.duration_seconds is not None for w in training_runs for s in w.segments)
         actual_duration = sum(s.duration_seconds or 0 for w in training_runs for s in w.segments)
         known_distance = bool(training_runs) and all(s.distance_metres is not None for w in training_runs for s in w.segments)
         actual_distance = sum(s.distance_metres or 0 for w in training_runs for s in w.segments) if known_distance else None
-        normal = all(w.phase in {"BASE","BUILD","EVENT_SPECIFIC"} for w in rows)
+        normal = bool(effective_phases) and all(p in {"BASE","BUILD","EVENT_SPECIFIC"} for p in effective_phases)
         if normal and not load.partial and not load.cutback:
             if return_pending:
                 limit = min(last_normal or baseline or 0,baseline or 0)
@@ -555,9 +602,9 @@ def validate_season_workload(season, events, candidate, weeks, baseline):
                 limit = int(Decimal(duration_envelope or 0)*Decimal("1.1"))
             if not known_duration:
                 issues.append(ScheduleIssue("DURATION_UNKNOWN", "warning", "Duration progression cannot be checked with missing running duration.",load.monday))
-            if known_duration and actual_duration>limit:
+            if future_week and known_duration and actual_duration>limit:
                 issues.append(ScheduleIssue("DURATION_GROWTH","error","Build duration exceeds the 10%/post-recovery return envelope.",load.monday))
-            if actual_distance is not None and last_distance is not None and actual_distance>last_distance*110//100:
+            if future_week and actual_distance is not None and last_distance is not None and actual_distance>last_distance*110//100:
                 issues.append(ScheduleIssue("DISTANCE_GROWTH", "error", "Build distance exceeds 10% growth from the last complete normal week.",load.monday))
             if known_duration:
                 duration_envelope = actual_duration

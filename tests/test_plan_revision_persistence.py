@@ -348,7 +348,7 @@ def test_v9_schema_is_additive_idempotent_and_has_expected_integrity(tmp_path):
         conn.commit()
         apply_schema(conn, schema_sql_path())
         apply_schema(conn, schema_sql_path())
-        assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == CURRENT_SCHEMA_VERSION == 13
+        assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == CURRENT_SCHEMA_VERSION == 14
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert {"training_plan", "plan_revision", "plan_revision_workout", "plan_workout_segment"} <= tables
         columns = {row[1] for row in conn.execute("PRAGMA table_info(planned_workout)")}

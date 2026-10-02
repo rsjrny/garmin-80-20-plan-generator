@@ -1,4 +1,5 @@
 from pathlib import Path
+from season_browser_logs import application_logs
 
 from playwright.sync_api import expect, sync_playwright
 
@@ -15,7 +16,7 @@ def test_yearly_preview_warning_review_stale_and_initial_apply(tmp_path):
     original=get_active_plan_sha256(db)
     process=_start_server(db,port:=_free_loopback_port())
     errors=[]
-    output=Path(__file__).resolve().parents[1]/"reports/yearly_y2"
+    output=Path(__file__).resolve().parents[1]/"reports/yearly_y3/compat_y2"
     output.mkdir(parents=True,exist_ok=True)
     try:
         with sync_playwright() as p:
@@ -77,10 +78,10 @@ def test_yearly_preview_warning_review_stale_and_initial_apply(tmp_path):
             page.evaluate("window.scrollTo(0,0)")
             page.wait_for_timeout(250)
             page.screenshot(path=str(output/"applied_narrow.png"),full_page=True)
-            # An existing season may preview, but cannot replace its schedule in Y2.
+            # An existing season now supports a reviewed protected regeneration.
             dialog=generate(linked=True)
-            expect(dialog.get_by_role("button",name="Apply reviewed season",exact=True)).to_be_disabled()
-            dialog.get_by_text("A schedule is already linked. You can review a full preview; replacing existing season workouts is not available yet.",exact=True).wait_for()
+            expect(dialog.get_by_role("button",name="Apply reviewed season",exact=True)).to_be_enabled()
+            dialog.get_by_text("Workout changes and preservation",exact=True).wait_for()
             dialog.get_by_role("button",name="Close preview",exact=True).click()
             # The active calendar reads canonical rest/auxiliary/native intensity rows.
             page.goto(base+"/plan",wait_until="networkidle")
@@ -94,7 +95,7 @@ def test_yearly_preview_warning_review_stale_and_initial_apply(tmp_path):
     finally:
         server_output=_stop_server(process)
         (output/"browser-server.txt").write_text(server_output,encoding="utf-8")
-    assert "Traceback" not in server_output and "ERROR:" not in server_output
+    assert "Traceback" not in application_logs(server_output) and "ERROR:" not in application_logs(server_output)
 
 
 def test_incompatible_a_peaks_have_visible_conflicts_and_disabled_apply(tmp_path):
@@ -120,9 +121,11 @@ def test_incompatible_a_peaks_have_visible_conflicts_and_disabled_apply(tmp_path
             dialog.get_by_text("First marathon recovery overlaps Second marathon taper. Separate peaks are infeasible; downgrade, move or cancel one.",exact=False).wait_for()
             expect(dialog.get_by_role("button",name="Apply reviewed season",exact=True)).to_be_disabled()
             assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
-            page.screenshot(path=str(Path(__file__).resolve().parents[1]/"reports/yearly_y2/conflicts_narrow.png"))
+            page.screenshot(path=str(Path(__file__).resolve().parents[1]/"reports/yearly_y3/compat_y2/conflicts_narrow.png"))
             assert get_active_plan_sha256(db)==original
+            page.evaluate("window.socket?.disconnect()")
+            page.wait_for_timeout(250)
             browser.close()
     finally:
         server_output=_stop_server(process)
-    assert "Traceback" not in server_output
+    assert "Traceback" not in application_logs(server_output)

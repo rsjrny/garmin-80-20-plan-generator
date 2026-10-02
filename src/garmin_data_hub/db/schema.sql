@@ -398,7 +398,7 @@ CREATE TABLE IF NOT EXISTS season_revision_application (
   timezone TEXT NOT NULL,
   range_start TEXT NOT NULL,
   range_end TEXT NOT NULL CHECK (range_end >= range_start),
-  mode TEXT NOT NULL CHECK (mode = 'INITIAL_FULL'),
+  mode TEXT NOT NULL CHECK (mode IN ('INITIAL_FULL','FROM_TODAY','AFFECTED','CUSTOM','MANUAL_EDIT')),
   approved_by TEXT NOT NULL CHECK (length(trim(approved_by)) > 0),
   applied_at_utc TEXT NOT NULL,
   UNIQUE (season_id,preview_id),
@@ -415,6 +415,63 @@ BEGIN SELECT RAISE(ABORT, 'season applications are immutable'); END;
 CREATE TRIGGER IF NOT EXISTS trg_season_application_no_delete
 BEFORE DELETE ON season_revision_application
 BEGIN SELECT RAISE(ABORT, 'season applications are immutable'); END;
+
+--  A7) SEASON WORKOUT PROTECTION AND ORIGINS (DATA HUB-OWNED)
+CREATE TABLE IF NOT EXISTS plan_revision_workout_origin (
+  revision_id TEXT NOT NULL,
+  workout_id TEXT NOT NULL,
+  origin_revision_id TEXT NOT NULL,
+  origin_workout_id TEXT NOT NULL,
+  prescribed_sha256 TEXT NOT NULL CHECK (length(prescribed_sha256)=64),
+  PRIMARY KEY (revision_id,workout_id),
+  CHECK (revision_id != origin_revision_id),
+  FOREIGN KEY (revision_id,workout_id) REFERENCES plan_revision_workout(revision_id,workout_id) ON DELETE RESTRICT,
+  FOREIGN KEY (origin_revision_id,origin_workout_id) REFERENCES plan_revision_workout(revision_id,workout_id) ON DELETE RESTRICT
+);
+CREATE TRIGGER IF NOT EXISTS trg_workout_origin_owner
+BEFORE INSERT ON plan_revision_workout_origin
+WHEN NOT EXISTS (SELECT 1 FROM plan_revision c JOIN plan_revision o ON c.plan_id=o.plan_id
+  WHERE c.revision_id=NEW.revision_id AND o.revision_id=NEW.origin_revision_id)
+ OR EXISTS (SELECT 1 FROM plan_revision_workout_origin WHERE revision_id=NEW.origin_revision_id AND workout_id=NEW.origin_workout_id)
+BEGIN SELECT RAISE(ABORT, 'workout origin must be flattened within one plan'); END;
+CREATE TRIGGER IF NOT EXISTS trg_workout_origin_no_update
+BEFORE UPDATE ON plan_revision_workout_origin
+BEGIN SELECT RAISE(ABORT, 'workout origins are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS trg_workout_origin_no_delete
+BEFORE DELETE ON plan_revision_workout_origin
+BEGIN SELECT RAISE(ABORT, 'workout origins are immutable'); END;
+CREATE TABLE IF NOT EXISTS season_workout_state (
+  season_id TEXT NOT NULL REFERENCES season_plan(season_id) ON DELETE RESTRICT,
+  plan_id TEXT NOT NULL REFERENCES training_plan(plan_id) ON DELETE RESTRICT,
+  workout_id TEXT NOT NULL,
+  origin_revision_id TEXT NOT NULL,
+  origin_workout_id TEXT NOT NULL,
+  locked INTEGER NOT NULL DEFAULT 0 CHECK (locked IN (0,1)),
+  manually_edited INTEGER NOT NULL DEFAULT 0 CHECK (manually_edited IN (0,1)),
+  manually_created INTEGER NOT NULL DEFAULT 0 CHECK (manually_created IN (0,1)),
+  explicitly_completed INTEGER NOT NULL DEFAULT 0 CHECK (explicitly_completed IN (0,1)),
+  version INTEGER NOT NULL CHECK (version > 0),
+  editor TEXT NOT NULL CHECK (length(trim(editor))>0),
+  reason TEXT NOT NULL CHECK (length(trim(reason))>0),
+  updated_at_utc TEXT NOT NULL,
+  PRIMARY KEY (plan_id,workout_id),
+  FOREIGN KEY (origin_revision_id,origin_workout_id) REFERENCES plan_revision_workout(revision_id,workout_id) ON DELETE RESTRICT
+);
+CREATE TRIGGER IF NOT EXISTS trg_season_workout_state_owner
+BEFORE INSERT ON season_workout_state
+WHEN NOT EXISTS (SELECT 1 FROM season_plan s JOIN plan_revision r ON r.plan_id=s.plan_id
+ WHERE s.season_id=NEW.season_id AND s.plan_id=NEW.plan_id AND r.revision_id=NEW.origin_revision_id)
+BEGIN SELECT RAISE(ABORT, 'workout state must belong to its season'); END;
+CREATE TRIGGER IF NOT EXISTS trg_season_workout_state_version
+BEFORE UPDATE ON season_workout_state
+WHEN NEW.plan_id!=OLD.plan_id OR NEW.workout_id!=OLD.workout_id OR NEW.season_id!=OLD.season_id
+ OR NEW.origin_revision_id!=OLD.origin_revision_id OR NEW.origin_workout_id!=OLD.origin_workout_id
+ OR NEW.version!=OLD.version+1 OR NEW.explicitly_completed<OLD.explicitly_completed
+ OR NEW.manually_created<OLD.manually_created OR NEW.manually_edited<OLD.manually_edited
+BEGIN SELECT RAISE(ABORT, 'workout state identity, completion and manual provenance are retained; version must increase'); END;
+CREATE TRIGGER IF NOT EXISTS trg_season_workout_state_no_delete
+BEFORE DELETE ON season_workout_state
+BEGIN SELECT RAISE(ABORT, 'workout protection history is retained'); END;
 
 --  B) DERIVED / CALCULATED METRICS
 -- =========================

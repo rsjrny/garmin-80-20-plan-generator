@@ -1,0 +1,118 @@
+F.....FFF........F                                                       [100%]
+================================== FAILURES ===================================
+______ test_event_move_merges_full_revision_with_exact_preserved_origins ______
+
+tmp_path = WindowsPath('C:/Users/russl/Documents/gitRepositories/Training_Planner/.tools/y3-regeneration-1/test_event_move_merges_full_re0')
+
+    def test_event_move_merges_full_revision_with_exact_preserved_origins(tmp_path):
+        db,s,parent = active(tmp_path,[intent.EventDraft("Spring","2027-05-16")])
+        e = intent.list_events(db,s.season_id)[0]
+        intent.save_event(db,s.season_id,replace(e.draft,event_date="2027-06-06"),event_id=e.event_id,expected_version=s.input_version)
+        before = snapshot(db)
+        p = service.preview_season(db,s.season_id,SETTINGS)
+        assert p.can_apply,p.schedule.errors
+        assert snapshot(db)==before
+        diff = p.schedule.candidate.change_summary
+        assert diff["mode"]=="AFFECTED" and diff["event_delta"]["changed"]
+>       assert diff["range_start"]<"2027-02-01" and diff["range_end"]>"2027-06-13"
+E       AssertionError: assert ('2027-02-01' < '2027-02-01')
+
+tests\test_season_regeneration.py:51: AssertionError
+__ test_regeneration_failure_rolls_back_every_component[after_workout_graph] __
+
+tmp_path = WindowsPath('C:/Users/russl/Documents/gitRepositories/Training_Planner/.tools/y3-regeneration-1/test_regeneration_failure_roll3')
+stage = 'after_workout_graph'
+
+    @pytest.mark.parametrize("stage",["after_recheck","after_ownership","after_revision_insert","after_workout_graph","after_projection","after_pointer_update","after_origins","after_state","after_nutrition","after_audit","before_commit"])
+    def test_regeneration_failure_rolls_back_every_component(tmp_path,stage):
+        db,s,parent=active(tmp_path)
+        p=service.preview_season(db,s.season_id,SETTINGS,RegenerationRequest("CUSTOM","2027-03-01","2027-03-31"))
+        before=snapshot(db)
+>       with pytest.raises(InjectedApprovalFailure):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE <class 'garmin_data_hub.plan_methodology.revision_repository.InjectedApprovalFailure'>
+
+tests\test_season_regeneration.py:105: Failed
+___ test_regeneration_failure_rolls_back_every_component[after_projection] ____
+
+tmp_path = WindowsPath('C:/Users/russl/Documents/gitRepositories/Training_Planner/.tools/y3-regeneration-1/test_regeneration_failure_roll4')
+stage = 'after_projection'
+
+    @pytest.mark.parametrize("stage",["after_recheck","after_ownership","after_revision_insert","after_workout_graph","after_projection","after_pointer_update","after_origins","after_state","after_nutrition","after_audit","before_commit"])
+    def test_regeneration_failure_rolls_back_every_component(tmp_path,stage):
+        db,s,parent=active(tmp_path)
+        p=service.preview_season(db,s.season_id,SETTINGS,RegenerationRequest("CUSTOM","2027-03-01","2027-03-31"))
+        before=snapshot(db)
+>       with pytest.raises(InjectedApprovalFailure):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE <class 'garmin_data_hub.plan_methodology.revision_repository.InjectedApprovalFailure'>
+
+tests\test_season_regeneration.py:105: Failed
+_ test_regeneration_failure_rolls_back_every_component[after_pointer_update] __
+
+tmp_path = WindowsPath('C:/Users/russl/Documents/gitRepositories/Training_Planner/.tools/y3-regeneration-1/test_regeneration_failure_roll5')
+stage = 'after_pointer_update'
+
+    @pytest.mark.parametrize("stage",["after_recheck","after_ownership","after_revision_insert","after_workout_graph","after_projection","after_pointer_update","after_origins","after_state","after_nutrition","after_audit","before_commit"])
+    def test_regeneration_failure_rolls_back_every_component(tmp_path,stage):
+        db,s,parent=active(tmp_path)
+        p=service.preview_season(db,s.season_id,SETTINGS,RegenerationRequest("CUSTOM","2027-03-01","2027-03-31"))
+        before=snapshot(db)
+>       with pytest.raises(InjectedApprovalFailure):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE <class 'garmin_data_hub.plan_methodology.revision_repository.InjectedApprovalFailure'>
+
+tests\test_season_regeneration.py:105: Failed
+_________ test_v14_upgrade_replays_retains_v13_audits_and_rolls_back __________
+
+tmp_path = WindowsPath('C:/Users/russl/Documents/gitRepositories/Training_Planner/.tools/y3-regeneration-1/test_v14_upgrade_replays_retai0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000150B16A74D0>
+
+    def test_v14_upgrade_replays_retains_v13_audits_and_rolls_back(tmp_path,monkeypatch):
+        db,s,parent=active(tmp_path)
+        conn=connect_sqlite(db)
+        # Recreate the old CHECK without changing any existing row or frozen document.
+        conn.execute("DROP TABLE season_workout_state")
+        conn.execute("DROP TABLE plan_revision_workout_origin")
+        for name in ("trg_season_application_owner","trg_season_application_no_update","trg_season_application_no_delete"):
+            conn.execute("DROP TRIGGER "+name)
+        ddl=conn.execute("SELECT sql FROM sqlite_master WHERE name='season_revision_application'").fetchone()[0]
+        ddl=ddl.replace("season_revision_application", "audit_old",1).replace("mode IN ('INITIAL_FULL','FROM_TODAY','AFFECTED','CUSTOM','MANUAL_EDIT')","mode = 'INITIAL_FULL'")
+        conn.execute(ddl)
+        conn.execute("INSERT INTO audit_old SELECT * FROM season_revision_application")
+        conn.execute("DROP TABLE season_revision_application")
+        conn.execute("ALTER TABLE audit_old RENAME TO season_revision_application")
+        conn.execute("DELETE FROM schema_migrations WHERE version>=14")
+        conn.commit()
+        before=snapshot(db)
+        original=migrate._migration_14_add_season_regeneration
+        def fail(c,s):
+            original(c,s)
+            raise sqlite3.OperationalError("injected v14")
+        monkeypatch.setattr(migrate,"_migration_14_add_season_regeneration",fail)
+        with pytest.raises(sqlite3.OperationalError,match="injected"):
+            migrate.apply_schema(conn,schema_sql_path())
+        assert snapshot(db)==before
+        monkeypatch.setattr(migrate,"_migration_14_add_season_regeneration",original)
+        migrate.apply_schema(conn,schema_sql_path())
+        migrate.apply_schema(conn,schema_sql_path())
+>       assert load_revision(db,parent.revision_id).candidate==parent
+E       AssertionError: assert PlanRevisionC... 'VALIDATED'>) == PlanRevisionC... 'VALIDATED'>)
+E         
+E         Omitting 13 identical items, use -vv to show
+E         Differing attributes:
+E         ['validation_summary']
+E         
+E         Drill down into differing attribute validation_summary:
+E           validation_summary: mappingproxy({'accepted': True, 'issues': (mappingproxy({'code': 'READINESS_UNVERIFIED', 'date': None, 'event_ids': (), 'message': 'Starting load uses the explicit 180-minute weekly setting; 0 covered completed weeks are available. Progression/readiness is unverified.', 'severity': 'warning'}), mappingproxy({'code': 'DISTANCE_AND_TSS_UNKNOWN', 'date': None, 'event_ids': (), 'message': 'Training distance and T...
+E         
+E         ...Full output truncated (2 lines hidden), use '-vv' to show
+
+tests\test_season_regeneration.py:180: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_season_regeneration.py::test_event_move_merges_full_revision_with_exact_preserved_origins
+FAILED tests/test_season_regeneration.py::test_regeneration_failure_rolls_back_every_component[after_workout_graph]
+FAILED tests/test_season_regeneration.py::test_regeneration_failure_rolls_back_every_component[after_projection]
+FAILED tests/test_season_regeneration.py::test_regeneration_failure_rolls_back_every_component[after_pointer_update]
+FAILED tests/test_season_regeneration.py::test_v14_upgrade_replays_retains_v13_audits_and_rolls_back
+5 failed, 13 passed in 44.31s

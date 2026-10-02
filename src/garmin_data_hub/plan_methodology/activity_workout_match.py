@@ -59,6 +59,13 @@ def create_match(
     if status == "CONFIRMED" and (not reviewer or not reason):
         raise MatchPersistenceError("confirmed matches require reviewer and reason")
 
+    from .workout_origin import origin_identity
+    from .revision_repository import load_revision
+    identity = origin_identity(conn, revision_id, workout_id)
+    if identity != (revision_id, workout_id):
+        load_revision(None, revision_id, _connection=conn)  # verify immutable lineage
+        revision_id, workout_id = identity
+
     savepoint = "create_activity_workout_match"
     conn.execute(f"SAVEPOINT {savepoint}")
     try:
@@ -113,6 +120,13 @@ def load_confirmed_match(
         raise MatchPersistenceError(
             "confirmed lookup requires activity_id or both revision_id and workout_id"
         )
+    if revision_id is not None and workout_id is not None:
+        from .workout_origin import origin_identity
+        from .revision_repository import load_revision
+        identity = origin_identity(conn, revision_id, workout_id)
+        if identity != (revision_id, workout_id):
+            load_revision(None, revision_id, _connection=conn)
+            revision_id, workout_id = identity
     clauses = ["status='CONFIRMED'"]
     params: list[Any] = []
     if revision_id is not None:

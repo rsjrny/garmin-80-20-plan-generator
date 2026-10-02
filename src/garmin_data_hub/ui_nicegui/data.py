@@ -404,6 +404,11 @@ def chart_dataframe(
 def plan_rows(db_path: Path) -> list[dict[str, Any]]:
     conn = connect_sqlite(db_path)
     try:
+        has_protection = conn.execute("SELECT 1 FROM sqlite_master WHERE name='season_workout_state'").fetchone()
+        states = {(r["plan_id"],r["workout_id"]):dict(r) for r in conn.execute("SELECT * FROM season_workout_state")} if has_protection else {}
+        origins = {(r["revision_id"],r["workout_id"]):(r["origin_revision_id"],r["origin_workout_id"]) for r in conn.execute("SELECT * FROM plan_revision_workout_origin")} if has_protection else {}
+        completed = {(r[0],r[1]) for r in conn.execute("SELECT revision_id,workout_id FROM activity_workout_match WHERE status='CONFIRMED'")} if has_protection else set()
+        owned_plans = {r[0] for r in conn.execute("SELECT plan_id FROM season_plan WHERE plan_id IS NOT NULL")} if has_protection else set()
         raw = _rows(
             conn.execute(
                 """
@@ -432,6 +437,20 @@ def plan_rows(db_path: Path) -> list[dict[str, Any]]:
         row["phase"] = structure.get("phase")
         row["intensity"] = structure.get("intensity")
         if isinstance(parsed, dict) and parsed.get("schema_version") == "plan-revision-projection.v1":
+            source = parsed.get("source", {})
+            if source.get("plan_id") in owned_plans:
+                flags = states.get((source["plan_id"],source["workout_id"]),{})
+                labels = []
+                if flags.get("locked"):
+                    labels.append("Locked")
+                if flags.get("manually_edited") or flags.get("manually_created"):
+                    labels.append("Manual")
+                identity = (source["revision_id"],source["workout_id"])
+                if flags.get("explicitly_completed") or origins.get(identity,identity) in completed:
+                    labels.append("Completed")
+                if identity in origins:
+                    labels.append("Preserved")
+                row["protection"] = " · ".join(labels) or ("Generated" if structure.get("metadata",{}).get("generator_version") else "Adopted")
             targets = parsed.get("intensity_summary", {}).get("native_targets", [])
             row["intensity"] = " · ".join(targets) or ("Rest" if structure.get("sport") == "REST" else "Auxiliary")
     return raw

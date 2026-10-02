@@ -46,7 +46,7 @@ def _database(tmp_path):
 def test_match_migration_and_confirmed_uniqueness(tmp_path):
     conn = _database(tmp_path)
     try:
-        assert CURRENT_SCHEMA_VERSION == 13
+        assert CURRENT_SCHEMA_VERSION == 14
         first = create_match(
             conn,
             revision_id="r",

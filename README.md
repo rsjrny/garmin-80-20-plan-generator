@@ -129,9 +129,20 @@ an adjustment. Save an explicit starting weekly duration when covered history is
 unavailable. Unknown load and event-readiness limits remain visible as warnings.
 
 Review and acknowledge warnings to apply to an empty season starting today or later.
-Apply is atomic, audited and idempotent. Linked schedules can be previewed but cannot
-be regenerated yet; their parameters stay fixed. Rest/auxiliary sessions are typed,
-and affected cached nutrition is invalidated.
+For linked schedules, choose calculated affected range, full schedule from today, or
+custom future dates. Preview shows the replacement range, additions, removals,
+replacements and preserved sessions with reasons. History, completion and unresolved
+activity matches stay protected. Future locked/manual sessions require explicit
+per-preview replacement IDs. Infeasible merged training blocks apply.
+
+Use **Workout protection** to lock sessions, record completion, or preview a timed
+prescription edit. Edits create a new immutable revision and protect the resulting
+manual occurrence. The calendar shows generated, manual, locked, completed and
+preserved status. Preserved prescriptions and matches retain their original parameter
+snapshots; an explicit confirmed intensity refresh applies only to new prescriptions.
+Apply is atomic, audited and idempotent; stale previews require regeneration.
+Rest/auxiliary sessions are typed, and cached nutrition in the replacement range
+is invalidated. Applied history records ranges, changes, protection and overrides.
 
 You can explicitly link a reviewed existing structured plan whose methodology and
 entire workout history fit the season. Linking retains its workouts and matches.
@@ -149,7 +160,7 @@ The primary desktop interface is implemented under `src/garmin_data_hub/ui_niceg
 - **Activities** - filters, splits, local GPS-track inspection, and complete JSON export
 - **Charts** - volume, heart-rate, speed, distribution, and training-load trends
 - **Plan** - offline baseline/workbook generation, event settings, HR thresholds, and active calendar review
-- **Seasons** - event priorities, availability, yearly preview, reviewed initial apply, revision history, and explicit plan linking
+- **Seasons** - event priorities, availability, yearly preview, protected regeneration, reviewed apply, revision history, and explicit plan linking
 - **Codex Coach** - account-authenticated generation, deterministic validation, exact diff, and explicit approval
 - **Compliance** - planned-versus-completed distance and duration
 - **Data Query** - guarded read-only SQL and advanced garmin_mcp calls

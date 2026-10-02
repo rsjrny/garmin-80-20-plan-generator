@@ -1,11 +1,7 @@
-"""Read-only season previews and atomic, audited initial application.
-
-Y2 intentionally rejects replacing any existing/adopted season schedule. Y3 owns
-history protection, incremental replacement and immutable origin lineage.
-"""
+"""Read-only season previews and atomic, audited initial/regeneration application."""
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta
 import hashlib
 import json
@@ -13,11 +9,13 @@ from pathlib import Path
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from garmin_data_hub.plan_methodology.canonical import canonical_json, content_sha256
+from garmin_data_hub.plan_methodology.canonical import canonical_json, canonical_value, content_sha256
 from garmin_data_hub.plan_methodology.revision_repository import (
     _approve_revision_on_connection, _call_hook, load_revision,
 )
 from garmin_data_hub.services import season_plans as intent
+from garmin_data_hub.services.season_regeneration import RegenerationRequest, compose
+from garmin_data_hub.plan_methodology.workout_origin import insert_origins
 from garmin_data_hub.services.plan_persistence import active_plan_sha256
 from garmin_data_hub.services.season_schedule import (
     GENERATOR_VERSION, POLICY_VERSION, GenerationSettings,
@@ -44,6 +42,7 @@ class SeasonPreview:
     snapshot_json: str
     schedule: SeasonSchedule
     apply_blockers: tuple[str, ...]
+    regeneration: RegenerationRequest | None = None
     generator_version: str = GENERATOR_VERSION
     policy_version: str = POLICY_VERSION
 
@@ -57,7 +56,8 @@ class SeasonPreview:
             "candidate_sha256":self.schedule.candidate.content_hash,"local_today":self.local_today,
             "active_sha256":self.active_sha256,"runtime_sha256":self.runtime_sha256,
             "raw_schedule_sha256":self.raw_schedule_sha256,"parent_sha256":self.parent_sha256,
-            "generator_version":self.generator_version,"policy_version":self.policy_version})
+            "generator_version":self.generator_version,"policy_version":self.policy_version,
+            "regeneration":canonical_value(self.regeneration) if self.regeneration else None})
 
 
 @dataclass(frozen=True)
@@ -80,7 +80,9 @@ def _row_hash(conn, query):
 
 def _state(conn):
     return (active_plan_sha256(conn),
-            _row_hash(conn,"SELECT * FROM activity_workout_match ORDER BY activity_workout_match_id"),
+            content_sha256({"matches":_row_hash(conn,"SELECT * FROM activity_workout_match ORDER BY activity_workout_match_id"),
+                            "protection":_row_hash(conn,"SELECT * FROM season_workout_state ORDER BY plan_id,workout_id"),
+                            "origins":_row_hash(conn,"SELECT * FROM plan_revision_workout_origin ORDER BY revision_id,workout_id")}),
             _row_hash(conn,"SELECT * FROM planned_workout ORDER BY planned_workout_id"))
 
 
@@ -102,11 +104,9 @@ def _blockers(conn,season,today):
     blockers = []
     if season.status=="archived":
         blockers.append("Restore this archived season before generating an applicable preview.")
-    if season.start_date<today.isoformat():
+    if not season.plan_id and season.start_date<today.isoformat():
         blockers.append("Initial apply requires a season starting today or later. Keep historical schedules in place.")
-    if season.plan_id or season.current_revision_id:
-        blockers.append("A schedule is already linked. You can review a full preview; replacing existing season workouts is not available yet.")
-    if conn.execute("SELECT 1 FROM active_planned_workout WHERE scheduled_date BETWEEN ? AND ?",(season.start_date,season.end_date)).fetchone():
+    if conn.execute("SELECT 1 FROM active_planned_workout WHERE scheduled_date BETWEEN ? AND ? AND (source_plan_id IS NULL OR source_plan_id!=?)",(season.start_date,season.end_date,season.plan_id or "")).fetchone():
         blockers.append("Existing workouts overlap this season. Explicitly review adoption/removal or choose separate dates before initial apply.")
     if conn.execute("SELECT 1 FROM planned_workout WHERE scheduled_date BETWEEN ? AND ? AND ((source_plan_id IS NULL)+(source_revision_id IS NULL)+(source_workout_id IS NULL)) NOT IN (0,3)",
                     (season.start_date,season.end_date)).fetchone():
@@ -137,14 +137,15 @@ def _blockers(conn,season,today):
     return tuple(blockers)
 
 
-def preview_season(db_path: Path | str, season_id: str, settings: GenerationSettings) -> SeasonPreview:
+def preview_season(db_path: Path | str, season_id: str, settings: GenerationSettings,
+                   regeneration: RegenerationRequest | None = None) -> SeasonPreview:
     """Freeze intent/runtime state and generate without any database mutation."""
     with intent._connection(db_path) as conn:
         conn.execute("BEGIN")
         season = intent._get(conn,season_id)
         events = _events(conn,season)
         today = _local_today(season.timezone)
-        parent_revision = load_revision(db_path,season.current_revision_id) if season.current_revision_id else None
+        parent_revision = load_revision(None,season.current_revision_id,_connection=conn) if season.current_revision_id else None
         if season.current_revision_id and parent_revision is None:
             raise intent.SeasonError("Linked revision is missing; repair the source before generating.")
         parent = parent_revision.candidate if parent_revision else None
@@ -152,13 +153,19 @@ def preview_season(db_path: Path | str, season_id: str, settings: GenerationSett
         snapshot = _snapshot(season,events,settings)
         state = _state(conn)
         blockers = _blockers(conn,season,today)
-        schedule = generate_season_schedule(season,events,settings,today=today,
-                                           plan_id=plan_id,revision_id=uuid4().hex,parent=parent)
+        if parent:
+            regeneration = regeneration or RegenerationRequest()
+            schedule = compose(conn,season,events,settings,today,parent,uuid4().hex,regeneration)
+        else:
+            if regeneration is not None:
+                raise intent.SeasonError("Regeneration requires a linked schedule.")
+            schedule = generate_season_schedule(season,events,settings,today=today,
+                                               plan_id=plan_id,revision_id=uuid4().hex)
         # A preceding unmanaged event has no trustworthy recovery metadata: reject
         # overlap via active rows, and never guess its distance from a title.
         return SeasonPreview(uuid4().hex,season,events,settings,today.isoformat(),
             hashlib.sha256(snapshot.encode()).hexdigest(),*state,
-            parent.content_hash if parent else None,snapshot,schedule,blockers)
+            parent.content_hash if parent else None,snapshot,schedule,blockers,regeneration)
 
 
 def _invalidate_nutrition(conn,start,end):
@@ -211,12 +218,19 @@ def apply_season_preview(db_path: Path | str, preview: SeasonPreview, *, approve
         if blockers:
             raise intent.SeasonError(" ".join(blockers))
         candidate = preview.schedule.candidate
-        if candidate.parent_revision_id is not None or preview.parent_sha256 is not None:
-            raise intent.SeasonError("Replacing an existing season revision is not available yet.")
-        if conn.execute("SELECT 1 FROM training_plan WHERE plan_id=?",(candidate.plan_id,)).fetchone():
-            raise StalePreviewError("The preview's new plan identity is already in use.")
-        regenerated = generate_season_schedule(season,events,preview.settings,today=today,
-            plan_id=candidate.plan_id,revision_id=candidate.revision_id)
+        parent = load_revision(None,season.current_revision_id,_connection=conn).candidate if season.current_revision_id else None
+        if parent:
+            if (preview.regeneration is None or candidate.plan_id!=season.plan_id
+                    or candidate.parent_revision_id!=parent.revision_id or preview.parent_sha256!=parent.content_hash):
+                raise StalePreviewError("The linked revision changed. Generate a fresh preview.")
+            regenerated = compose(conn,season,events,preview.settings,today,parent,candidate.revision_id,preview.regeneration)
+        else:
+            if candidate.parent_revision_id or preview.parent_sha256 or preview.regeneration:
+                raise StalePreviewError("The preview parent does not match this season.")
+            if conn.execute("SELECT 1 FROM training_plan WHERE plan_id=?",(candidate.plan_id,)).fetchone():
+                raise StalePreviewError("The preview's new plan identity is already in use.")
+            regenerated = generate_season_schedule(season,events,preview.settings,today=today,
+                plan_id=candidate.plan_id,revision_id=candidate.revision_id)
         if regenerated.candidate.content_hash!=candidate.content_hash:
             raise StalePreviewError("Reviewed candidate differs from deterministic validated output. Generate a new preview.")
         if regenerated.errors:
@@ -227,28 +241,45 @@ def apply_season_preview(db_path: Path | str, preview: SeasonPreview, *, approve
         now = intent._stamp()
         # Reserve ownership before the private approval path. All changes roll back
         # together if graph, projection, cache, audit or activation fails.
-        conn.execute("INSERT INTO training_plan(plan_id,current_revision_id,origin,created_at_utc) VALUES(?,NULL,'NATIVE',?)",(candidate.plan_id,now))
+        if parent is None:
+            conn.execute("INSERT INTO training_plan(plan_id,current_revision_id,origin,created_at_utc) VALUES(?,NULL,'NATIVE',?)",(candidate.plan_id,now))
         conn.execute("UPDATE season_plan SET plan_id=?,status='active',input_version=input_version+1,updated_at_utc=? WHERE season_id=?",(candidate.plan_id,now,season.season_id))
         _call_hook(failure_hook,"after_ownership",conn)
         result = _approve_revision_on_connection(conn,candidate,expected_content_hash=candidate.content_hash,
-            approved_by=approved_by,_season_initial_owner=season.season_id,failure_hook=failure_hook)
-        _invalidate_nutrition(conn,season.start_date,season.end_date)
+            approved_by=approved_by,expected_parent_content_hash=preview.parent_sha256,
+            _season_initial_owner=season.season_id if parent is None else None,
+            _season_regeneration_owner=season.season_id if parent else None,failure_hook=failure_hook)
+        insert_origins(conn,candidate)
+        _call_hook(failure_hook,"after_origins",conn)
+        manual_state = candidate.change_summary.get("manual_state")
+        if manual_state:
+            from garmin_data_hub.services.season_workouts import _set_state
+            updated_season = intent._get(conn,season.season_id)
+            _set_state(conn,updated_season,candidate,manual_state["workout_id"],expected_version=0,
+                editor=approved_by,reason="Reviewed manual prescription revision",
+                manually_edited=manual_state["manually_edited"],manually_created=manual_state["manually_created"])
+        _call_hook(failure_hook,"after_state",conn)
+        summary = dict(candidate.change_summary)
+        range_start = summary.get("range_start",season.start_date)
+        range_end = summary.get("range_end",season.end_date)
+        _invalidate_nutrition(conn,range_start,range_end)
         _call_hook(failure_hook,"after_nutrition",conn)
         application_id = uuid4().hex
         review = {"schema_version":"season-application-review.v1","preview_sha256":preview.identity,
             "active_sha256_before":preview.active_sha256,"active_sha256_after":active_plan_sha256(conn),
             "runtime_sha256":preview.runtime_sha256,"raw_schedule_sha256":preview.raw_schedule_sha256,
-            "previous_revision_sha256":None,"resulting_revision_sha256":candidate.content_hash,
-            "diff":dict(candidate.change_summary),"event_delta":{"added":[asdict(e) for e in events]},
-            "preserved":[],"overrides":[],"warnings":[asdict(i) for i in regenerated.warnings],
-            "warnings_acknowledged":acknowledge_warnings,"rationale":"One full, deterministic initial season revision; event priority, recovery and continuous local-week load rules applied."}
+            "previous_revision_sha256":preview.parent_sha256,"resulting_revision_sha256":candidate.content_hash,
+            "diff":summary,"event_delta":summary.get("event_delta",{"added":[asdict(e) for e in events]}),
+            "preserved":summary.get("preserved",[]),"overrides":summary.get("overrides",[]),"warnings":[asdict(i) for i in regenerated.warnings],
+            "warnings_acknowledged":acknowledge_warnings,"rationale":"Complete immutable revision; only eligible reviewed occurrences in the selected range change. Original prescriptions and evidence are retained for carried workouts."}
         conn.execute("""INSERT INTO season_revision_application(application_id,preview_id,season_id,plan_id,
             resulting_revision_id,previous_revision_id,input_version,input_sha256,candidate_sha256,
             snapshot_json,review_json,generator_version,policy_version,local_today,timezone,range_start,
-            range_end,mode,approved_by,applied_at_utc) VALUES(?,?,?,?,?,NULL,?,?,?,?,?,?,?,?,?,?,?,'INITIAL_FULL',?,?)""",
+            range_end,mode,approved_by,applied_at_utc) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (application_id,preview.preview_id,season.season_id,candidate.plan_id,result.revision_id,
-             season.input_version,preview.input_sha256,candidate.content_hash,snapshot,canonical_json(review),
-             GENERATOR_VERSION,POLICY_VERSION,preview.local_today,season.timezone,season.start_date,season.end_date,approved_by,now))
+             parent.revision_id if parent else None,season.input_version,preview.input_sha256,candidate.content_hash,snapshot,canonical_json(review),
+             GENERATOR_VERSION,POLICY_VERSION,preview.local_today,season.timezone,range_start,range_end,
+             preview.regeneration.mode if preview.regeneration else "INITIAL_FULL",approved_by,now))
         _call_hook(failure_hook,"after_audit",conn)
         _call_hook(failure_hook,"before_commit",conn)
         return SeasonApplyResult("applied",application_id,candidate.plan_id,candidate.revision_id,len(candidate.workouts))

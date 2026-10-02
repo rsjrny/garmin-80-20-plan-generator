@@ -5,7 +5,7 @@ import sqlite3
 
 logger = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION = 13
+CURRENT_SCHEMA_VERSION = 14
 
 
 def _ensure_schema_migrations_table(conn: sqlite3.Connection) -> None:
@@ -514,7 +514,7 @@ def _migration_12_add_season_intent(conn: sqlite3.Connection, schema_sql: str) -
 
 def _migration_13_add_season_applications(conn: sqlite3.Connection, schema_sql: str) -> None:
     marker = "--  A6) IMMUTABLE SEASON APPLICATION AUDIT (DATA HUB-OWNED)"
-    end = "--  B) DERIVED / CALCULATED METRICS"
+    end = "--  A7) SEASON WORKOUT PROTECTION AND ORIGINS (DATA HUB-OWNED)"
     try:
         ddl = schema_sql[schema_sql.index(marker):schema_sql.index(end)]
     except ValueError as exc:
@@ -535,6 +535,37 @@ def _migration_13_add_season_applications(conn: sqlite3.Connection, schema_sql: 
                 "timezone", "range_start", "range_end", "mode", "approved_by", "applied_at_utc"}
     if not required <= _get_table_columns(conn, "season_revision_application"):
         raise sqlite3.OperationalError("incompatible season application schema")
+
+
+def _migration_14_add_season_regeneration(conn: sqlite3.Connection, schema_sql: str) -> None:
+    # Rebuild only the audit CHECK constraint; keep all immutable application rows.
+    sql = conn.execute("SELECT sql FROM sqlite_master WHERE name='season_revision_application'").fetchone()
+    if sql and "FROM_TODAY" not in sql[0]:
+        start = schema_sql.index("CREATE TABLE IF NOT EXISTS season_revision_application (")
+        table_ddl = schema_sql[start:schema_sql.index(";", start)+1]
+        conn.execute(table_ddl.replace("season_revision_application (", "season_application_v14 (", 1))
+        conn.execute("INSERT INTO season_application_v14 SELECT * FROM season_revision_application")
+        conn.execute("DROP TABLE season_revision_application")
+        conn.execute("ALTER TABLE season_application_v14 RENAME TO season_revision_application")
+        _migration_13_add_season_applications(conn, schema_sql)
+    marker = "--  A7) SEASON WORKOUT PROTECTION AND ORIGINS (DATA HUB-OWNED)"
+    ddl = schema_sql[schema_sql.index(marker):schema_sql.index("--  B) DERIVED / CALCULATED METRICS")]
+    statement = ""
+    for line in ddl.splitlines():
+        if line.lstrip().startswith("--"):
+            continue
+        statement += line + "\n"
+        if sqlite3.complete_statement(statement):
+            conn.execute(statement.strip())
+            statement = ""
+    if statement.strip():
+        raise sqlite3.OperationalError("incomplete season regeneration schema")
+    for table, columns in {
+        "plan_revision_workout_origin": {"revision_id", "workout_id", "origin_revision_id", "origin_workout_id", "prescribed_sha256"},
+        "season_workout_state": {"season_id", "plan_id", "workout_id", "origin_revision_id", "origin_workout_id", "locked", "manually_edited", "manually_created", "explicitly_completed", "version", "editor", "reason", "updated_at_utc"},
+    }.items():
+        if not columns <= _get_table_columns(conn, table):
+            raise sqlite3.OperationalError(f"incompatible {table} schema")
 
 
 def _fix_trackpoint_cascade(conn: sqlite3.Connection) -> None:
@@ -726,6 +757,8 @@ def apply_schema(conn: sqlite3.Connection, schema_path: Path | None = None) -> N
         ),
         (13, "add immutable season application audit",
          lambda: _migration_13_add_season_applications(conn, schema_sql)),
+        (14, "add season protection and immutable workout origins",
+         lambda: _migration_14_add_season_regeneration(conn, schema_sql)),
     ]
 
     current_version = _get_current_schema_version(conn)
@@ -755,23 +788,34 @@ def apply_schema(conn: sqlite3.Connection, schema_path: Path | None = None) -> N
     # A copied or manually altered database can claim v6 while missing one of
     # its nullable columns. Repair that state idempotently instead of trusting
     # the version record alone.
-    if recorded_version >= 6:
-        _migration_6_add_metric_refresh_provenance(conn)
-    if recorded_version >= 7:
-        _migration_7_add_threshold_calculation_provenance(conn)
-    if recorded_version >= 8:
-        _migration_8_add_archive_reconciliation(conn)
-    if recorded_version >= 9:
-        _migration_9_add_immutable_plan_revisions(conn, schema_sql)
-    if recorded_version >= 10:
-        _migration_10_add_activity_workout_match(conn, schema_sql)
-    if recorded_version >= 11:
-        _migration_11_add_legacy_plan_conversion(conn, schema_sql)
-    if recorded_version >= 12:
-        _migration_12_add_season_intent(conn, schema_sql)
+    conn.execute("SAVEPOINT repair_additive_schema")
+    try:
+        if recorded_version >= 6:
+            _migration_6_add_metric_refresh_provenance(conn)
+        if recorded_version >= 7:
+            _migration_7_add_threshold_calculation_provenance(conn)
+        if recorded_version >= 8:
+            _migration_8_add_archive_reconciliation(conn)
+        if recorded_version >= 9:
+            _migration_9_add_immutable_plan_revisions(conn, schema_sql)
+        if recorded_version >= 10:
+            _migration_10_add_activity_workout_match(conn, schema_sql)
+        if recorded_version >= 11:
+            _migration_11_add_legacy_plan_conversion(conn, schema_sql)
+        if recorded_version >= 12:
+            _migration_12_add_season_intent(conn, schema_sql)
 
-    if recorded_version >= 13:
-        _migration_13_add_season_applications(conn, schema_sql)
+        if recorded_version >= 13:
+            _migration_13_add_season_applications(conn, schema_sql)
+
+        if recorded_version >= 14:
+            _migration_14_add_season_regeneration(conn, schema_sql)
+
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT repair_additive_schema")
+        conn.execute("RELEASE SAVEPOINT repair_additive_schema")
+        raise
+    conn.execute("RELEASE SAVEPOINT repair_additive_schema")
 
     # Keep baseline DDL idempotent so new installs and reruns remain safe.
     conn.executescript(schema_sql)

@@ -1,0 +1,45 @@
+............................F........................................... [ 11%]
+........................................................................ [ 22%]
+........................................................................ [ 33%]
+........................................................................ [ 45%]
+........................................................................ [ 56%]
+........................................................................ [ 67%]
+........................................................................ [ 78%]
+........................................................................ [ 90%]
+...............................................................          [100%]
+================================== FAILURES ===================================
+_ test_adopted_native_and_converted_history_keep_original_prescriptions_and_sources[False] _
+
+tmp_path = WindowsPath('C:/Users/russl/Documents/gitRepositories/Training_Planner/.tools/y3-final-suite/test_adopted_native_and_conver0')
+converted = False
+
+    @pytest.mark.parametrize("converted",[False,True])
+    def test_adopted_native_and_converted_history_keep_original_prescriptions_and_sources(tmp_path,converted):
+        from test_plan_revision_persistence import _database, _approve, _fitzgerald_candidate
+        from test_legacy_plan_conversion import _database as legacy_database, _convert, resolve_legacy_plan
+        if converted:
+            db=legacy_database(tmp_path)
+            result=_convert(db,resolve_legacy_plan(db))
+            choice=intent.linkable_plans(db)[0]
+            parent=load_revision(db,choice["current_revision_id"]).candidate
+        else:
+            db=_database(tmp_path)
+            parent=_fitzgerald_candidate()
+            parent=replace(parent,workouts=(replace(parent.workouts[0],family="AEROBIC",title="Easy aerobic run",
+                    segments=tuple(replace(seg,purpose="AEROBIC_DEVELOPMENT") for seg in parent.workouts[0].segments)),))
+            _approve(db,parent)
+        season=intent.create_season(db,intent.SeasonDraft("Adopted history","2026-10-01","2026-10-31","America/New_York",intent.SeasonInputs(starting_duration_seconds=10800,lthr=170)))
+        intent.link_plan(db,season.season_id,parent.plan_id,expected_version=1,expected_revision_id=parent.revision_id,expected_content_hash=parent.content_hash)
+        conn=connect_sqlite(db)
+        source_rows=[tuple(r) for r in conn.execute("SELECT * FROM planned_workout WHERE source_plan_id IS NULL")]
+        conn.close()
+>       p=service.preview_season(db,season.season_id,SETTINGS,RegenerationRequest(refresh_parameters=True))
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AssertionError: (ScheduleIssue(code='F80-V1-012', severity='error', message='Workout must use original product vocabulary and Fitzgerald-native structured prescriptions.', date='2026-10-01', event_ids=()),)
+E       assert False
+E        +  where False = SeasonPreview(preview_id='ae3b99497c8e48eaadcaec35b6309942', season=Season(season_id='609ac1b3549c4d3aa3725fe1238f99a7...kout=None, replaces_workout_id=None), generator_version='season-generator.v1', policy_version='season-windows-load.v1').can_apply
+
+tests\test_season_regeneration.py:333: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_season_regeneration.py::test_adopted_native_and_converted_history_keep_original_prescriptions_and_sources[False]
+1 failed, 638 passed in 144.12s (0:02:24)

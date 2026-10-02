@@ -1,0 +1,235 @@
+FF..                                                                     [100%]
+
+================================== FAILURES ===================================___ test_protection_manual_preview_affected_diff_stale_rejection_and_apply ____
+
+tmp_path = WindowsPath('C:/Users/russl/Documents/gitRepositories/Training_Planner/.tools/y3-browsers-3/test_protection_manual_preview0')
+    def test_protection_manual_preview_affected_diff_stale_rejection_and_apply(tmp_path):
+
+        db=_test_database(tmp_path)
+        season=intent.create_season(db,intent.SeasonDraft("Safe regeneration","2027-01-01","2027-12-31","America/New_York",
+            intent.SeasonInputs(starting_duration_seconds=10800,lthr=170)))
+        season_event=intent.save_event(db,season.season_id,intent.EventDraft("Spring Half","2027-05-16"),expected_version=1)
+        initial=generation.preview_season(db,season.season_id,GenerationSettings(lthr_confirmed=True))
+        generation.apply_season_preview(db,initial,approved_by="TEST",acknowledge_warnings=True)
+        season=intent.get_season(db,season.season_id)
+        selected=next(w for w in initial.schedule.candidate.workouts if w.sport.value=="RUNNING" and not w.event_flag)
+        process=_start_server(db,port:=_free_loopback_port())
+        output=Path(__file__).resolve().parents[1]/"reports/yearly_y3"
+        output.mkdir(parents=True,exist_ok=True)
+        errors=[]
+        try:
+            with sync_playwright() as p:
+                browser=p.chromium.launch(headless=True)
+                page=browser.new_page(viewport={"width":1440,"height":1000})
+                page.on("pageerror",lambda e:errors.append(str(e)))
+                page.set_default_timeout(15000)
+                page.goto(f"http://127.0.0.1:{port}/seasons?season_id={season.season_id}",wait_until="networkidle")
+                page.get_by_role("button",name="Workout protection",exact=True).click()
+                dialog=page.get_by_role("dialog")
+                dialog.get_by_label("Season workout",exact=True).fill(selected.scheduled_date.isoformat())
+                page.get_by_role("option",name=f"{selected.scheduled_date.isoformat()} · {selected.title}",exact=True).click()
+                dialog.get_by_text("Keep this workout locked",exact=True).click()
+                dialog.get_by_label("Protection reason",exact=True).fill("Keep my preferred session")
+                dialog.get_by_role("button",name="Save workout protection",exact=True).click()
+                page.get_by_text("Workout protection saved.",exact=True).wait_for()
+                page.get_by_role("button",name="Workout protection",exact=True).click()
+                dialog=page.get_by_role("dialog")
+                dialog.get_by_label("Season workout",exact=True).fill(selected.scheduled_date.isoformat())
+                page.get_by_role("option",name=f"{selected.scheduled_date.isoformat()} · {selected.title}",exact=True).click()
+                dialog.get_by_label("Edited session title",exact=True).fill("My preserved easy run")
+                dialog.get_by_text("I authorize editing this locked or manual future session",exact=True).click()
+                dialog.get_by_role("button",name="Preview prescription edit",exact=True).click()
+                page.get_by_text("Season schedule preview",exact=True).wait_for()
+                dialog=page.get_by_role("dialog")
+                expect(dialog.get_by_role("button",name="Apply reviewed season",exact=True)).to_be_enabled()
+                expect(page.locator(".q-notification")).to_have_count(0,timeout=15000)
+                page.wait_for_timeout(250)
+                page.screenshot(path=str(output/"manual_preview_desktop.png"))
+                dialog.get_by_label("I reviewed the schedule and acknowledge all warnings.",exact=True).click()
+                dialog.get_by_role("button",name="Apply reviewed season",exact=True).click()
+                page.get_by_text("Season schedule applied.",exact=True).wait_for()
+
+                intent.save_event(db,season.season_id,replace(e.draft,event_date="2027-06-06"),event_id=e.event_id,expected_version=season.input_version)
+                page.get_by_role("button",name="Refresh seasons",exact=True).click()
+                page.get_by_role("button",name="Preview yearly schedule",exact=True).click()
+                dialog=page.get_by_role("dialog")
+                season=intent.get_season(db,season.season_id)
+                e=intent.list_events(db,season.season_id)[0]                page.get_by_text("Generate season preview",exact=True).wait_for()
+                expect(page.locator(".q-notification")).to_have_count(0,timeout=15000)
+                page.wait_for_timeout(250)
+                page.screenshot(path=str(output/"regeneration_settings_desktop.png"))
+                dialog.get_by_role("button",name="Generate preview",exact=True).click()
+                page.get_by_text("Season schedule preview",exact=True).wait_for()
+                dialog.get_by_text("Workout changes and preservation",exact=True).wait_for()
+                expect(dialog.get_by_role("button",name="Apply reviewed season",exact=True)).to_be_enabled()
+                page.wait_for_timeout(250)                dialog=page.get_by_role("dialog")
+
+                page.screenshot(path=str(output/"affected_preview_desktop.png"))
+                page.set_viewport_size({"width":390,"height":844})                page.screenshot(path=str(output/"affected_preview_narrow.png"))
+                # A changed operational lock is invisible to immutable plan hashes but must stale the preview.
+                from garmin_data_hub.services.season_workouts import set_workout_protection
+                page.wait_for_timeout(250)
+                assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+                active=load_revision(db,current.current_revision_id).candidate
+
+                current=intent.get_season(db,season.season_id)
+                target=active.workouts[10]
+                set_workout_protection(db,season.season_id,target.workout_id,expected_version=0,editor="r",reason="new lock",locked=True)
+                dialog.get_by_label("I reviewed the schedule and acknowledge all warnings.",exact=True).click()
+                dialog.get_by_role("button",name="Apply reviewed season",exact=True).click()
+                dialog.get_by_text("Season inputs, schedule, completion evidence, policy or local date changed. Generate a fresh preview.",exact=True).wait_for()
+                dialog.get_by_role("button",name="Close preview",exact=True).click()
+                # Close the phone shell drawer if it is open.
+                backdrop=page.locator(".q-drawer__backdrop")
+                if backdrop.is_visible():
+                    backdrop.click(position={"x":350,"y":120})
+                page.get_by_role("button",name="Preview yearly schedule",exact=True).click()
+                page.get_by_role("dialog").get_by_role("button",name="Generate preview",exact=True).click()
+                page.get_by_text("Season schedule preview",exact=True).wait_for()
+                dialog=page.get_by_role("dialog")
+                dialog.get_by_label("I reviewed the schedule and acknowledge all warnings.",exact=True).click()
+                page.screenshot(path=str(output/"review_apply_narrow.png"))
+                dialog.get_by_role("button",name="Apply reviewed season",exact=True).click()
+                assert len(generation.list_applications(db,season.season_id))==3
+                current=intent.get_season(db,season.season_id)                page.get_by_text("Season schedule applied.",exact=True).wait_for()
+                assert any(w.title=="My preserved easy run" for w in final.workouts)
+                assert [w.scheduled_date.isoformat() for w in final.workouts if w.event_flag]==["2027-06-06"]
+                page.reload(wait_until="networkidle")
+                backdrop=page.locator(".q-drawer__backdrop")
+                final=load_revision(db,current.current_revision_id).candidate
+                page.get_by_text("Recorded preservation and overrides",exact=True).first.wait_for()
+                page.get_by_text("Applied season revisions",exact=True).scroll_into_view_if_needed()
+                page.wait_for_timeout(250)
+                page.screenshot(path=str(output/"history_narrow.png"))
+                assert errors==[]
+                page.evaluate("window.socket?.disconnect()")
+                page.wait_for_timeout(250)
+                browser.close()
+        finally:
+
+                if backdrop.is_visible():
+                    backdrop.click(position={"x":350,"y":120})
+                page.get_by_text("Applied season revisions",exact=True).click()
+            logs=_stop_server(process)
+            (output/"browser-server.txt").write_text(logs,encoding="utf-8")
+>       assert "Traceback" not in logs and "ERROR:" not in logs
+E       assert ('Traceback' not in 'NiceGUI rea...emote host\n'
+
+E         ? +++++++++
+E         
+E         'Traceback' is contained here:
+E           n_lost()>
+E           Traceback (most recent call last):E         
+E         ...Full output truncated (15 lines hidden), use '-vv' to show)
+
+E             File "C:\Users\russl\AppData\Local\Programs\Python\Python313\Lib\asyncio\events.py", line 89, in _run
+E               self._context.run(self._callback, *self._args)...
+tests\test_season_regeneration_browser.py:120: AssertionError
+_________ test_yearly_preview_warning_review_stale_and_initial_apply __________
+
+tmp_path = WindowsPath('C:/Users/russl/Documents/gitRepositories/Training_Planner/.tools/y3-browsers-3/test_yearly_preview_warning_re0')
+
+
+        output.mkdir(parents=True,exist_ok=True)
+        try:
+    def test_yearly_preview_warning_review_stale_and_initial_apply(tmp_path):
+        db=_test_database(tmp_path)
+        season=intent.create_season(db,intent.SeasonDraft("2027 Running Season","2027-01-01","2027-12-31","America/New_York",
+            intent.SeasonInputs(starting_duration_seconds=10800,lthr=170)))
+        intent.save_event(db,season.season_id,intent.EventDraft("Spring Half","2027-05-16"),expected_version=1)
+        original=get_active_plan_sha256(db)
+        process=_start_server(db,port:=_free_loopback_port())
+        errors=[]
+        output=Path(__file__).resolve().parents[1]/"reports/yearly_y3/compat_y2"                page.on("pageerror",lambda e:errors.append(str(e)))
+                page.on("console",lambda e:errors.append(e.text) if e.type=="error" else None)
+                page=browser.new_page(viewport={"width":1440,"height":1000})
+            with sync_playwright() as p:
+                browser=p.chromium.launch(headless=True)
+                page.set_default_timeout(10000)
+                base=f"http://127.0.0.1:{port}"
+                page.goto(base+f"/seasons?season_id={season.season_id}",wait_until="networkidle")
+    
+                def generate(linked=False):
+                    page.get_by_role("button",name="Preview yearly schedule",exact=True).click()
+                    dialog=page.get_by_role("dialog")
+                    dialog.get_by_role("button",name="Generate preview",exact=True).click()
+                    page.get_by_text("Season schedule preview",exact=True).wait_for()
+                    return page.get_by_role("dialog")
+    
+                dialog=generate()                    if not linked:
+                        dialog.get_by_text("80/20 generation requires LTHR and explicit confirmation that it is a measured running threshold.",exact=True).wait_for()
+                        dialog.get_by_label("I confirm this LTHR is a measured running threshold.",exact=True).click()
+                        dialog.get_by_role("button",name="Generate preview",exact=True).click()
+                expect(dialog.get_by_role("button",name="Apply reviewed season",exact=True)).to_be_enabled()
+                dialog.get_by_role("button",name="Apply reviewed season",exact=True).click()
+                assert get_active_plan_sha256(db)==original
+
+                dialog.get_by_text("Review and acknowledge the schedule warnings before applying.",exact=True).wait_for()
+                assert get_active_plan_sha256(db)==original
+                # Reviewed inputs change while the modal remains open.
+                current=intent.get_season(db,season.season_id)
+                intent.save_event(db,season.season_id,intent.EventDraft("Fall Marathon","2027-10-17","MAR"),expected_version=current.input_version)
+                dialog.get_by_label("I reviewed the schedule and acknowledge all warnings.",exact=True).click()
+                dialog.get_by_role("button",name="Apply reviewed season",exact=True).click()
+                assert get_active_plan_sha256(db)==original
+
+                dialog.get_by_text("Season inputs, schedule, completion evidence, policy or local date changed. Generate a fresh preview.",exact=True).wait_for()                dialog.get_by_role("button",name="Close preview",exact=True).click()
+                page.get_by_role("button",name="Refresh seasons",exact=True).click()
+
+                page.screenshot(path=str(output/"preview_desktop.png"))
+                page.set_viewport_size({"width":390,"height":844})
+                page.wait_for_timeout(250)
+                assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+                page.screenshot(path=str(output/"preview_narrow.png"))                dialog=generate()
+                expect(page.locator(".q-notification")).to_have_count(0,timeout=15000)
+                dialog.get_by_text("Local Monday–Sunday workload",exact=True).scroll_into_view_if_needed()
+                page.screenshot(path=str(output/"workload_narrow.png"))
+                dialog.get_by_label("I reviewed the schedule and acknowledge all warnings.",exact=True).scroll_into_view_if_needed()
+                page.screenshot(path=str(output/"apply_narrow.png"))
+                dialog.get_by_label("I reviewed the schedule and acknowledge all warnings.",exact=True).click()
+                dialog.get_by_role("button",name="Apply reviewed season",exact=True).click()
+
+                assert len(generation.list_applications(db,season.season_id))==1
+                page.reload(wait_until="networkidle")
+                page.locator(".q-drawer__backdrop").click(position={"x":350,"y":120})
+                page.get_by_text("Season schedule applied.",exact=True).wait_for()
+                active=intent.get_season(db,season.season_id)
+                assert active.current_revision_id
+                page.wait_for_timeout(250)
+                page.get_by_text("Applied season revisions",exact=True).click()
+                page.get_by_text("INITIAL_FULL",exact=False).wait_for()
+                page.evaluate("window.scrollTo(0,0)")                page.screenshot(path=str(output/"applied_narrow.png"),full_page=True)
+                # The active calendar reads canonical rest/auxiliary/native intensity rows.
+                page.goto(base+"/plan",wait_until="networkidle")
+                expect(dialog.get_by_role("button",name="Apply reviewed season",exact=True)).to_be_enabled()
+                dialog.get_by_text("Workout changes and preservation",exact=True).wait_for()
+                dialog.get_by_role("button",name="Close preview",exact=True).click()
+                # An existing season now supports a reviewed protected regeneration.
+                dialog=generate(linked=True)                page.get_by_text("Easy aerobic run",exact=False).first.wait_for()
+
+                page.locator(".q-drawer__backdrop").click(position={"x":350,"y":120})
+
+                page.evaluate("window.socket?.disconnect()")
+                page.wait_for_timeout(250)            server_output=_stop_server(process)
+            (output/"browser-server.txt").write_text(server_output,encoding="utf-8")
+>       assert "Traceback" not in server_output and "ERROR:" not in server_output
+
+                browser.close()
+        finally:
+E       assert ('Traceback' not in 'NiceGUI rea...emote host\n'
+E         
+                page.screenshot(path=str(output/"calendar_narrow.png"))
+                assert errors==[]E         ? +++++++++
+E             File "C:\Users\russl\AppData\Local\Programs\Python\Python313\Lib\asyncio\events.py", line 89, in _run
+
+E           Traceback (most recent call last):
+E         'Traceback' is contained here:
+E           n_lost()>E               self._context.run(self._callback, *self._args)...
+E         
+E         ...Full output truncated (5 lines hidden), use '-vv' to show)
+
+tests\test_season_generation_browser.py:97: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_season_regeneration_browser.py::test_protection_manual_preview_affected_diff_stale_rejection_and_apply
+FAILED tests/test_season_generation_browser.py::test_yearly_preview_warning_review_stale_and_initial_apply
+2 failed, 2 passed in 77.67s (0:01:17)

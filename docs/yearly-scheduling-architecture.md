@@ -1,7 +1,7 @@
 # Y0: Yearly scheduling architecture and migration discovery
 
 Date: 2026-10-02 (America/New_York)
-Status: Y0 discovery complete; Y1/Y2 locally verified; Y3 preservation/lineage pending.
+Status: Y0 discovery complete; Y1–Y3 locally verified. Historical discovery scope is retained below.
 
 Scope: Repository discovery and isolated verification. User authorized Y0 only.
 No production schema, UI, generator, or live schedule changes.
@@ -459,3 +459,68 @@ ten injected apply failures, year/leap cases and a private real v11→v13 backup
 preservation check passed. Full-year timing was measured. Source database was not
 migrated or applied to. [Evidence](../reports/yearly_y2/README.md). Changes remain
 uncommitted; prior C2/Y0/Y1 work was retained.
+
+## Y3 implemented decisions — 2026-10-02
+
+Y3 implements reviewed regeneration of existing and explicitly adopted seasons.
+Calculated affected ranges envelope old/new event influence, add seven transition
+days, expand to Monday weeks and intersecting neighbors to a fixed point, then
+clip to the season/local today. Availability, athlete, fitness-history, bounds or
+explicit prescribing refresh changes recommend the full future season. From-today
+and custom ranges are selectable; full merged event/load/boundary validation blocks
+infeasible narrow ranges without silently enlarging the applied range.
+
+History, origin-confirmed/explicit completion, and unresolved candidate matches
+remain protected. Locked/manual future occurrences require exact per-preview
+opt-in IDs. Fixed dates reserve capacity, including rest; fixed running/hard/strength
+load consumes weekly capacity before generation. Unknown protected running duration
+and incompatible taper/recovery sessions block replacement. Cancelled protected
+races are retained with a warning until an eligible explicit override is reviewed.
+
+Unchanged/carried workouts retain their IDs and complete prescriptions except
+contiguous ordinal position. Changes get new identities with exact replacement
+diffs. Immutable flattened origins reference the first prescribing revision and
+are included in hashed revision content. Load verifies relational origins, original
+content, same-plan ancestor identity and flattened lineage. Activity matching routes
+carried identities to their origins; confirmed evidence and original parameter
+interpretation stay intact. Explicit confirmed parameter refresh affects new
+prescriptions only. Unsupported adopted prescriptions continue to block generation;
+confirmed refresh can introduce new running HR prescriptions alongside supported
+preserved pace prescriptions.
+
+Workout protection provides optimistic-version lock/completion controls and timed
+prescription previews. Manual edits use the same apply transaction and mark their
+new occurrence manual; the service also supports reviewed canonical manual creation.
+The editor supports timed sessions, retaining segment proportions/native targets;
+rest/event changes use season regeneration. Manual creation has a service API, no
+separate UI. Completion/manual provenance cannot be cleared. Removed state stays
+retained. The active calendar displays generated/adopted, locked, manual, completed
+and preserved status; revision history shows recorded preservation and overrides.
+
+Apply rechecks intent, all active/raw schedules, origins/protection/matches, parent
+hash, policy/generator, local date/timezone and override/range decisions under one
+BEGIN IMMEDIATE. It deterministically recomposes the reviewed candidate. Complete
+revision graph, projection/pointer, origins, new manual state, affected nutrition,
+season version and immutable audit commit together. Identical retry is a no-op;
+other stale previews reject. Failure injection covers all these transaction stages.
+
+Schema v14 adds empty protection/origin tables and expands the v13 audit mode CHECK
+through a row-preserving table rebuild. Current-version additive repairs also use a
+savepoint so failure leaves no partial repair. No prior revision document/hash is
+rewritten. Representative migrations, native/converted adoption and a private real
+v11 backup upgrade/replay retain source rows, hashes, matches, active schedule and
+foreign-key state. The private backup was removed; the source was not migrated.
+
+Verification and exact commands are in [Y3 evidence](reports/yearly_y3/README.md).
+646 distinct checks are verified across final combined scope (642 non-browser,
+four browser workflows). Desktop/390px diff, settings, manual preview, apply/history
+and calendar status were inspected. Raw browser logs retain a known Python/Windows
+Proactor socket-close WinError 10054; tests narrowly classify that stdlib callback
+while still rejecting application tracebacks/browser errors. A focused test ensures
+application frames and other transport errors remain failures. Prior Y1/Y2 visual
+artifacts were restored; compatibility captures live under yearly_y3.
+
+Synthetic 366-day/three-event regeneration preview took 0.404–0.453s, atomic apply
+1.275–1.463s, preserving 259 occurrences; these are local measurements. No live
+schedule apply, commit, push, deployment or packaged executable rebuild occurred.
+Client settings were unchanged; token/account-credit attribution is unavailable.

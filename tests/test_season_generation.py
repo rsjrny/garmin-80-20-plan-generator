@@ -310,11 +310,10 @@ def test_linked_full_preview_is_read_only_and_keeps_parameters(tmp_path):
     intent.update_season(db,active.season_id,intent.SeasonDraft(active.name,active.start_date,active.end_date,active.timezone,replace(active.inputs,lthr=175)),expected_version=active.input_version)
     before=snapshot(db)
     next_preview=preview(db,active,GenerationSettings())
-    assert not next_preview.can_apply
+    assert next_preview.can_apply
     assert next_preview.schedule.candidate.parameter_snapshot==p.schedule.candidate.parameter_snapshot
     assert snapshot(db)==before
-    with pytest.raises(intent.SeasonError,match="already linked"):
-        service.apply_season_preview(db,next_preview,approved_by="r",acknowledge_warnings=True)
+    service.apply_season_preview(db,next_preview,approved_by="r",acknowledge_warnings=True)
 
 
 @pytest.mark.parametrize("double",[False,True])
@@ -335,7 +334,7 @@ def test_v13_upgrade_replay_repair_and_failure(tmp_path,monkeypatch):
     db,season=setup_season(tmp_path)
     conn=connect_sqlite(db)
     conn.execute("DROP TABLE season_revision_application")
-    conn.execute("DELETE FROM schema_migrations WHERE version=13")
+    conn.execute("DELETE FROM schema_migrations WHERE version>=13")
     conn.commit()
     before=snapshot(db)
     original=migrate._migration_13_add_season_applications
@@ -349,7 +348,7 @@ def test_v13_upgrade_replay_repair_and_failure(tmp_path,monkeypatch):
     monkeypatch.setattr(migrate,"_migration_13_add_season_applications",original)
     migrate.apply_schema(conn,schema_sql_path())
     migrate.apply_schema(conn,schema_sql_path())
-    assert migrate.get_current_schema_version(conn)==13
+    assert migrate.get_current_schema_version(conn)==migrate.CURRENT_SCHEMA_VERSION
     assert intent.get_season(db,season.season_id)==season
     conn.execute("DROP TRIGGER trg_season_application_no_update")
     conn.commit()

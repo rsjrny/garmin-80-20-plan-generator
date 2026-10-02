@@ -1,0 +1,281 @@
+F..F                                                                     [100%]___ test_protection_manual_preview_affected_diff_stale_rejection_and_apply ____
+
+
+================================== FAILURES ===================================
+tmp_path = WindowsPath('C:/Users/russl/Documents/gitRepositories/Training_Planner/.tools/y3-browsers-1/test_protection_manual_preview0')
+
+    def test_protection_manual_preview_affected_diff_stale_rejection_and_apply(tmp_path):
+        db=_test_database(tmp_path)
+        season=intent.create_season(db,intent.SeasonDraft("Safe regeneration","2027-01-01","2027-12-31","America/New_York",
+            intent.SeasonInputs(starting_duration_seconds=10800,lthr=170)))
+        season_event=intent.save_event(db,season.season_id,intent.EventDraft("Spring Half","2027-05-16"),expected_version=1)
+        initial=generation.preview_season(db,season.season_id,GenerationSettings(lthr_confirmed=True))
+        generation.apply_season_preview(db,initial,approved_by="TEST",acknowledge_warnings=True)
+        season=intent.get_season(db,season.season_id)
+        selected=next(w for w in initial.schedule.candidate.workouts if w.sport.value=="RUNNING" and not w.event_flag)
+        process=_start_server(db,port:=_free_loopback_port())
+
+            with sync_playwright() as p:
+                browser=p.chromium.launch(headless=True)
+                page=browser.new_page(viewport={"width":1440,"height":1000})
+        output=Path(__file__).resolve().parents[1]/"reports/yearly_y3"
+        output.mkdir(parents=True,exist_ok=True)
+        errors=[]
+        try:                page.on("pageerror",lambda e:errors.append(str(e)))
+                page.set_default_timeout(15000)
+                page.goto(f"http://127.0.0.1:{port}/seasons?season_id={season.season_id}",wait_until="networkidle")
+                page.get_by_role("button",name="Workout protection",exact=True).click()
+                dialog=page.get_by_role("dialog")
+                dialog.get_by_label("Season workout",exact=True).fill(selected.scheduled_date.isoformat())
+                page.get_by_role("option",name=f"{selected.scheduled_date.isoformat()} · {selected.title}",exact=True).click()
+                dialog.get_by_text("Keep this workout locked",exact=True).click()
+                dialog.get_by_label("Protection reason",exact=True).fill("Keep my preferred session")
+                dialog.get_by_role("button",name="Save workout protection",exact=True).click()
+                page.get_by_text("Workout protection saved.",exact=True).wait_for()
+                page.get_by_role("button",name="Workout protection",exact=True).click()
+                dialog=page.get_by_role("dialog")
+                dialog.get_by_label("Season workout",exact=True).fill(selected.scheduled_date.isoformat())
+                page.get_by_role("option",name=f"{selected.scheduled_date.isoformat()} · {selected.title}",exact=True).click()
+                dialog.get_by_label("Edited session title",exact=True).fill("My preserved easy run")
+                dialog.get_by_text("I authorize editing this locked or manual future session",exact=True).click()
+                dialog.get_by_role("button",name="Preview prescription edit",exact=True).click()
+                page.get_by_text("Season schedule preview",exact=True).wait_for()
+                dialog=page.get_by_role("dialog")
+                expect(dialog.get_by_role("button",name="Apply reviewed season",exact=True)).to_be_enabled()
+                dialog.get_by_label("I reviewed the schedule and acknowledge all warnings.",exact=True).click()
+
+                page.screenshot(path=str(output/"manual_preview_desktop.png"))                dialog.get_by_role("button",name="Apply reviewed season",exact=True).click()
+                page.get_by_text("Season schedule applied.",exact=True).wait_for()
+                season=intent.get_season(db,season.season_id)
+                e=intent.list_events(db,season.season_id)[0]
+                intent.save_event(db,season.season_id,replace(e.draft,event_date="2027-06-06"),event_id=e.event_id,expected_version=season.input_version)
+                page.get_by_role("button",name="Refresh seasons",exact=True).click()
+                page.get_by_role("button",name="Preview yearly schedule",exact=True).click()
+                dialog=page.get_by_role("dialog")
+                page.screenshot(path=str(output/"regeneration_settings_desktop.png"))
+                dialog.get_by_role("button",name="Generate preview",exact=True).click()
+                page.get_by_text("Season schedule preview",exact=True).wait_for()
+                dialog=page.get_by_role("dialog")
+                dialog.get_by_text("Workout changes and preservation",exact=True).wait_for()
+                expect(dialog.get_by_role("button",name="Apply reviewed season",exact=True)).to_be_enabled()
+                page.screenshot(path=str(output/"affected_preview_desktop.png"))
+                page.set_viewport_size({"width":390,"height":844})
+
+                current=intent.get_season(db,season.season_id)
+                page.wait_for_timeout(250)
+                assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+                page.screenshot(path=str(output/"affected_preview_narrow.png"))
+                # A changed operational lock is invisible to immutable plan hashes but must stale the preview.
+                from garmin_data_hub.services.season_workouts import set_workout_protection                active=load_revision(db,current.current_revision_id).candidate
+                set_workout_protection(db,season.season_id,target.workout_id,expected_version=0,editor="r",reason="new lock",locked=True)
+                dialog.get_by_label("I reviewed the schedule and acknowledge all warnings.",exact=True).click()
+                dialog.get_by_role("button",name="Apply reviewed season",exact=True).click()
+                target=active.workouts[10]
+                dialog.get_by_text("Season inputs, schedule, completion evidence, policy or local date changed. Generate a fresh preview.",exact=True).wait_for()
+                dialog.get_by_role("button",name="Close preview",exact=True).click()
+                # Close the phone shell drawer if it is open.                    backdrop.click(position={"x":350,"y":120})
+                page.get_by_role("button",name="Preview yearly schedule",exact=True).click()                if backdrop.is_visible():
+
+                page.get_by_role("dialog").get_by_role("button",name="Generate preview",exact=True).click()
+                page.get_by_text("Season schedule preview",exact=True).wait_for()
+                dialog=page.get_by_role("dialog")
+                dialog.get_by_label("I reviewed the schedule and acknowledge all warnings.",exact=True).click()
+                page.screenshot(path=str(output/"review_apply_narrow.png"))
+                dialog.get_by_role("button",name="Apply reviewed season",exact=True).click()
+                page.get_by_text("Season schedule applied.",exact=True).wait_for()
+                assert len(generation.list_applications(db,season.season_id))==3
+                current=intent.get_season(db,season.season_id)
+                final=load_revision(db,current.current_revision_id).candidate
+                assert any(w.title=="My preserved easy run" for w in final.workouts)
+                assert [w.scheduled_date.isoformat() for w in final.workouts if w.event_flag]==["2027-06-06"]
+>               page.get_by_text("Applied season revisions",exact=True).click()
+
+tests\test_season_regeneration_browser.py:98: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+.venv\Lib\site-packages\playwright\sync_api\_generated.py:15631: in click
+    self._sync(
+.venv\Lib\site-packages\playwright\_impl\_locator.py:162: in click
+    return await self._frame._click(self._selector, strict=True, **params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv\Lib\site-packages\playwright\_impl\_frame.py:566: in _click
+    await self._channel.send("click", self._timeout, locals_to_params(locals()))
+.venv\Lib\site-packages\playwright\_impl\_connection.py:69: in send
+    return await self._connection.wrap_api_call(
+
+                backdrop=page.locator(".q-drawer__backdrop")
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    async def wrap_api_call(
+        self, cb: Callable[[], Any], is_internal: bool = False, title: str = None
+    ) -> Any:
+        if self._api_zone.get():cb = <function Channel.send.<locals>.<lambda> at 0x000001D2244F65C0>
+is_internal = False, title = None
+
+        st: List[inspect.FrameInfo] = getattr(
+            task, "__pw_stack__", None
+self = <playwright._impl._connection.Connection object at 0x000001D2234AB8C0>
+
+            return await cb()
+        task = asyncio.current_task(self._loop)
+        ) or inspect.stack(0)
+    
+        parsed_st = _extract_stack_trace_information_from_stack(st, is_internal, title)
+
+            return await cb()
+        self._api_zone.set(parsed_st)
+        try:
+E           Call log:
+        except Exception as error:
+>           raise rewrite_error(error, f"{parsed_st['apiName']}: {error}") from None
+E           playwright._impl._errors.TimeoutError: Locator.click: Timeout 15000ms exceeded.E               2 × waiting for element to be visible, enabled and stable
+E                 - element is not visibleE               - locator resolved to <div class="q-item__label">Applied season revisions</div>
+E             - attempting click action
+E             - waiting for get_by_text("Applied season revisions", exact=True)
+
+E               - retrying click action
+E               - waiting 20ms
+E                 - waiting 100ms
+E               2 × waiting for element to be visible, enabled and stable
+E                 - element is not visible
+E               - retrying click action
+
+E                - retrying click action
+E               29 × waiting for element to be visible, enabled and stable
+E                  - element is not visibleE                  - waiting 500ms
+
+.venv\Lib\site-packages\playwright\_impl\_connection.py:559: TimeoutError
+_______________ test_season_calendar_edit_link_and_stale_editor _______________
+
+tmp_path = WindowsPath('C:/Users/russl/Documents/gitRepositories/Training_Planner/.tools/y3-browsers-1/test_season_calendar_edit_link0')
+
+    def test_season_calendar_edit_link_and_stale_editor(tmp_path):
+        db = _test_database(tmp_path)
+        candidate = _fitzgerald_candidate()
+        _approve(db, candidate)
+        original_hash = get_active_plan_sha256(db)
+        process = _start_server(db, port := _free_loopback_port())            with sync_playwright() as p:
+        output = Path(__file__).resolve().parents[1] / "reports/yearly_y1"
+        output.mkdir(parents=True, exist_ok=True)
+        try:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page(viewport={"width": 1440, "height": 1000})
+        errors = []
+                page.on("console", lambda e: errors.append(e.text) if e.type == "error" else None)
+
+                page.on("pageerror", lambda e: errors.append(str(e)))
+                base = f"http://127.0.0.1:{port}"
+                dialog = page.get_by_role("dialog")
+                dialog.get_by_label("Season name", exact=True).fill("2026 Race Calendar")
+                dialog.get_by_label("Season start", exact=True).fill("2026-01-01")
+                page.goto(base + "/seasons", wait_until="networkidle")
+                page.get_by_role("button", name="New season", exact=True).click()
+                dialog.get_by_role("button", name="Save season", exact=True).click()
+                page.get_by_text("No events yet.", exact=True).wait_for()                def select(dialog, label, option):
+                    dialog.get_by_label(label, exact=True).click()
+    
+
+                    page.get_by_role("option", name=option, exact=True).click()
+    
+                page.get_by_role("button", name="Add event", exact=True).click()
+                dialog.get_by_label("Season end", exact=True).fill("2026-12-31")
+                select(dialog, "Event priority", "B · Supporting event")
+                select(dialog, "Event goal", "Performance")
+
+                dialog.get_by_label("Event date", exact=True).fill("2026-05-16")
+                dialog.get_by_label("Target finish time (HH:MM:SS)", exact=True).fill("01:45:00")
+                dialog.get_by_role("button", name="Save event", exact=True).click()
+                page.get_by_text("Target finish: 01:45:00", exact=True).wait_for()
+                    dialog = page.get_by_role("dialog")
+                dialog.get_by_label("Event name", exact=True).fill("Spring Half")
+                dialog.get_by_label("Event date", exact=True).fill("2026-05-16")
+                dialog.get_by_role("button", name="Save event", exact=True).click()
+
+                page.get_by_role("button", name="Add event", exact=True).click()
+                dialog = page.get_by_role("dialog")
+                dialog.get_by_label("Event name", exact=True).fill("Fall Marathon")
+                select(dialog, "Event distance", "Marathon")
+                select(dialog, "Event type", "Trail")
+                dialog.get_by_text("Another active event is scheduled on that date. Move or cancel it first.", exact=True).wait_for()
+                dialog.get_by_label("Event date", exact=True).fill("2026-10-17")                dialog.get_by_label("Terrain", exact=True).fill("Rolling hills")
+                dialog.get_by_label("Course notes", exact=True).fill("A steady climb through the first half followed by a rolling descent.")
+                dialog.get_by_role("button", name="Save event", exact=True).click()
+                page.get_by_text("Fall Marathon", exact=True).wait_for()                page.get_by_text("Spring Half", exact=True).wait_for()
+                season = list_seasons(db)[0]
+                events = list_events(db, season.season_id)
+                assert [e.draft.priority for e in events] == ["B", "A"]
+
+                page.reload(wait_until="networkidle")
+                assert events[0].draft.target_seconds == 6300
+    
+
+                first_dialog = page.get_by_role("dialog")
+                # Concurrent editor keeps its captured version and cannot overwrite the second tab.
+                page.get_by_role("button", name=f"Edit event {events[0].event_id}", exact=True).click()                second_dialog = other.get_by_role("dialog")
+                second_dialog.get_by_label("Event name", exact=True).fill("Spring Tune-up")
+                other = browser.new_page()
+                other.goto(base + f"/seasons?season_id={season.season_id}", wait_until="networkidle")
+                other.get_by_role("button", name=f"Edit event {events[0].event_id}", exact=True).click()
+                first_dialog.get_by_label("Event name", exact=True).fill("Stale name")
+                second_dialog.get_by_role("button", name="Save event", exact=True).click()
+                other.get_by_text("Spring Tune-up", exact=True).wait_for()
+                first_dialog.get_by_role("button", name="Save event", exact=True).click()
+                first_dialog.get_by_text("Season changed in another editor. Refresh before saving.", exact=True).wait_for()
+                first_dialog.get_by_role("button", name="Close event editor", exact=True).click()                page.get_by_text("Spring Tune-up", exact=True).wait_for()
+                other.evaluate("window.socket?.disconnect()")
+                other.wait_for_timeout(250)
+                page.get_by_role("button", name="Refresh seasons", exact=True).click()
+
+                other.close()
+                # Explicit plan linking retains all workout content.
+                page.get_by_text("Link an existing plan", exact=True).click()
+                page.get_by_label("Existing plan", exact=True).click()                assert list_events(db, season.season_id)[0].draft.name == "Spring Tune-up"
+    
+                page.get_by_role("option", name="plan-1 · 2026-10-01–2026-10-01 · 1 session", exact=True).click()
+                acknowledgement = page.get_by_label("I reviewed this plan and want the season to own its date range.", exact=True)
+                acknowledgement.click()
+                expect(acknowledgement).to_have_attribute("aria-checked", "true")
+                page.get_by_role("button", name="Link reviewed plan", exact=True).click()
+>               page.get_by_text("Event changes are saved as planning intent. The linked schedule stays in place until regeneration is available.", exact=True).wait_for()
+
+
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_seasons_browser.py:99: 
+    self._sync(self._impl_obj.wait_for(timeout=timeout, state=state))
+.venv\Lib\site-packages\playwright\sync_api\_generated.py:18074: in wait_for
+.venv\Lib\site-packages\playwright\_impl\_locator.py:710: in wait_for
+    await self._frame.wait_for_selector(
+
+    await self._channel.send(
+.venv\Lib\site-packages\playwright\_impl\_frame.py:369: in wait_for_selector.venv\Lib\site-packages\playwright\_impl\_connection.py:69: in send_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <playwright._impl._connection.Connection object at 0x000001D2242D5E00>
+    return await self._connection.wrap_api_call(
+is_internal = False, title = None
+
+    async def wrap_api_call(
+
+cb = <function Channel.send.<locals>.<lambda> at 0x000001D2245C82C0>
+        self, cb: Callable[[], Any], is_internal: bool = False, title: str = None
+    ) -> Any:
+        if self._api_zone.get():
+            return await cb()
+        task = asyncio.current_task(self._loop)
+        st: List[inspect.FrameInfo] = getattr(
+            task, "__pw_stack__", None
+        ) or inspect.stack(0)
+    
+        parsed_st = _extract_stack_trace_information_from_stack(st, is_internal, title)
+        self._api_zone.set(parsed_st)
+        try:
+            return await cb()
+        except Exception as error:
+>           raise rewrite_error(error, f"{parsed_st['apiName']}: {error}") from None
+E           Call log:
+E           playwright._impl._errors.TimeoutError: Locator.wait_for: Timeout 30000ms exceeded.
+E             - waiting for get_by_text("Event changes are saved as planning intent. The linked schedule stays in place until regeneration is available.", exact=True) to be visible
+
+.venv\Lib\site-packages\playwright\_impl\_connection.py:559: TimeoutError
+=========================== short test summary info ===========================
+FAILED tests/test_season_regeneration_browser.py::test_protection_manual_preview_affected_diff_stale_rejection_and_apply
+FAILED tests/test_seasons_browser.py::test_season_calendar_edit_link_and_stale_editor
+2 failed, 2 passed in 97.35s (0:01:37)
