@@ -1,6 +1,6 @@
 # Activity Track Visuals Plan
 
-Status: T1 and T2 implemented and locally verified
+Status: T1, T2 and T3 implemented and locally verified
 
 ## Objective
 
@@ -360,3 +360,21 @@ The first slice is complete when those questions are answered clearly for pace w
 - External tile requests were blocked in browser tests. Live tiles, real sensor-activity field trial, and account usage/credits remain unverified/unavailable. Current shell has no dark-mode control.
 - T2 changes: `analytics/track_visuals.py`, `ui_nicegui/pages.py`, `tests/test_track_visuals.py`, `tests/test_track_visuals_browser.py`, this plan, roadmap, and T2 screenshots. Prior T1 changes and pre-existing Charts plan preserved. Changes remain uncommitted.
 - Next roadmap milestone: C1 Charts discovery and overview. T2 does not authorize starting C1.
+
+## T3 discovery and decisions — 2026-10-02
+
+- User requested T3 using the T2 handoff; scope is deferred Track 3 / Phase 3: laps, distance splits, selection and keyboard interaction. Linked charts remain Track 4. Clean baseline: 1fca677.
+- Stored Garmin laps live in activity_splits. The installed importer retains start_time_gmt and raw_json (including any source trigger/elapsed timing); older schemas may lack these optional columns. Add a separate read-only lap query, preserving the existing Splits grid query. No migration or ingestion rewrite.
+- Calculated km/mi splits use validated cumulative GPS distance, exact interpolated boundaries and elapsed time (including stops/pauses). Partial final splits and intervals crossing missing time, gaps or rejected edges are labeled; only complete trustworthy full-distance splits qualify as fastest. Sensor averages use available time-weighted readings with coverage.
+- Imported laps are separate from calculated splits. Only explicit source manual triggers earn the Manual lap label; absent provenance stays Stored lap. Do not infer manual laps from distance/duration. Align by explicit timestamps/elapsed duration or the next lap start; unavailable alignment retains details and explains why route selection is unavailable.
+- Selected interval renders as a separate strong outline over existing metric geometry, preserving T2 layer IDs and palettes. Distance/lap boundary markers use distinct circle styles and labels. Accessible selector, previous/next and clear controls, plus a text table, work on narrow screens. Selected interval is retained per activity within the page.
+
+## T3 verification and handoff — 2026-10-02
+
+- Implemented exact km/mi GPS splits, full/partial labels, elapsed pace, fastest eligible split, time-weighted sensor averages/coverage, sampled max HR and complete-data net elevation. Timing/GPS quality breaks suppress pace and fastest eligibility; selected paths never bridge omitted edges or sampling gaps.
+- Read-only get_activity_laps preserves optional source timestamps/raw metadata and existing Splits-grid queries. Source manual triggers are explicit; unknown provenance stays Stored lap. Source totals remain distinct from calculated GPS measurements. Old schemas and malformed raw JSON are supported. No migration.
+- Track controls provide a keyboard-accessible interval selector, previous/next/clear buttons, a named paginated measurements table and selected textual details. Clickable small blue distance markers and larger purple stored-lap markers use map-scoped events. Selection survives tab and metric changes per activity within the page. A white halo/dark outline overlays exact clipped paths without rebuilding T2 geometry. Interval selection fits avoid animation. More than 200 boundary markers are sampled; all intervals remain selectable.
+- Final focused suite: 51 passed; two prior Track browser workflows passed, totaling 53 distinct checks. The 20,000-point route remains covered; split calculation alone produced 60 km intervals in 0.133s locally. git diff --check passed. Desktop/390px screenshots visually inspected. Exact commands and limitations: reports/track_t3/README.md.
+- Last stored laps with no reliable elapsed endpoint retain source details but cannot highlight a route. Partial alignment is explicitly explained. Live tiles, real imported-lap field trial, dark theme and packaged executable remain unverified. GPS/source distance and timer/elapsed totals can differ; no fabricated alignment.
+- Source changes: new analytics/track_splits.py and ui_nicegui/track_intervals.py; track_visuals.py endpoint sensor retention; db/queries.py and ui_nicegui/data.py lap reads; Activities Track wiring; tests/test_track_splits.py and T3 browser workflow. Roadmap/source-plan and reports/track_t3 evidence updated. T1/T2 screenshots restored.
+- Work remains uncommitted on 1fca677. No live database/schedule write, push, deployment or packaging rebuild. Token/credit attribution unavailable; client settings unchanged. T3 gate complete. Track 4 linked analytics requires separate authorization.

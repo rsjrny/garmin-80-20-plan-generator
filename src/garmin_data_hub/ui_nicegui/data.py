@@ -364,6 +364,10 @@ def activity_detail(db_path: Path, activity_id: int) -> dict[str, Any] | None:
             "trackpoints": json.loads(trackpoints.to_json(orient="records"))
             if not trackpoints.empty
             else [],
+            "laps": [
+                {key: _finite(value) for key, value in row.items()}
+                for row in queries.get_activity_laps(conn, int(activity_id))
+            ],
         }
     finally:
         conn.close()

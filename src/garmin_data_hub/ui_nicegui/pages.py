@@ -20,6 +20,7 @@ from plotly.subplots import make_subplots
 from garmin_data_hub.analytics.chart_explorer import CATALOG, chart_state, contributors, explorer_figures, resolve_click, source_rows, tag_overview
 from garmin_data_hub.analytics.chart_overview import QUICK_RANGES, comparison_range, period_range, prepare_overview, overview_figures
 from garmin_data_hub.analytics.track_visuals import NEUTRAL, prepare_overlays, process_track, route_features
+from garmin_data_hub.ui_nicegui.track_intervals import render_track_intervals
 from garmin_data_hub import __version__
 from garmin_data_hub.analytics.sleep_recovery import analyze_sleep_recovery
 from garmin_data_hub.mcp_sidecar_client import describe_readonly_tools, call_readonly_tools
@@ -1580,6 +1581,7 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                                 finish_marker.run_method("bindTooltip", "Finish", {"permanent": True, "direction": "right"})
                                 recolor_route()
                                 await fit_route()
+                                await initialize_intervals()
 
                             ui.timer(0.05, initialize_route, once=True)
                             ui.button("Fit route", on_click=fit_route, icon="fit_screen")
@@ -1589,6 +1591,10 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                                 "GPS distance excludes jumps and gaps. Invalid GPS/time edges omitted. "
                                 "Map tiles require an internet connection."
                             ).classes("text-xs text-grey-7")
+                            initialize_intervals = render_track_intervals(
+                                track, detail.get("laps", []), route_map, state, activity_key,
+                                activity.get("activity_type", "running"),
+                            )
                     with ui.tab_panel(raw_tab):
                         data_grid([activity], height="24rem")
 

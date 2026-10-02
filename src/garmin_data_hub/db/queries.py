@@ -1656,6 +1656,23 @@ def get_activity_records(conn, activity_id: int) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def get_activity_laps(conn, activity_id: int) -> list[dict]:
+    """Read source laps including optional timing/provenance on older Garmin schemas."""
+    try:
+        cursor = conn.execute(
+            "SELECT * FROM activity_splits WHERE activity_id = ? ORDER BY split_number",
+            (int(activity_id),),
+        )
+        columns = [column[0] for column in cursor.description]
+        rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+    except sqlite3.Error:
+        return []
+    for row in rows:
+        row["heart_rate_bpm"] = row.get("average_hr")
+        row["cadence_spm"] = row.get("avg_cadence")
+    return rows
+
+
 def get_activity_trackpoints(conn, activity_id: int) -> pd.DataFrame:
     """Return a pandas DataFrame of GPS trackpoints for the given activity_id.
 

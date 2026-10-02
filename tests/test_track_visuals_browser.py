@@ -131,3 +131,104 @@ def test_metric_switch_reuses_sections_and_preserves_selection(tmp_path):
         server = _stop_server(process)
     assert not errors, errors
     assert "Traceback" not in server, server
+
+
+def test_t3_split_lap_selection_markers_keyboard_and_narrow_layout(tmp_path):
+    import json
+    db = _test_database(tmp_path)
+    conn = connect_sqlite(db)
+    raw = points(1301)
+    conn.executemany(
+        "INSERT INTO activity_trackpoints(activity_id,seq,timestamp_utc,latitude,longitude,heart_rate_bpm,altitude_m,cadence) VALUES(202,?,?,?,?,?,?,?)",
+        [(i, point["timestamp_utc"], point["lat_deg"], point["lon_deg"], None if i < 300 else 145, 20+i/100, 175) for i, point in enumerate(raw)],
+    )
+    conn.execute("""CREATE TABLE activity_splits(activity_id INTEGER, split_number INTEGER,
+        distance_meters REAL, duration_seconds REAL, average_speed REAL, average_hr REAL, max_hr REAL,
+        elevation_gain REAL, elevation_loss REAL, avg_cadence REAL, start_time_gmt TEXT, raw_json TEXT)""")
+    conn.executemany("INSERT INTO activity_splits VALUES(202,?,?,?,?,?,?,?,?,?,?,?)", [
+        (1, 800, 280, 2.86, 145, 170, 15, 5, 175, raw[0]["timestamp_utc"], json.dumps({"lapTrigger": "manual", "elapsedDuration": 300})),
+        (2, 900, 300, 3, 148, 172, 20, 10, 177, raw[300]["timestamp_utc"], '{}'),
+    ])
+    conn.commit()
+    conn.close()
+    process = _start_server(db, port := _free_loopback_port())
+    errors = []
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page(viewport={"width":1440,"height":1000})
+            page.on("pageerror", lambda e: errors.append(str(e)))
+            page.route("https://**/*", lambda route: route.abort())
+            page.goto(f"http://127.0.0.1:{port}/activities", wait_until="networkidle")
+            assert _click_activity(page, 202, errors)
+            page.get_by_role("tab", name="Track", exact=True).click()
+            selector = page.get_by_label("Split or lap", exact=True)
+            selector.wait_for()
+            page.locator(".leaflet-tooltip", has_text="Finish").wait_for()
+            snapshot = """() => {
+                const map=getElement(Number(document.querySelector('.leaflet-container').id.slice(1))).map;
+                const base=[],selection=[],markers=[];
+                map.eachLayer(l=>{
+                    if(l.feature?.properties.overlays) base.push({id:l._leaflet_id,color:l.options.color});
+                    else if(l.feature) selection.push({color:l.options.color,weight:l.options.weight,points:l.getLatLngs().length});
+                    else if(l.getRadius) markers.push({radius:l.getRadius(),label:l.getTooltip()?.getContent()});
+                });
+                return {base,selection,markers};
+            }"""
+            page.wait_for_timeout(300)
+            before = page.evaluate(snapshot)
+            assert len(before["markers"]) == 3  # Two full miles + one aligned manual lap.
+            selector.click()
+            page.get_by_role("option", name="GPS split 1", exact=True).click()
+            page.get_by_text("Fastest full split", exact=False).first.wait_for()
+            page.wait_for_timeout(300)
+            after = page.evaluate(snapshot)
+            assert after["base"] == before["base"]
+            assert {s["color"] for s in after["selection"]} == {"#ffffff", "#172e50"}
+            assert any(s["weight"] == 7 for s in after["selection"])
+            # Keyboard activation advances and clears intervals.
+            page.get_by_role("button", name="Next interval", exact=True).focus()
+            page.keyboard.press("Enter")
+            assert selector.input_value() == "GPS split 2"
+            page.get_by_role("button", name="Clear interval", exact=True).click()
+            page.wait_for_timeout(200)
+            assert not page.evaluate(snapshot)["selection"]
+            # Boundary marker uses the real NiceGUI event bridge to select the lap.
+            page.evaluate("""() => {
+                const map=getElement(Number(document.querySelector('.leaflet-container').id.slice(1))).map;
+                map.eachLayer(l=>{if(l.getTooltip()?.getContent()==='Manual lap 1') l.fire('click');});
+            }""")
+            page.wait_for_function("document.querySelector('input[aria-label=\"Split or lap\"]').value === 'Manual lap 1'")
+            page.get_by_text("Source lap totals; route aligned by elapsed timestamps", exact=False).first.wait_for()
+            page.get_by_role("tab", name="Overview", exact=True).click()
+            page.get_by_role("tab", name="Track", exact=True).click()
+            assert selector.input_value() == "Manual lap 1"
+            metric = page.get_by_label("Route metric", exact=True)
+            metric.click()
+            page.get_by_role("option", name="Heart rate", exact=True).click()
+            page.wait_for_timeout(200)
+            assert page.evaluate(snapshot)["selection"]
+            selector.click()
+            page.get_by_role("option", name="Stored lap 2", exact=True).click()
+            page.get_by_text("Route highlighting unavailable for this lap.", exact=True).wait_for()
+            page.wait_for_timeout(200)
+            assert not page.evaluate(snapshot)["selection"]
+            selector.click()
+            page.get_by_role("option", name="Manual lap 1", exact=True).click()
+            output = Path(__file__).resolve().parents[1]/"reports"/"track_t3"
+            output.mkdir(parents=True, exist_ok=True)
+            page.wait_for_timeout(200)
+            page.screenshot(path=str(output/"desktop.png"), full_page=True)
+            page.set_viewport_size({"width":390,"height":844})
+            page.get_by_role("button", name="Fit route", exact=True).click()
+            page.wait_for_timeout(300)
+            page.screenshot(path=str(output/"narrow.png"), full_page=True)
+            assert page.locator('.leaflet-container').evaluate("e => e.getBoundingClientRect().width") <= 390
+            assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+            assert page.get_by_role("table", name="Lap and split measurements").count() == 1
+            page.evaluate("window.socket?.disconnect()")
+            browser.close()
+    finally:
+        server = _stop_server(process)
+    assert not errors, errors
+    assert "Traceback" not in server, server

@@ -87,7 +87,7 @@ def process_track(points, sport="running", unit_system="metric", window_s=20):
                 segments.append(dict(start=a, end=c, time=t, start_time=start, duration=dt,
                                      distance_m=total, metres=metres, status=status,
                                      pace=dt/metres*unit_m if status == "moving" else None,
-                                     point=p, elapsed=t-origin if t is not None and origin is not None else None))
+                                     point=p, start_point=old, elapsed=t-origin if t is not None and origin is not None else None))
         if t is not None: high_time = max(high_time, t) if high_time is not None else t
         previous = p, c, t
     if path: paths.append(path)
