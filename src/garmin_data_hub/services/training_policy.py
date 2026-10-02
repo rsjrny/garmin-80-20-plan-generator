@@ -211,6 +211,16 @@ def normalize_policy_sessions(items: Iterable[Any]) -> tuple[PolicySession, ...]
     """Normalize imported workouts or legacy ``DayPlan`` objects."""
     sessions: list[PolicySession] = []
     for item in items:
+        from garmin_data_hub.plan_methodology.segments import PlannedWorkout
+        if isinstance(item, PlannedWorkout):
+            segments = item.segments
+            duration = sum(s.duration_seconds for s in segments) / 60 if all(s.duration_seconds is not None for s in segments) else None
+            distance = sum(s.distance_metres for s in segments) / 1000 if all(s.distance_metres is not None for s in segments) else None
+            sport = {"RUNNING":"run", "STRENGTH":"strength", "MOBILITY":"mobility", "REST":"rest"}[item.sport.value]
+            intensity = "race" if item.event_flag else "hard" if item.quality_flag else "rest" if sport=="rest" else "moderate" if sport=="strength" else "recovery" if item.phase=="RECOVERY" else "easy"
+            sessions.append(PolicySession(item.scheduled_date.isoformat(),sport,intensity,item.title or item.family,
+                item.phase or "",("RACE",) if item.event_flag else (),duration,distance,None))
+            continue
         workout = str(_value(item, "workout", "") or "")
         sport = str(_value(item, "sport", "") or "").casefold()
         if not sport:

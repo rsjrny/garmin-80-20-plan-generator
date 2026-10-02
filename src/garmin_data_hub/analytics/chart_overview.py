@@ -41,6 +41,8 @@ def prepare_overview(raw, start, end, sport="All sports", unit_system="Metric", 
     if end > today:
         raise ValueError("End date cannot be in the future.")
     frame = raw.copy()
+    if "activity_id" not in frame:
+        frame["activity_id"] = pd.Series(index=frame.index, dtype="Int64")
     source = frame.get("activity_date",frame.get("start_time_utc",pd.Series(index=frame.index,dtype=str)))
     frame["date"] = pd.to_datetime(source,errors="coerce",utc=True).dt.tz_localize(None).dt.normalize()
     frame = frame.dropna(subset=["date"])

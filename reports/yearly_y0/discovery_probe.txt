@@ -1,0 +1,6 @@
+PASS: confirming an activity leaves the existing active schedule hash unchanged
+PASS: unchanged copied workout needs lineage; confirmed activity cannot be duplicated
+PASS: approval replaces the whole plan projection while retaining prior immutable workouts
+PASS: legacy range helper can delete canonical projection without changing its revision pointer
+PASS: v11 has no explicit protection flags; idempotent migration retains completion evidence
+5 discovery probes passed; temporary synthetic database removed

@@ -1367,14 +1367,22 @@ def clear_override_metrics(conn, *, commit: bool = True) -> None:
 
 
 def delete_planned_workouts_in_range(conn, min_date: str, max_date: str) -> None:
+    from garmin_data_hub.services.season_plans import assert_legacy_write_allowed
+
+    owned = not conn.in_transaction
     try:
+        if owned:
+            conn.execute("BEGIN IMMEDIATE")
+        assert_legacy_write_allowed(conn, min_date, max_date)
         conn.execute(
             "DELETE FROM planned_workout WHERE scheduled_date >= ? AND scheduled_date <= ?",
             (min_date, max_date),
         )
         conn.commit()
     except Exception:
-        return
+        if owned:
+            conn.rollback()
+        raise
 
 
 def insert_planned_workout(
@@ -1387,7 +1395,13 @@ def insert_planned_workout(
     planned_tss,
     structure_json=None,
 ) -> None:
+    from garmin_data_hub.services.season_plans import assert_legacy_write_allowed
+
+    owned = not conn.in_transaction
     try:
+        if owned:
+            conn.execute("BEGIN IMMEDIATE")
+        assert_legacy_write_allowed(conn, scheduled_date, scheduled_date)
         conn.execute(
             """
             INSERT INTO planned_workout(
@@ -1407,7 +1421,9 @@ def insert_planned_workout(
         )
         conn.commit()
     except Exception:
-        return
+        if owned:
+            conn.rollback()
+        raise
 
 
 GET_PLANNED_MIN_MAX_SQL = (
@@ -1731,6 +1747,9 @@ def get_activities_dataframe(
                     f"CASE WHEN am.lthr_metrics_current THEN am.zone_{zone}_s END",
                 )
 
+        activity_columns = {row[1] for row in conn.execute("PRAGMA table_info(activity)")}
+        name_columns = [f'a."{column}"' for column in ("activity_name", "name", "title") if column in activity_columns]
+        activity_name_sql = "COALESCE(" + ", ".join([f"NULLIF(TRIM({column}), '')" for column in name_columns] + ["'Activity ' || a.activity_id"]) + ")" if name_columns else "'Activity ' || a.activity_id"
         activity_day = activity_calendar_day_sql(conn, table_alias="a")
         temporal_metric_select_sql = current_temporal_metric_projection_sql(
             "am",
@@ -1747,6 +1766,7 @@ def get_activities_dataframe(
         query = f"""
             SELECT
                 a.activity_id,
+                {activity_name_sql} AS activity_name,
                 CASE WHEN am.activity_id IS NULL THEN 'missing'
                      WHEN am.lthr_metrics_current THEN 'current' ELSE 'stale' END AS hr_zone_status,
                 a.start_time_gmt          AS start_time_utc,

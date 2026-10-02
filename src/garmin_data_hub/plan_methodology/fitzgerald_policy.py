@@ -149,6 +149,8 @@ def aggregate_runtime_results(
     unassigned_phase_results = 0
     completed = set(completed_weeks)
     for result in activity_results:
+        if result.get("excluded_from_running_distribution") is True:
+            continue
         raw_date = result.get("local_activity_date")
         try:
             day = date.fromisoformat(str(raw_date))
@@ -533,6 +535,8 @@ def validate(candidate: Any) -> tuple[ValidationFinding, ...]:
             )
     by_week: dict[str, list[Mapping[str, Any]]] = {}
     for workout in workouts:
+        if str(getattr(workout, "sport", "RUNNING")) != "RUNNING":
+            continue
         workout_id = getattr(workout, "workout_id", None)
         workout_metadata = getattr(workout, "metadata", None)
         exception_map = (

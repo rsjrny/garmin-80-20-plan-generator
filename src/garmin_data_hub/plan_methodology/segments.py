@@ -62,13 +62,19 @@ class WorkoutSegment:
             or self.distance_metres <= 0
         ):
             raise DomainError("distance_metres must be positive")
+        if self.kind is SegmentKind.NON_TRAINING and (
+            self.load_mode is not LoadMode.OPEN or self.duration_seconds is not None
+            or self.distance_metres is not None or self.prescription is not None
+            or self.duration_role is not None or self.distance_role is not None
+        ):
+            raise DomainError("non-training leaves must be OPEN without measures or prescriptions")
         authoritative = sum(
             role is MeasureRole.AUTHORITATIVE
             for role in (self.duration_role, self.distance_role)
         )
         if self.load_mode is LoadMode.OPEN:
-            if self.kind not in {SegmentKind.FREE_RUN, SegmentKind.EVENT}:
-                raise DomainError("OPEN load is allowed only for free-run or event leaves")
+            if self.kind not in {SegmentKind.FREE_RUN, SegmentKind.EVENT, SegmentKind.NON_TRAINING}:
+                raise DomainError("OPEN load is allowed only for free-run, event or non-training leaves")
             if authoritative:
                 raise DomainError("OPEN load cannot have an authoritative duration or distance")
         else:
@@ -133,6 +139,18 @@ class PlannedWorkout:
             raise DomainError("planned workout requires ordered leaf segments")
         if any(not isinstance(segment, WorkoutSegment) for segment in self.segments):
             raise DomainError("planned workout segments must be workout segment leaves")
+        auxiliary = {Sport.STRENGTH: "STRENGTH", Sport.MOBILITY: "MOBILITY", Sport.REST: "REST"}
+        if self.sport in auxiliary:
+            if self.family != auxiliary[self.sport] or self.event_flag or self.quality_flag or self.long_run_flag:
+                raise DomainError("auxiliary sport/family and flags must agree")
+            if any(s.prescription is not None or s.distance_metres is not None for s in self.segments):
+                raise DomainError("auxiliary sessions cannot have endurance prescriptions or distance")
+            if self.sport is Sport.REST and any(s.kind is not SegmentKind.NON_TRAINING for s in self.segments):
+                raise DomainError("rest requires explicit non-training leaves")
+            if self.sport is not Sport.REST and any(s.kind is SegmentKind.NON_TRAINING or s.load_mode is not LoadMode.DURATION for s in self.segments):
+                raise DomainError("strength and mobility require duration leaves")
+        elif self.family in auxiliary.values() or any(s.kind is SegmentKind.NON_TRAINING for s in self.segments):
+            raise DomainError("running cannot contain auxiliary families or non-training leaves")
         if self.ordinal is not None and (
             not isinstance(self.ordinal, int) or isinstance(self.ordinal, bool) or self.ordinal < 0
         ):

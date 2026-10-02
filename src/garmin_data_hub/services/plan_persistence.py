@@ -14,6 +14,7 @@ from typing import Any, Literal, Mapping, Sequence
 
 from garmin_data_hub.db import queries as db_queries
 from garmin_data_hub.db.sqlite import connect_sqlite
+from garmin_data_hub.services.season_plans import assert_legacy_write_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +204,7 @@ def save_imported_plan(
 
         replace_start = prepared["replace_start_date"]
         replace_end = prepared["replace_end_date"]
+        assert_legacy_write_allowed(conn, replace_start, replace_end)
         replaced_count = int(
             conn.execute(
                 """
@@ -852,6 +854,9 @@ def save_generated_plan(
     conn = connect_sqlite(db_path)
     try:
         conn.execute("BEGIN IMMEDIATE")
+        plan_dates = [dp.iso_date for dp in day_plans]
+        if plan_dates:
+            assert_legacy_write_allowed(conn, min(plan_dates), max(plan_dates))
         if expected_active_plan_sha256 is not None:
             current_sha256 = active_plan_sha256(conn)
             if current_sha256 != expected_active_plan_sha256:

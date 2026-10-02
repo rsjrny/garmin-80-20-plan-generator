@@ -1,7 +1,7 @@
 # Training Planner Implementation Roadmap
 
 Created: 2026-10-02
-Status: T1, T2, and C1 implemented and locally verified; C2 is next.
+Status: T1, T2, C1, C2, Y1 and Y2 locally verified; G1 scope choice recorded; Y0 discovery complete; Y3 awaits authorization.
 
 ## Objective and source plans
 
@@ -34,13 +34,14 @@ not automatically change the running chat's model, speed, or reasoning.
 | 5 / G1 | Review actual usage, remaining allowance, credit balance, and next scope | GPT-6.1 Sol | Standard | Light | Small review | Reuse C2 chat |
 | 6 / Y0 | Scheduling architecture and migration discovery | GPT-6.1 Sol | Standard | High | 40k | Fresh chat |
 | 7 / Y1 | Season/event persistence, event UI, priorities, compatibility | GPT-6.1 Sol | Standard | High | 160k | Reuse Y0 if discovery is compact; otherwise fresh handoff |
-| 8 / Y2 | Coherent yearly generation and A/B/C precedence | GPT-6.1 Sol | Standard | High | 210k | Fresh chat after Y1 |
-| 9 / Y3 | Protected workouts, affected ranges, diff, atomic apply, revisions | GPT-6.1 Sol | Standard | High | 200k | Fresh chat after Y2 |
+| 8 / Y2 | Coherent yearly generation, canonical adapters, A/B/C precedence | GPT-6.1 Sol | Standard | High | 240k | Fresh chat after Y1 |
+| 9 / Y3 | Protected workouts, origin lineage, affected ranges, diff, atomic apply, revisions | GPT-6.1 Sol | Standard | High | 240k | Fresh chat after Y2 |
 
 T1-T2-C1-C2 total approximately 480k planning tokens. This includes phase tests and
 discovery within T1/C1, but allows little room for unexpected integration work.
 Keep a separate contingency of roughly 50k-100k for this first investment.
-Y0-Y3 total approximately 610k before unexpected integration work.
+Y0-Y3 total approximately 680k before unexpected integration work, revised after
+Y0 identified canonical adapter, auxiliary-session and origin-lineage dependencies.
 
 These are rough effort allowances, not measured forecasts or credit limits. Earlier
 estimates did not separate repeated input, cached input, and generated reasoning.
@@ -113,11 +114,11 @@ Record available values, leaving unknown fields blank:
 | T1 | Locally verified | 2026-10-02 | Client settings unchanged | | | 10 final focused tests passed; desktop/narrow and 20k-point route verified | Uncommitted; handoff below |
 | T2 | Locally verified | 2026-10-02 | Client settings unchanged | | | 14 focused tests passed; metric switches, partial data, desktop/narrow verified | Uncommitted; handoff below |
 | C1 | Locally verified | 2026-10-02 | Client settings unchanged | | | 60 cross-feature tests passed; 49 final Charts/shared checks; desktop/narrow verified | Uncommitted; handoff below |
-| C2 | Pending | | | | | | |
-| G1 | Pending | | | | | | |
-| Y0 | Deferred | | | | | | |
-| Y1 | Deferred | | | | | | |
-| Y2 | Deferred | | | | | | |
+| C2 | Locally verified | 2026-10-02 | Client settings unchanged | | | 76 Charts/shared checks passed; two activity checks passed with bundled Chromium; desktop/narrow interactions verified | Uncommitted on e79bad7; handoff below |
+| G1 | Complete; user selected Y0 only | 2026-10-02 | Client settings unchanged | Included allowance: 34% five-hour / 40% weekly at prior snapshot; user dashboard | Historical 82 / 82 at prior snapshot | Existing evidence reviewed; scope chosen 2026-10-02 | G1 review below; Y0 handoff below |
+| Y0 | Discovery complete | 2026-10-02 | Client settings unchanged | | | 264 existing tests and 5 synthetic discovery probes passed; no UI, visual checks not applicable | Uncommitted on e79bad7; docs/yearly-scheduling-architecture.md and handoff below |
+| Y1 | Locally verified | 2026-10-02 | Client settings unchanged | | | 408 scheduling/shared/browser tests passed; desktop/390px UI inspected; representative and real v11 snapshot upgrades preserved schedules | Uncommitted on e79bad7; handoff below |
+| Y2 | Locally verified | 2026-10-02 | Client settings unchanged | | | 611 distinct checks; desktop/390px; private v11→v13 migration; full-year timing | Uncommitted; reports/yearly_y2 and handoff below |
 | Y3 | Deferred | | | | | | |
 
 If account balance is inaccessible, report that fact and let the user provide the
@@ -208,3 +209,224 @@ Architecture: `analytics/chart_overview.py` is pure preparation/figures. `chart_
 Evidence: 60 cross-feature tests passed; subsequent final Charts/shared refinements passed 49 tests, then eight pure cases passed after adding strength frequency. Browser checked filter updates, four-chart limit, sport/load/unit handling, invalid dates, and 390px widths. Desktop/narrow screenshots inspected under `reports/charts_c1/`. Synthetic 4,000-activity history preparation passes a five-second bound. Actual usage/credits and real-history field trial remain unavailable.
 
 Uncommitted C1 files are listed in the Charts source-plan handoff; all earlier T1/T2/planning changes preserved. No deployment or schedule changes. C2 is next: activity links, weekly contributors, complete Explorer catalog, and saved filter/section state. Do not proceed beyond C1 without the next task authorization.
+
+## C2 handoff — 2026-10-02
+
+Charts now has activity-ID detail links, weekly/day/sport contributors, keyboard source links, the full eleven-chart Explorer catalog, and saved tab-session filters/section/catalog selection. Explorer shares C1 preparation and missingness. Same-day points resolve via explicit trace identities; trend lines do not open arbitrary activities. Activities accepts validated activity_id links independently of its grid filters.
+
+New analytics/chart_explorer.py owns the catalog, saved-state validation, click identities, source rows, contributors, and selected Explorer figures. ui_nicegui/pages.py integrates tab storage and interaction; db/queries.py adds optional-schema display names without migration. State survives refresh and navigation in the running tab/app; new tabs start with defaults. Quick ranges follow today; custom dates stay fixed.
+
+Evidence: 76 Charts/shared tests passed without warnings; two existing activity-grid checks passed with bundled Chromium (system Chrome unavailable; test-only launcher override, one import-rewrite warning). Browser verified rendered clicks, keyboard links, custom/quick filters, reload/shell/detail navigation, separate tabs, empty/missing contributors, missing detail IDs, reset zoom, and 390px layout. Four screenshots inspected in reports/charts_c2/; whitespace check passed.
+
+C2 changes remain uncommitted on e79bad7; the Charts source plan lists exact files. No deployment/schedule changes. Actual usage/credit values and real-history field trial remain unknown. G1 usage/scope review is next; C3/C4 and yearly scheduling remain deferred.
+
+## G1 review — 2026-10-02
+
+Status: Complete. User selected Y0 only on 2026-10-02; prior dashboard snapshot retained.
+
+### Evidence and current state
+
+- T1/T2 and C1/C2 have passed their local implementation gates. C2's final evidence is 76 Charts/shared tests plus two activity-grid checks, with desktop/narrow screenshots. Counts from earlier runs overlap and are not summed into a project-wide unique-test total.
+- Latest committed baseline is e79bad7. T1/T2/C1 are in that baseline; C2 implementation, tests, screenshots, and handoffs remain uncommitted. This review preserves those changes.
+- Real imported-activity field trials and live route tiles remain unverified. Those are useful product checks before a larger investment, although the recorded local phase gates passed.
+- No active goal exists in this thread, so the goal tool supplies no token-usage report. Phase handoffs also contain no measured tokens. Live account values are not exposed by the available account tools; the user supplied the dashboard snapshot below. Attributable phase spending remains unavailable.
+- The previously reported 82 credits are a historical starting value, not current remaining credits. No spend or remaining balance has been inferred from the roadmap's token planning allowances.
+- Official OpenAI documentation directs users to the usage dashboard for remaining limits/reset times and distinguishes input, cached-input, and output token rates. The account snapshot is now recorded, but phase credit cost still cannot be calculated reliably without measured category totals and attributable consumption. Source checked 2026-10-02: [Pricing and usage](https://learn.chatgpt.com/docs/pricing).
+
+### Usage record
+
+| Item | Recorded value / source |
+| --- | --- |
+| Historical plan / starting credits | ChatGPT Plus / 82 credits; earlier user report |
+| Current credit balance | 82 credits remaining; user dashboard paste on 2026-10-02 |
+| Remaining included allowance | Five-hour: 34% left; weekly: 40% left; user dashboard |
+| Reset date/time | Five-hour: in 16 minutes; weekly: in 4 days 23 hours, relative to the user snapshot; exact timestamps unavailable (user timezone America/New_York) |
+| Measured T1/T2/C1/C2 tokens | Unavailable in handoffs and current goal tool |
+| Phase-attributable credit spending | Unavailable; balance differences may include other work or purchases |
+| Real-history user feedback | Not yet recorded |
+
+The current 82-credit balance matches the historical report, so no net credit decline is visible between those snapshots. This does not establish zero usage or a phase-specific cost: included limits were consumed, and intervening activity/purchases are not measured. The dashboard states these plan limits are shared across Codex, Work, Workspace Agents, and ChatGPT for Excel, excluding Chat conversations. Preserve the remaining allowance for a bounded next phase; its fit cannot be guaranteed from these percentages alone.
+
+### Concrete next-scope recommendation
+
+Recommend **Y0 only**, if the user wants to continue toward yearly scheduling and accepts the available capacity. Y0 produces a reviewable architecture/discovery handoff before feature implementation:
+
+1. Map existing generation and persistence entry points.
+2. Resolve canonical revision compatibility and multi-event orchestration.
+3. Define completed/manual/locked workout preservation semantics.
+4. Specify backward-compatible migrations and representative conflict examples.
+5. Revise Y1-Y3 scope/effort based on the findings, then stop at the Y0 gate.
+
+Y0's existing 40k planning allowance is an effort estimate, not a measured token budget or credit cap. The roadmap recommends a fresh GPT-6.1 Sol / Standard / High chat for Y0; client settings have not been changed here. Y1-Y3 remain separate decisions.
+
+Alternatives: conduct a real-history field trial of the completed track/Charts workflows first, or choose a narrowly scoped Charts 3 weekly planned-versus-completed comparison if that is more valuable than multi-event seasons.
+
+### Remaining decisions
+
+Dashboard snapshot recorded. The user subsequently requested "perform y0 from the
+roadmap" on 2026-10-02, authorizing Y0 only and completing G1's scope-choice gate.
+Y1-Y3 and deferred features remain separate decisions. No implementation, commit,
+push, deployment, or schedule write was performed during G1.
+
+## Y0 handoff — 2026-10-02
+
+Scheduling architecture/discovery gate complete. Exact generation, legacy save,
+canonical approval, conversion, matching and calendar/cache entry points are in
+[docs/yearly-scheduling-architecture.md](docs/yearly-scheduling-architecture.md).
+The Yearly source plan links the selected design and updated scope.
+
+Selected architecture: editable season/event intent over existing immutable
+training_plan/plan_revision storage, one active pointer, pure season orchestration,
+complete merged revisions and origin lineage for carried prescriptions/completion.
+Operational protection and match state require stale checks beyond today's
+active-plan hash. Additive migrations preserve existing single-event plans and
+require explicit adoption; legacy conversion cannot select only part of its
+rowset. All old overlapping writers need guards. Auxiliary strength/rest typing
+and calendar/nutrition compatibility are explicit Y2 dependencies.
+
+Verification: 264 focused existing baseline/calendar/persistence/migration/revision/
+matching/conversion/V2-boundary/policy tests passed in 16.22s. Five reproducible
+synthetic probes passed, confirming completion-hash exclusion, origin-match needs,
+full projection rebuild, legacy projection deletion bypass and missing protection
+flags/idempotent replay. Evidence: reports/yearly_y0/pytest.txt, discovery_probe.py
+and discovery_probe.txt. No season UI added, so visual checks are not applicable.
+Actual user snapshot migration and season behavior/performance remain Y1-Y3 gates.
+
+Y0 changes: this roadmap, YEARLY_MULTI_EVENT_SCHEDULING_PLAN.md,
+docs/yearly-scheduling-architecture.md and reports/yearly_y0/. Uncommitted on
+e79bad7; pre-existing C2 changes preserved. No live DB/apply/commit/push/deployment.
+No attributable phase token/credit data available; prior account snapshot is not
+a refreshed balance. Client settings unchanged.
+
+Y1 allowance stays 160k; Y2 rises to 240k and Y3 to 240k for discovered canonical
+adapter/auxiliary/lineage/concurrency scope. Revised Y0-Y3 total approximately 680k
+before contingency; estimates do not promise credit fit. Y2 initial apply is for
+an empty future season only; existing-plan regeneration apply waits for Y3.
+Next task is separately authorized Y1; stop at this Y0 gate.
+
+## Y1 handoff — 2026-10-02
+
+The user authorized Y1 with "continue to y1". The multiple-event foundation is
+implemented and locally verified. `/seasons` is available from navigation and Plan.
+It stores 1–366-day running seasons, athlete/availability inputs, and chronological
+road/trail events with A/B/C priority, goals, optional time/pace targets, course
+notes and taper/recovery overrides. Editors reject invalid dates, duplicate active
+event dates, completed-history changes and stale concurrent saves. Seasons can be
+archived/restored; linked event removal retains cancellation history.
+
+Schema v12 adds empty season tables with no inferred events or automatic conversion.
+Explicit linking accepts reviewed native or previously converted canonical plans,
+checks current revision/hash and full projection consistency, and retains all
+prescriptions and confirmed matches. Season method/timezone and prior workout
+coverage remain fixed after linking. Overlapping unarchived season intent is rejected;
+archiving a linked season retains its schedule ownership. All legacy writers and
+direct canonical approvals, including a different plan targeting owned dates, are
+guarded inside their write transactions. These guards moved from Y2 to Y1 because
+linking establishes ownership now. Unlinked intent preserves single-event workflows.
+
+Verification: 182 season/migration/revision/matching/conversion/baseline/persistence
+tests, 225 shared policy/calendar/AI/UI checks, and one Chromium workflow passed
+(408 total). Browser verification covered creation, targets, duplicate validation,
+reload, two-editor concurrency, explicit linking, cancellation, archive/restore,
+Plan navigation, unchanged active schedule hashes, and no browser/server errors.
+Desktop 1440px, 390px layout and scrolling editor controls were visually inspected.
+Evidence and reproduction details are in [reports/yearly_y1](reports/yearly_y1/).
+
+Fresh, legacy, native and converted synthetic v11 snapshots upgrade/replay without
+schedule mutation; injected migration failure rolls back tables and version together.
+A private SQLite backup of the installed v11 database also upgraded to v12 twice:
+every checked plan/match/settings row, active schedule and foreign-key state remained unchanged, and
+both new tables were empty. The source database was never migrated or modified;
+the private full backup was removed. Startup migration occurs when the updated app
+is next opened. Packaged executable rebuilding and real-user field trial were not
+performed; source UI and migration gates passed.
+
+Y1 source changes: db/schema.sql, db/migrate.py, services/season_plans.py,
+ui_nicegui/seasons.py, app.py, layout.py and the Plan link in pages.py; guards in
+services/plan_persistence.py, db/queries.py, plan_methodology/revision_repository.py,
+and the legacy export save delegate. Added three season test modules and updated
+latest-version assertions in existing revision/matching/conversion tests. README,
+the Yearly source plan, architecture notes and this roadmap document the behavior.
+Changes remain uncommitted on e79bad7; existing C2 and Y0 changes were preserved.
+No commit, push, deployment, live schedule apply or Y2 generation was performed.
+Phase token/credit usage is unavailable; client settings were unchanged.
+
+Next separately authorized phase: Y2, coherent yearly generation, canonical adapters,
+auxiliary-session typing, A/B/C phase precedence, workload conflicts and preview/apply
+for an empty future season. Linked/existing schedule regeneration still requires
+Y3 preservation and origin lineage. Stop at the completed Y1 gate.
+
+
+## Y2 implementation and handoff — 2026-10-02
+
+Y2 is locally verified. **Preview yearly schedule** generates one continuous
+1–366-day canonical running schedule: base/build/event-specific/taper/event/recovery/
+maintenance phases, local Monday weeks, partial-week labels and continuous cutbacks.
+Events replace a session and consume weekly run/hard-day capacity. Recovery constrains
+all priorities; intersecting recovery/taper uses the lower load. Close A peaks,
+participation in recovery, unavailable dates and incompatible B/C taper participation
+block apply with explanations. Unsupported distances have no fallback.
+
+Generation reuses weekday selection, then composes canonical workouts directly,
+without concatenating calendars or calling legacy saves. 80/20 requires confirmed
+measured running LTHR; Maffetone requires an explicitly selected/confirmed adjustment.
+Named-method policy validates the candidate. Target time/speed remains event intent;
+event duration is a target estimate or unknown. No running distance/TSS is invented.
+These prescriptions do not promise readiness or event goal achievement.
+
+Starting duration uses the mean of four explicitly covered completed local weeks
+within eight weeks before preview, otherwise an explicit starter load is required
+with a readiness warning. CompletedWeek history can be supplied to the service;
+the current editor uses the starter setting. Full normal-week growth is conservatively
+5%, validated against 10%; partial/cutback weeks do not raise the reference. Recovery
+and subsequent maintenance return at the lower of starter and prior normal load.
+Complete distance is checked for growth; missing distance/TSS remains visible.
+
+STRENGTH/MOBILITY/REST have validated sport/family/flag/segment pairs. Rest uses OPEN
+NON_TRAINING with no duration. Auxiliary sessions are excluded from running
+prescription/distribution validation and runtime compliance/aggregation. Event goals
+and the V2 AI parser stay running-only. Calendar rows expose native targets or
+auxiliary/rest labels. Initial apply invalidates affected cached nutrition while
+preserving unaffected dates and double-encoded legacy caches.
+
+Preview is read-only, showing phases, weekly/event load, sessions, warnings/conflicts
+and apply restrictions. Apply requires explicit warning acknowledgement and an empty,
+unarchived season starting today or later. Linked/adopted full previews keep the
+parent parameters and cannot replace workouts. Unmanaged/partial-provenance overlap
+and known neighboring recovery conflicts block initial apply. Old writer guards remain.
+
+Under one BEGIN IMMEDIATE, apply recomputes content and checks intent snapshot/version,
+active/raw schedule state, match/completion state, local today/timezone and versions.
+Ownership, immutable full revision graph, projection/pointer, affected nutrition and
+immutable v13 season_revision_application audit commit together. Identical retries
+are no-ops. Audit stores input/settings, versions, exact added IDs, empty initial
+preservation/override sets, warnings, rationale, reviewer/time and state identities.
+Applied history is visible on Seasons. Schema v13 is additive; existing hashes and
+schedules are retained.
+
+Verification: 607 broad checks passed. The final focused run passed 295 checks and
+hit one transient Windows ConnectionResetError in the existing browser teardown
+log assertion; all interaction assertions had passed. A clean rerun passed all three
+season browser workflows. Across combined scope, 611 distinct tests are verified
+(608 non-browser plus three browsers), including the additional auxiliary runtime
+case. Repeated runs are not added. Desktop/390px preview/load/session/conflict/apply/
+history/calendar captures were inspected. Ten injected failure stages roll back;
+stale input/completion/date/raw-state/forgery and concurrent/idempotent apply pass.
+
+A private read-only backup of the installed v11 database upgraded/replayed to v13
+without changing prior app rows, active schedule or foreign-key state. The backup
+was removed; the source was never migrated. Synthetic 366-day/three-event previews
+took 0.021–0.030 seconds and atomic apply 0.558–0.637 seconds locally, not a general
+performance promise. [Y2 evidence](reports/yearly_y2/README.md) records commands,
+logs, screenshots and limitations.
+
+Source: new services/season_schedule.py and services/season_generation.py; canonical
+auxiliary domain/segments/goals/policies/runtime accounting; private owner-aware
+revision approval; v13 DDL/migration; season UI, calendar reader, policy normalization
+and ownership messages. Two new test modules plus schema/migration fixtures cover
+Y2. Prior C2/Y0/Y1 work remains. No commit, push, deployment, packaging rebuild or live
+schedule apply. Token/account-credit attribution is unavailable; client settings
+were unchanged.
+
+Next separately authorized phase: Y3 protection state, immutable origins, affected
+ranges, merged revisions and safe regeneration of existing seasons.

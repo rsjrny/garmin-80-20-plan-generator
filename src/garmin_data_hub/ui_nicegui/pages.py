@@ -11,10 +11,13 @@ from pathlib import Path
 from typing import Any, Callable
 
 import pandas as pd
+from fastapi import Request
+
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+from garmin_data_hub.analytics.chart_explorer import CATALOG, chart_state, contributors, explorer_figures, resolve_click, source_rows, tag_overview
 from garmin_data_hub.analytics.chart_overview import QUICK_RANGES, comparison_range, period_range, prepare_overview, overview_figures
 from garmin_data_hub.analytics.track_visuals import NEUTRAL, prepare_overlays, process_track, route_features
 from garmin_data_hub import __version__
@@ -161,19 +164,7 @@ ABOUT_LINKS = (
     ),
 )
 
-CHART_OPTIONS: tuple[tuple[str, str], ...] = (
-    ("activity_distribution", "Activity distribution"),
-    ("weekly_distance", "Weekly distance"),
-    ("weekly_duration", "Weekly duration"),
-    ("average_heart_rate", "Average heart rate"),
-    ("average_velocity", "Average pace/speed"),
-    ("weekly_training_stress", "Weekly training stress"),
-    ("weekly_hr_zones", "Weekly HR zones"),
-    ("weekly_elevation", "Weekly elevation gain"),
-    ("longest_activity", "Longest activity by week"),
-    ("load_vs_duration", "Load vs duration"),
-    ("drift_decoupling", "Drift and decoupling"),
-)
+CHART_OPTIONS: tuple[tuple[str, str], ...] = CATALOG
 CHART_LABELS = {chart_id: label for chart_id, label in CHART_OPTIONS}
 CHART_IDS_BY_LABEL = {label: chart_id for chart_id, label in CHART_OPTIONS}
 
@@ -1302,7 +1293,7 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                     data_grid(recent, height="21rem")
 
     @ui.page("/activities")
-    def activities_page() -> None:
+    def activities_page(request: Request) -> None:
         render_shell("Activities", db_path, sandboxed=sandboxed)
         with ui.column().classes("gdh-page"):
             page_heading(
@@ -1314,7 +1305,11 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
             unit = distance_unit(unit_system)
             velocity_display = preferences["activity_velocity_display"]
             sports = activity_sports(db_path)
-            state: dict[str, Any] = {"selected_id": None, "rows": []}
+            requested_id = request.query_params.get("activity_id", "")
+            selected_id = int(requested_id) if requested_id.isascii() and requested_id.isdecimal() and len(requested_id) <= 18 and int(requested_id) > 0 else None
+            state: dict[str, Any] = {"selected_id": selected_id, "rows": []}
+            if selected_id is not None:
+                ui.link("Return to Charts", "/charts").classes("text-primary")
             with ui.card().classes("gdh-card w-full"):
                 with ui.row().classes("w-full items-end gap-3 flex-wrap"):
                     default_sport = preferences["activity_default_sport"]
@@ -1618,27 +1613,82 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                 detail_panel()
 
     @ui.page("/charts")
-    def charts_page() -> None:
+    async def charts_page() -> None:
+        from nicegui import app
+        await ui.context.client.connected()
+        session = app.storage.tab
+        state_key = "charts:" + str(db_path.resolve())
         render_shell("Charts", db_path, sandboxed=sandboxed)
         preferences = interface_settings(db_path)
         unit_system = preferences["unit_system"]
         velocity_display = preferences["activity_velocity_display"]
         today = date.today()
-        initial_start, initial_end = period_range("12 weeks", today)
+        sports = activity_sports(db_path)
+        saved = chart_state(session.get(state_key), sports, today)
+        initial_start, initial_end = date.fromisoformat(saved["start"]), date.fromisoformat(saved["end"])
         cache: dict[str, Any] = {"key": None, "raw": None, "updating": False}
         with ui.column().classes("gdh-page"):
             page_heading("Training Charts", "Training volume, load, intensity, and comparable performance.")
             with ui.card().classes("gdh-card w-full"):
                 with ui.row().classes("w-full items-end gap-3 flex-wrap"):
-                    quick = ui.select(list(QUICK_RANGES), value="12 weeks", label="Date range").props("outlined").classes("w-full sm:w-48")
+                    quick = ui.select(list(QUICK_RANGES), value=saved["quick"], label="Date range").props("outlined").classes("w-full sm:w-48")
                     start = ui.input("Start date", value=initial_start.isoformat()).props("outlined type=date").classes("w-full sm:w-48")
                     end = ui.input("End date", value=initial_end.isoformat()).props("outlined type=date").classes("w-full sm:w-48")
-                    sport = ui.select(["All sports", *activity_sports(db_path)], value="All sports", label="Sport").props("outlined").classes("w-full sm:w-56")
+                    sport = ui.select(["All sports", *sports], value=saved["sport"], label="Sport").props("outlined").classes("w-full sm:w-56")
                 with ui.row().classes("w-full items-end gap-3 flex-wrap"):
-                    load = ui.select({"tss": "TSS", "trimp": "TRIMP"}, value="tss", label="Load source").props("outlined").classes("w-full sm:w-48")
-                    volume = ui.select(["Time"], value="Time", label="Volume metric").props("outlined").classes("w-full sm:w-48")
-                    intensity = ui.select(["Hours", "Percent"], value="Hours", label="Intensity display").props("outlined").classes("w-full sm:w-48")
+                    load = ui.select({"tss": "TSS", "trimp": "TRIMP"}, value=saved["load"], label="Load source").props("outlined").classes("w-full sm:w-48")
+                    volume = ui.select(["Time", "Distance"] if saved["sport"] != "All sports" and any(x in saved["sport"].lower() for x in ("run", "walk", "hik", "cycl", "bik")) else ["Time"], value=saved["volume"], label="Volume metric").props("outlined").classes("w-full sm:w-48")
+                    intensity = ui.select(["Hours", "Percent"], value=saved["intensity"], label="Intensity display").props("outlined").classes("w-full sm:w-48")
                     ui.button("Refresh data", on_click=lambda: refresh_data(), icon="refresh")
+
+            with ui.row().classes("w-full items-end gap-3 flex-wrap"):
+                section = ui.select(["Overview", "Explorer"], value=saved["section"], label="Chart section").props("outlined").classes("w-full sm:w-48")
+                catalog = ui.select(dict(CATALOG), value=saved["charts"], multiple=True, label="Explorer charts").props("outlined use-chips").classes("w-full sm:max-w-xl")
+                catalog.set_visibility(section.value == "Explorer")
+            ui.label("Chart filters and section are remembered in this tab while the app is running. Quick ranges follow today; custom dates stay fixed.").classes("text-xs text-grey-7")
+            with ui.dialog() as source_dialog, ui.card().classes("w-full max-w-4xl min-w-0"):
+                source_title = ui.label().classes("text-lg font-semibold")
+                source_body = ui.column().classes("w-full min-w-0")
+                ui.button("Close contributors", on_click=source_dialog.close).props("flat")
+
+            def reset_zoom(plot, figure) -> None:
+                figure.update_layout(xaxis={"autorange": True}, yaxis={"autorange": "reversed" if figure.layout.yaxis.autorange == "reversed" else True})
+                if "yaxis2" in figure.layout:
+                    figure.update_layout(yaxis2={"autorange": True})
+                plot.update()
+
+            def render_sources(rows, container) -> None:
+                for row in rows:
+                    speed = row["avg_speed_mps"]
+                    row["velocity"] = speed_from_mps(speed, unit_system) if velocity_display == "Speed" else pace_text_from_mps(speed, unit_system)
+                with container:
+                    ui.label(f"{len(rows)} source activities; blank metrics are unavailable. Time uses moving duration with labeled elapsed fallbacks.").classes("text-xs")
+                    if not rows:
+                        ui.label("No activities contributed in this selection.")
+                        return
+                    columns = [{"name": key, "label": label, "field": key, "align": "left", "sortable": True} for key, label in (
+                        ("open", "Details"), ("name", "Activity"), ("date", "Date"), ("sport", "Sport"), ("id", "ID"),
+                        ("distance", f"Distance ({distance_unit(unit_system)})"), ("duration_min", "Time (min)"),
+                        ("time_source", "Time source"), ("load", str(load.value).upper()),
+                        ("avg_hr_bpm", "Average HR (bpm)"), ("velocity", f"Average speed ({speed_unit(unit_system)})" if velocity_display == "Speed" else f"Pace ({pace_unit(unit_system)})"),
+                        ("elevation", "Elevation (ft)" if unit_system == "Imperial" else "Elevation (m)"),
+                        ("avg_power_w", "Power (W)"), ("normalized_power_w", "Normalized power (W)"),
+                        ("aerobic_decoupling_pct", "Decoupling (%)"), ("hr_drift_pct", "HR drift (%)"),
+                        ("hr_zones", "HR zones"))]
+                    table = ui.table(columns=columns, rows=rows, row_key="id", pagination=10).classes("w-full")
+                    table.add_slot("body-cell-open", """<q-td :props="props"><a v-if="props.row.id" :href="'/activities?activity_id=' + props.row.id" class="text-primary underline">Open activity {{ props.row.id }}</a></q-td>""")
+
+            def inspect_target(target, prepared) -> None:
+                if target is None:
+                    return
+                if target["kind"] == "activity":
+                    ui.navigate.to(f"/activities?activity_id={target['key']}")
+                    return
+                rows = source_rows(contributors(prepared["current"], target), prepared)
+                source_title.text = f"Contributing activities · {target['key']}" + (f" · {target['sport']}" if target.get("sport") else "")
+                source_body.clear()
+                render_sources(rows, source_body)
+                source_dialog.open()
 
             @ui.refreshable
             def render_overview() -> None:
@@ -1679,16 +1729,28 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                     ui.label("No activities match the selected filters. Empty weeks remain visible.").classes("text-grey-7")
                 lthr = cache["raw"].attrs.get("lthr_effective")
                 ui.label(f"Current athlete LTHR: {lthr} bpm; stored-zone provenance checks applied." if lthr else "Current athlete LTHR unavailable; legacy stored zone thresholds may be unknown. Stale metrics are excluded.").classes("text-xs text-grey-7")
-                cards = overview_figures(prepared,str(volume.value),str(intensity.value),velocity_display)
+                cards = tag_overview(overview_figures(prepared,str(volume.value),str(intensity.value),velocity_display),prepared) if section.value == "Overview" else explorer_figures(prepared, set(catalog.value or []), velocity_display)
+                if section.value == "Explorer" and not catalog.value:
+                    ui.label("Choose charts from the Explorer catalog.").classes("text-grey-7")
+                ui.label("Click an activity point to open details; click a weekly bar to inspect its contributors. Use the source table below for keyboard access.").classes("text-xs")
                 with ui.element("div").classes("grid grid-cols-1 xl:grid-cols-2 w-full gap-4"):
                     for index, card in enumerate(cards):
-                        with ui.card().classes("gdh-card w-full min-w-0" + (" xl:col-span-2" if index == 0 else "")):
+                        with ui.card().classes("gdh-card w-full min-w-0" + (" xl:col-span-2" if index == 0 and section.value == "Overview" else "")):
                             ui.label(card["title"]).classes("text-lg font-semibold")
                             ui.label(card["note"]).classes("text-xs text-grey-7")
                             if card["figure"] is not None:
-                                ui.plotly(card["figure"]).classes("w-full h-[22rem]")
+                                figure = card["figure"]
+                                plot = ui.plotly(figure).classes("w-full h-[22rem]")
+                                plot.on("plotly_click", lambda event, figure=figure, prepared=prepared: inspect_target(resolve_click(figure, event.args), prepared),
+                                        js_handler="(event) => { const p = event.points?.[0]; if (p) emit({curveNumber:p.curveNumber, pointNumber:p.pointNumber}); }")
+                                ui.button("Reset zoom", on_click=lambda plot=plot, figure=figure: reset_zoom(plot,figure)).props("flat dense")
                             else:
                                 ui.label("No comparable measurements available for these filters.").classes("text-sm")
+                with ui.expansion("Activity source table", icon="list").classes("w-full") as activity_sources:
+                    render_sources(source_rows(current.sort_values(["date", "activity_id"]), prepared), activity_sources)
+                with ui.row().classes("w-full items-end gap-3 flex-wrap"):
+                    week_choice = ui.select({w.date().isoformat(): f"{w.date().isoformat()} · {int(row.activities)} activities" for w,row in prepared["weekly"].iterrows()}, label="Inspect week", value=prepared["weekly"].index[-1].date().isoformat()).props("outlined").classes("w-full sm:w-72")
+                    ui.button("Show weekly contributors", on_click=lambda: inspect_target({"kind":"week", "key":week_choice.value},prepared))
                 table = prepared["weekly"].reset_index()
                 table["week"] = table.week.dt.strftime("%Y-%m-%d")
                 names = {"week": "Week starting", "week_label": "Week label", "activities": "Activities", "partial": "Partial week", "duration": "Training time (hours)", "distance": f"Distance ({prepared['unit']})", "elevation": f"Elevation ({prepared['elevation_unit']})", "load": prepared["load"], "load_rolling": f"4-week {prepared['load']} mean"}
@@ -1706,6 +1768,10 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
 
             def update_overview() -> None:
                 if not cache["updating"]:
+                    session[state_key] = dict(quick=quick.value, start=start.value, end=end.value, sport=sport.value,
+                                              load=load.value, volume=volume.value, intensity=intensity.value,
+                                              section=section.value, charts=list(catalog.value or []))
+                    catalog.set_visibility(section.value == "Explorer")
                     render_overview.refresh()
 
             def refresh_data() -> None:
@@ -1741,7 +1807,7 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
             start.on_value_change(change_date)
             end.on_value_change(change_date)
             sport.on_value_change(change_sport)
-            for control in (load,volume,intensity):
+            for control in (load,volume,intensity,section,catalog):
                 control.on_value_change(update_overview)
             render_overview()
 
@@ -1759,6 +1825,7 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                 "Build a deterministic offline baseline or use Codex for a "
                 "personalized proposal, then review the active schedule.",
             )
+            ui.link("Manage seasons and multiple events", "/seasons")
             preferences = interface_settings(db_path)
             unit_system = preferences["unit_system"]
             settings = planning_settings(db_path)

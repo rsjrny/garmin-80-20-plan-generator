@@ -26,6 +26,7 @@ The project syncs Garmin data using `garmin-givemydata`, applies app-specific sc
 - Account-authenticated Codex CLI plan generation
 - Shared local training-policy validation across baseline and AI plans
 - Local-first operation with SQLite storage
+- Persistent season calendars with multiple running events and A/B/C priorities
 
 ## AI Coaching Workspace
 
@@ -117,6 +118,28 @@ with the calendar, and stored with the accepted plan; they do not prescribe
 specific foods or medical nutrition treatment. The offline baseline schedules
 alternating strength sessions but does not invent individualized macro targets.
 
+## Season calendars
+
+Open **Seasons** to create a running season of up to 366 days, save training
+availability, and add dated events with A/B/C priorities. Event changes are saved
+as planning intent. Choose **Preview yearly schedule** to review a continuous
+canonical schedule, phases, weekly/event workload and conflicts. For 80/20, save
+LTHR and confirm it is a measured running threshold; for Maffetone, select and confirm
+an adjustment. Save an explicit starting weekly duration when covered history is
+unavailable. Unknown load and event-readiness limits remain visible as warnings.
+
+Review and acknowledge warnings to apply to an empty season starting today or later.
+Apply is atomic, audited and idempotent. Linked schedules can be previewed but cannot
+be regenerated yet; their parameters stay fixed. Rest/auxiliary sessions are typed,
+and affected cached nutrition is invalidated.
+
+You can explicitly link a reviewed existing structured plan whose methodology and
+entire workout history fit the season. Linking retains its workouts and matches.
+After linking, single-event saves and direct revision approvals cannot overwrite
+the season's dates. Archiving retains this protection. Existing unlinked single-event
+plans remain available on Plan; legacy schedules require explicit conversion before
+linking. Updates add empty season tables automatically on the next app startup.
+
 ## NiceGUI Pages
 
 The primary desktop interface is implemented under `src/garmin_data_hub/ui_nicegui`:
@@ -126,6 +149,7 @@ The primary desktop interface is implemented under `src/garmin_data_hub/ui_niceg
 - **Activities** - filters, splits, local GPS-track inspection, and complete JSON export
 - **Charts** - volume, heart-rate, speed, distribution, and training-load trends
 - **Plan** - offline baseline/workbook generation, event settings, HR thresholds, and active calendar review
+- **Seasons** - event priorities, availability, yearly preview, reviewed initial apply, revision history, and explicit plan linking
 - **Codex Coach** - account-authenticated generation, deterministic validation, exact diff, and explicit approval
 - **Compliance** - planned-versus-completed distance and duration
 - **Data Query** - guarded read-only SQL and advanced garmin_mcp calls

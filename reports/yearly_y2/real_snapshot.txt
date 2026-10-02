@@ -1,0 +1,5 @@
+PASS: real read-only SQLite backup upgraded v11 -> v13 and replayed
+PASS: every app-owned row and active schedule unchanged
+PASS: foreign-key state unchanged (0 pre-existing violations)
+PASS: added tables empty; existing season/event intent unchanged
+PASS: private full database backup removed; source was never migrated

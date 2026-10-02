@@ -5,7 +5,7 @@ import sqlite3
 
 logger = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION = 11
+CURRENT_SCHEMA_VERSION = 13
 
 
 def _ensure_schema_migrations_table(conn: sqlite3.Connection) -> None:
@@ -454,7 +454,11 @@ def _migration_11_add_legacy_plan_conversion(
         _add_column_if_missing(conn, "planned_workout", column_name, "TEXT")
 
     marker = "--  A4) EXPLICIT LEGACY PLAN CONVERSION (DATA HUB-OWNED)"
-    end_marker = "--  B) DERIVED / CALCULATED METRICS"
+    end_marker = (
+        "--  A5) EDITABLE SEASON PLANNING INTENT (DATA HUB-OWNED)"
+        if "--  A5) EDITABLE SEASON PLANNING INTENT (DATA HUB-OWNED)" in schema_sql
+        else "--  B) DERIVED / CALCULATED METRICS"
+    )
     try:
         conversion_ddl = schema_sql[schema_sql.index(marker) :]
         conversion_ddl = conversion_ddl[: conversion_ddl.index(end_marker)]
@@ -472,6 +476,65 @@ def _migration_11_add_legacy_plan_conversion(
             statement = ""
     if statement.strip():
         raise sqlite3.OperationalError("incomplete legacy conversion schema")
+
+
+def _migration_12_add_season_intent(conn: sqlite3.Connection, schema_sql: str) -> None:
+    """Add empty season intent tables without converting or changing any plan."""
+    marker = "--  A5) EDITABLE SEASON PLANNING INTENT (DATA HUB-OWNED)"
+    end_marker = "--  A6) IMMUTABLE SEASON APPLICATION AUDIT (DATA HUB-OWNED)"
+    try:
+        ddl = schema_sql[schema_sql.index(marker):]
+        ddl = ddl[:ddl.index(end_marker)]
+    except ValueError as exc:
+        raise sqlite3.OperationalError("season schema marker is missing") from exc
+    statement = ""
+    for line in ddl.splitlines():
+        if line.lstrip().startswith("--"):
+            continue
+        statement += line + "\n"
+        if sqlite3.complete_statement(statement):
+            conn.execute(statement.strip())
+            statement = ""
+    if statement.strip():
+        raise sqlite3.OperationalError("incomplete season schema")
+    required = {
+        "season_plan": {"season_id", "plan_id", "name", "start_date", "end_date",
+                        "timezone", "status", "input_schema_version", "inputs_json",
+                        "input_version", "created_at_utc", "updated_at_utc"},
+        "season_event": {"event_id", "season_id", "name", "event_date", "sport",
+                         "event_type", "distance_code", "distance_metres", "priority",
+                         "status", "goal_intent", "target_seconds", "target_speed_mps",
+                         "terrain", "course_notes", "taper_days", "recovery_days",
+                         "created_at_utc", "updated_at_utc"},
+    }
+    for table, columns in required.items():
+        if not columns <= _get_table_columns(conn, table):
+            raise sqlite3.OperationalError(f"incompatible {table} schema")
+
+
+def _migration_13_add_season_applications(conn: sqlite3.Connection, schema_sql: str) -> None:
+    marker = "--  A6) IMMUTABLE SEASON APPLICATION AUDIT (DATA HUB-OWNED)"
+    end = "--  B) DERIVED / CALCULATED METRICS"
+    try:
+        ddl = schema_sql[schema_sql.index(marker):schema_sql.index(end)]
+    except ValueError as exc:
+        raise sqlite3.OperationalError("season application schema marker is missing") from exc
+    statement = ""
+    for line in ddl.splitlines():
+        if line.lstrip().startswith("--"):
+            continue
+        statement += line + "\n"
+        if sqlite3.complete_statement(statement):
+            conn.execute(statement.strip())
+            statement = ""
+    if statement.strip():
+        raise sqlite3.OperationalError("incomplete season application schema")
+    required = {"application_id", "preview_id", "season_id", "plan_id", "resulting_revision_id",
+                "previous_revision_id", "input_version", "input_sha256", "candidate_sha256",
+                "snapshot_json", "review_json", "generator_version", "policy_version", "local_today",
+                "timezone", "range_start", "range_end", "mode", "approved_by", "applied_at_utc"}
+    if not required <= _get_table_columns(conn, "season_revision_application"):
+        raise sqlite3.OperationalError("incompatible season application schema")
 
 
 def _fix_trackpoint_cascade(conn: sqlite3.Connection) -> None:
@@ -656,6 +719,13 @@ def apply_schema(conn: sqlite3.Connection, schema_path: Path | None = None) -> N
             "add explicit legacy plan conversion",
             lambda: _migration_11_add_legacy_plan_conversion(conn, schema_sql),
         ),
+        (
+            12,
+            "add season planning intent",
+            lambda: _migration_12_add_season_intent(conn, schema_sql),
+        ),
+        (13, "add immutable season application audit",
+         lambda: _migration_13_add_season_applications(conn, schema_sql)),
     ]
 
     current_version = _get_current_schema_version(conn)
@@ -697,6 +767,11 @@ def apply_schema(conn: sqlite3.Connection, schema_path: Path | None = None) -> N
         _migration_10_add_activity_workout_match(conn, schema_sql)
     if recorded_version >= 11:
         _migration_11_add_legacy_plan_conversion(conn, schema_sql)
+    if recorded_version >= 12:
+        _migration_12_add_season_intent(conn, schema_sql)
+
+    if recorded_version >= 13:
+        _migration_13_add_season_applications(conn, schema_sql)
 
     # Keep baseline DDL idempotent so new installs and reruns remain safe.
     conn.executescript(schema_sql)

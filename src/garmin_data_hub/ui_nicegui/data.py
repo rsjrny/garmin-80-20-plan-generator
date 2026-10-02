@@ -421,6 +421,7 @@ def plan_rows(db_path: Path) -> list[dict[str, Any]]:
         conn.close()
     for row in raw:
         structure: dict[str, Any] = {}
+        parsed: dict[str, Any] = {}
         try:
             parsed = json.loads(str(row.pop("structure_json") or "{}"))
             if isinstance(parsed, dict) and isinstance(parsed.get("workout"), dict):
@@ -430,6 +431,9 @@ def plan_rows(db_path: Path) -> list[dict[str, Any]]:
         row["sport"] = structure.get("sport")
         row["phase"] = structure.get("phase")
         row["intensity"] = structure.get("intensity")
+        if isinstance(parsed, dict) and parsed.get("schema_version") == "plan-revision-projection.v1":
+            targets = parsed.get("intensity_summary", {}).get("native_targets", [])
+            row["intensity"] = " · ".join(targets) or ("Rest" if structure.get("sport") == "REST" else "Auxiliary")
     return raw
 
 

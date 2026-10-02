@@ -437,8 +437,27 @@ def _approve_revision_on_connection(
     plan_origin: str = "NATIVE",
     failure_hook: FailureHook | None = None,
     transaction_hook: TransactionHook | None = None,
+    _season_initial_owner: str | None = None,
 ) -> ApprovalResult:
     """Persist and activate a candidate using a caller-owned transaction."""
+    from garmin_data_hub.services.season_plans import assert_legacy_write_allowed, assert_plan_write_allowed
+
+    dates = [workout.scheduled_date.isoformat() for workout in candidate.workouts]
+    if _season_initial_owner is None:
+        assert_plan_write_allowed(conn, candidate.plan_id)
+        if dates:
+            assert_legacy_write_allowed(conn, min(dates), max(dates))
+    else:
+        owner = conn.execute("SELECT * FROM season_plan WHERE season_id=? AND plan_id=?",
+                             (_season_initial_owner, candidate.plan_id)).fetchone()
+        if (not conn.in_transaction or owner is None or candidate.parent_revision_id is not None
+                or candidate.reason is not RevisionReason.INITIAL_GENERATION or not dates
+                or min(dates) != owner["start_date"] or max(dates) != owner["end_date"]
+                or conn.execute("SELECT 1 FROM plan_revision WHERE plan_id=?", (candidate.plan_id,)).fetchone()):
+            raise RevisionPersistenceError("season approval requires an initial full owner transaction")
+        if conn.execute("SELECT 1 FROM season_plan WHERE season_id!=? AND plan_id IS NOT NULL AND start_date<=? AND end_date>=?",
+                        (_season_initial_owner,max(dates),min(dates))).fetchone():
+            raise RevisionPersistenceError("season approval overlaps another owner")
     actual_hash = _check_candidate(candidate, expected_content_hash)
     if not approved_by:
         raise RevisionPersistenceError("approved_by is required")

@@ -46,7 +46,7 @@ Last audited against the repository on 2026-10-01. Completed migration notes and
 
 ### Analysis and settings
 
-- [ ] Add synchronized chart filters and an “explain this point/week” drill-down to source activities.
+- [x] Add synchronized chart filters and an “explain this point/week” drill-down to source activities. C2 includes Explorer and tab-session state; see the Charts plan handoff.
 - [ ] Promote Sleep & Recovery from a Data Query tab to a first-class Recovery page or dashboard panel.
 - [ ] Add database-health tools for backup location, database size, last successful sync, last derived-metrics refresh, and quick export.
 

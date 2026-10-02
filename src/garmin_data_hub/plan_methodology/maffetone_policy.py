@@ -403,6 +403,8 @@ def validate(candidate: Any) -> tuple[ValidationFinding, ...]:
                         )
                     )
     for workout in tuple(getattr(candidate, "workouts", ())):
+        if str(getattr(workout, "sport", "RUNNING")) != "RUNNING":
+            continue
         workout_id = getattr(workout, "workout_id", None)
         metadata = getattr(workout, "metadata", None)
         if isinstance(metadata, Mapping) and "fitzgerald_gap_zone_exceptions" in metadata:

@@ -348,7 +348,7 @@ def test_v9_schema_is_additive_idempotent_and_has_expected_integrity(tmp_path):
         conn.commit()
         apply_schema(conn, schema_sql_path())
         apply_schema(conn, schema_sql_path())
-        assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == CURRENT_SCHEMA_VERSION == 11
+        assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == CURRENT_SCHEMA_VERSION == 13
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert {"training_plan", "plan_revision", "plan_revision_workout", "plan_workout_segment"} <= tables
         columns = {row[1] for row in conn.execute("PRAGMA table_info(planned_workout)")}
@@ -380,7 +380,7 @@ def test_prior_v8_database_upgrades_without_mutating_legacy_rows(tmp_path):
         conn.commit()
         apply_schema(conn, schema_sql_path())
         assert conn.execute("SELECT workout_name, source_plan_id FROM planned_workout").fetchall() == [("Legacy v8", None)]
-        assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 11
+        assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == CURRENT_SCHEMA_VERSION
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     finally:
         conn.close()
@@ -438,7 +438,7 @@ def test_recorded_v9_repairs_an_incomplete_restart_state(tmp_path):
         assert conn.execute(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='plan_revision'"
         ).fetchone()[0] == 1
-        assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 11
+        assert conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0] == CURRENT_SCHEMA_VERSION
     finally:
         conn.close()
 

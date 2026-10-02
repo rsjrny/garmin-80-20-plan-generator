@@ -1,6 +1,6 @@
 # Charts Page Improvement Plan
 
-Status: C1 implemented and locally verified; C2 pending
+Status: C1 and C2 implemented and locally verified; G1 usage review is next
 
 ## Objective
 
@@ -448,3 +448,28 @@ long wall of disconnected plots.
 C2 retains activity/weekly-contributor drill-down, Explorer UI, display names, and navigation/refresh filter persistence. Threshold freshness uses the existing stored provenance contract, not a new age-based policy. Current shell has no dark-mode control. Real-history field trial and live usage/credit values are unavailable. Cached frames remain in memory until filter/date changes or explicit refresh; no database-revision cache invalidation was added.
 
 Changes remain uncommitted: `analytics/chart_overview.py`, `db/queries.py`, `ui_nicegui/data.py`, `ui_nicegui/pages.py`, `tests/test_chart_overview.py`, `tests/test_chart_overview_browser.py`, this plan, roadmap, and C1 screenshots. Prior T1/T2 and planning changes preserved; no commit/push/publish or schedule changes. Next milestone is C2.
+
+## C2 verification and handoff — 2026-10-02
+
+### Implemented behavior and decisions
+
+- Overview and Explorer activity points open canonical Activities details by ID, independent of history-grid filters. Positive integer activity_id query parameters are validated; deleted IDs show the existing unavailable-detail message. Return to Charts restores analysis. Rolling medians remain trends; daily-frequency points open the day's sources.
+- Weekly bars open paginated source lists within the selected date/sport filters. Volume stacks respect the clicked sport. Missing-metric activities remain visible with blank values and labeled moving/elapsed fallbacks. Empty weeks explain that no activities contributed. Inspect week and Show weekly contributors provide keyboard access.
+- The activity source table supplies keyboard detail links, display names, date, sport, distance, preferred duration, chosen load, HR, pace/speed, elevation, power, and stored drift/decoupling. Detail links appear first for narrow screens; wide metric columns scroll inside the table.
+- Explorer retains all eleven catalog choices and defaults to average HR. One shared catalog definition preserves the legacy builder interface. Only selected charts in the active section are built. Explorer uses C1 calendar weeks, units, provenance, moving-preferred duration, explicit TSS/TRIMP choice, empty-week reindexing, and missingness. Incompatible pace and unavailable metrics have explanatory slots.
+- Plain integer curve/point events resolve against server-owned trace metadata with explicit activity IDs/full ISO Monday dates. Same-day and excluded points retain correct identity. Hovers include source identity and measurements. Reset zoom preserves reversed pace axes and handles secondary axes only when present, using existing Plotly update APIs.
+- NiceGUI tab storage, namespaced by database path, remembers filters, custom dates, section, presentation, and catalog selection across reload and shell/detail navigation while the application/tab session lives. New tabs receive defaults. Quick ranges follow today; custom dates stay fixed; invalid/stale selections fall back safely. Application-restart persistence is outside this session-state design.
+- The chart query uses existing activity_name/name/title columns when present and falls back to Activity ID; no schema migration or activity-data writes. Empty prepared frames carry an ID column for safe source rendering.
+
+### Acceptance evidence
+
+- Final suite: 76 passed without warnings: C2 pure/browser, C1 pure/browser, NiceGUI data/workspace, activity calendar-day, and track visuals.
+- Existing activity-grid browser/serialization checks: two passed using bundled Playwright Chromium with a test-only launcher override. System Chrome was unavailable to the unchanged default launcher; the override run emitted one pytest import-rewrite warning.
+- Browser exercised actual rendered overview/Explorer points, same-day IDs, weekly bars, keyboard detail links, custom/quick filters, reload/shell/detail navigation, isolated new tabs, missing detail IDs, missing-metric/empty contributors, Reset zoom, and 390px overflow checks. Final runs had no browser/runtime errors.
+- Four desktop/narrow Explorer and contributor-dialog screenshots inspected in reports/charts_c2/. git diff --check passed. Original C1 screenshots preserved.
+
+### Changed files and next scope
+
+C2 remains uncommitted on baseline e79bad7; the working tree was clean at start. New files: analytics/chart_explorer.py, tests/test_chart_explorer.py, tests/test_chart_explorer_browser.py, and four reports/charts_c2/ screenshots. Updated: analytics/chart_overview.py, db/queries.py, ui_nicegui/pages.py, this plan, roadmap, and backlog (source paths are under src/garmin_data_hub/).
+
+G1 is next: review actual usage, remaining allowance/credits, and choose the next authorized scope. Real-history field trial and live usage/credit values remain unavailable. C3/C4 and yearly scheduling stay deferred. No commit, push, deployment, or live schedule changes.

@@ -325,6 +325,97 @@ WHERE
   );
 
 -- =========================
+--  A5) EDITABLE SEASON PLANNING INTENT (DATA HUB-OWNED)
+-- =========================
+CREATE TABLE IF NOT EXISTS season_plan (
+  season_id TEXT PRIMARY KEY,
+  plan_id TEXT UNIQUE REFERENCES training_plan(plan_id) ON DELETE RESTRICT,
+  name TEXT NOT NULL CHECK (length(trim(name)) BETWEEN 1 AND 200),
+  start_date TEXT NOT NULL CHECK (length(start_date) = 10),
+  end_date TEXT NOT NULL CHECK (length(end_date) = 10 AND end_date >= start_date),
+  timezone TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','active','archived')),
+  input_schema_version TEXT NOT NULL CHECK (input_schema_version = 'season-input.v1'),
+  inputs_json TEXT NOT NULL,
+  input_version INTEGER NOT NULL DEFAULT 1 CHECK (input_version >= 1),
+  created_at_utc TEXT NOT NULL,
+  updated_at_utc TEXT NOT NULL,
+  CHECK (julianday(end_date) - julianday(start_date) BETWEEN 0 AND 365),
+  CHECK (status != 'active' OR plan_id IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS idx_season_plan_dates ON season_plan(status,start_date,end_date);
+CREATE TRIGGER IF NOT EXISTS trg_season_plan_identity_no_update
+BEFORE UPDATE OF plan_id ON season_plan
+WHEN OLD.plan_id IS NOT NULL AND NEW.plan_id IS NOT OLD.plan_id
+BEGIN SELECT RAISE(ABORT, 'season plan identity cannot be changed'); END;
+CREATE TRIGGER IF NOT EXISTS trg_season_plan_owned_no_delete
+BEFORE DELETE ON season_plan WHEN OLD.plan_id IS NOT NULL
+BEGIN SELECT RAISE(ABORT, 'archive linked seasons instead of deleting them'); END;
+
+CREATE TABLE IF NOT EXISTS season_event (
+  event_id TEXT PRIMARY KEY,
+  season_id TEXT NOT NULL REFERENCES season_plan(season_id) ON DELETE RESTRICT,
+  name TEXT NOT NULL CHECK (length(trim(name)) BETWEEN 1 AND 200),
+  event_date TEXT NOT NULL CHECK (length(event_date) = 10),
+  sport TEXT NOT NULL CHECK (sport = 'RUNNING'),
+  event_type TEXT NOT NULL CHECK (event_type IN ('road','trail')),
+  distance_code TEXT NOT NULL CHECK (distance_code IN ('5K','10K','10M','HM','20M','MAR','50K','50M','100K','100M')),
+  distance_metres INTEGER NOT NULL CHECK (distance_metres > 0),
+  priority TEXT NOT NULL CHECK (priority IN ('A','B','C')),
+  status TEXT NOT NULL CHECK (status IN ('planned','completed','skipped','cancelled')),
+  goal_intent TEXT NOT NULL CHECK (goal_intent IN ('COMPLETION','PERFORMANCE')),
+  target_seconds INTEGER CHECK (target_seconds IS NULL OR target_seconds > 0),
+  target_speed_mps TEXT,
+  terrain TEXT NOT NULL DEFAULT '',
+  course_notes TEXT NOT NULL DEFAULT '',
+  taper_days INTEGER CHECK (taper_days IS NULL OR taper_days BETWEEN 0 AND 28),
+  recovery_days INTEGER CHECK (recovery_days IS NULL OR recovery_days BETWEEN 0 AND 42),
+  created_at_utc TEXT NOT NULL,
+  updated_at_utc TEXT NOT NULL,
+  CHECK (target_seconds IS NULL OR target_speed_mps IS NULL)
+);
+CREATE INDEX IF NOT EXISTS idx_season_event_calendar ON season_event(season_id,event_date,event_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_season_event_active_date
+  ON season_event(season_id,event_date) WHERE status IN ('planned','completed');
+
+-- =========================
+--  A6) IMMUTABLE SEASON APPLICATION AUDIT (DATA HUB-OWNED)
+CREATE TABLE IF NOT EXISTS season_revision_application (
+  application_id TEXT PRIMARY KEY,
+  preview_id TEXT NOT NULL,
+  season_id TEXT NOT NULL REFERENCES season_plan(season_id) ON DELETE RESTRICT,
+  plan_id TEXT NOT NULL,
+  resulting_revision_id TEXT NOT NULL,
+  previous_revision_id TEXT,
+  input_version INTEGER NOT NULL CHECK (input_version > 0),
+  input_sha256 TEXT NOT NULL CHECK (length(input_sha256)=64),
+  candidate_sha256 TEXT NOT NULL CHECK (length(candidate_sha256)=64),
+  snapshot_json TEXT NOT NULL,
+  review_json TEXT NOT NULL,
+  generator_version TEXT NOT NULL,
+  policy_version TEXT NOT NULL,
+  local_today TEXT NOT NULL,
+  timezone TEXT NOT NULL,
+  range_start TEXT NOT NULL,
+  range_end TEXT NOT NULL CHECK (range_end >= range_start),
+  mode TEXT NOT NULL CHECK (mode = 'INITIAL_FULL'),
+  approved_by TEXT NOT NULL CHECK (length(trim(approved_by)) > 0),
+  applied_at_utc TEXT NOT NULL,
+  UNIQUE (season_id,preview_id),
+  FOREIGN KEY (plan_id,resulting_revision_id) REFERENCES plan_revision(plan_id,revision_id) ON DELETE RESTRICT,
+  FOREIGN KEY (plan_id,previous_revision_id) REFERENCES plan_revision(plan_id,revision_id) ON DELETE RESTRICT
+);
+CREATE TRIGGER IF NOT EXISTS trg_season_application_owner
+BEFORE INSERT ON season_revision_application
+WHEN NOT EXISTS (SELECT 1 FROM season_plan WHERE season_id=NEW.season_id AND plan_id=NEW.plan_id)
+BEGIN SELECT RAISE(ABORT, 'application revision must belong to its season'); END;
+CREATE TRIGGER IF NOT EXISTS trg_season_application_no_update
+BEFORE UPDATE ON season_revision_application
+BEGIN SELECT RAISE(ABORT, 'season applications are immutable'); END;
+CREATE TRIGGER IF NOT EXISTS trg_season_application_no_delete
+BEFORE DELETE ON season_revision_application
+BEGIN SELECT RAISE(ABORT, 'season applications are immutable'); END;
+
 --  B) DERIVED / CALCULATED METRICS
 -- =========================
 CREATE TABLE IF NOT EXISTS activity_metrics (

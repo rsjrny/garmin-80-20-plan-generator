@@ -58,7 +58,7 @@ def _database(tmp_path, name="legacy-conversion.db"):
     conn = sqlite3.connect(path)
     conn.execute("CREATE TABLE activity(activity_id INTEGER PRIMARY KEY)")
     apply_schema(conn, schema_sql_path())
-    assert CURRENT_SCHEMA_VERSION == 11
+    assert CURRENT_SCHEMA_VERSION == 13
     conn.execute(
         """
         INSERT INTO planned_workout(
@@ -610,7 +610,7 @@ def test_v11_objects_and_version_record_roll_back_together(tmp_path, monkeypatch
     conn.execute("DROP TABLE legacy_plan_conversion_source_workout")
     conn.execute("DROP TABLE legacy_plan_conversion")
     conn.execute("DROP INDEX uq_planned_workout_revision_projection")
-    conn.execute("DELETE FROM schema_migrations WHERE version=11")
+    conn.execute("DELETE FROM schema_migrations WHERE version>=11")
     conn.commit()
     original = migrate._migration_11_add_legacy_plan_conversion
 

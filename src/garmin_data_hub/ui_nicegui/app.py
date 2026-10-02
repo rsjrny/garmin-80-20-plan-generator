@@ -149,6 +149,9 @@ def create_ui(db_path: Path, *, sandboxed: bool) -> None:
     from nicegui import run, ui
 
     register_core_pages(db_path, sandboxed=sandboxed)
+    from garmin_data_hub.ui_nicegui.seasons import register_seasons_page
+
+    register_seasons_page(db_path, sandboxed=sandboxed)
     register_ask_coach_page(db_path, sandboxed=sandboxed)
 
     @ui.page("/coach")

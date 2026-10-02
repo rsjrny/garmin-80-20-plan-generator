@@ -11,7 +11,7 @@ from garmin_data_hub.db.sqlite import connect_sqlite
 from garmin_data_hub.services.thresholds import RUNNING_SPORTS
 
 from .activity_workout_match import MatchPersistenceError, load_confirmed_match
-from .domain import DomainError, MethodologyId, Metric
+from .domain import DomainError, MethodologyId, Metric, Sport
 from .fitzgerald_compliance import evaluate as evaluate_fitzgerald
 from .maffetone_compliance import evaluate as evaluate_maffetone
 from .maffetone_compliance import evaluate_test_observation
@@ -54,8 +54,6 @@ def evaluate_confirmed_match(
         conn.close()
     if activity is None:
         raise MatchPersistenceError("matched upstream activity is missing")
-    if activity.activity_type is None or activity.activity_type.lower() not in RUNNING_SPORTS:
-        raise DomainError("named running methodology cannot evaluate a non-running activity")
 
     revision = load_revision(path, match.revision_id)
     if revision is None:
@@ -66,6 +64,14 @@ def evaluate_confirmed_match(
     )
     if workout is None:
         raise MatchPersistenceError("matched immutable workout is missing")
+    if workout.sport is not Sport.RUNNING:
+        return {"activity_workout_match_id":match.activity_workout_match_id,
+                "revision_id":match.revision_id,"workout_id":match.workout_id,
+                "activity_id":match.activity_id,"sport":workout.sport.value,
+                "status":"NOT_APPLICABLE","reason":"AUXILIARY_SESSION",
+                "excluded_from_running_distribution":True}
+    if activity.activity_type is None or activity.activity_type.lower() not in RUNNING_SPORTS:
+        raise DomainError("named running methodology cannot evaluate a non-running activity")
     prescriptions = [segment.prescription for segment in workout.segments if segment.prescription is not None]
     if not prescriptions:
         raise DomainError("matched workout has no runtime prescription")

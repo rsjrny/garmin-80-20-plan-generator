@@ -18,6 +18,9 @@ class _StableStringEnum(str, Enum):
 
 class Sport(_StableStringEnum):
     RUNNING = "RUNNING"
+    STRENGTH = "STRENGTH"
+    MOBILITY = "MOBILITY"
+    REST = "REST"
 
 
 class GoalIntent(_StableStringEnum):
@@ -108,6 +111,7 @@ class SegmentKind(_StableStringEnum):
     COOLDOWN = "COOLDOWN"
     FREE_RUN = "FREE_RUN"
     EVENT = "EVENT"
+    NON_TRAINING = "NON_TRAINING"
 
 
 class LoadMode(_StableStringEnum):

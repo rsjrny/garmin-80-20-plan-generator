@@ -45,6 +45,8 @@ class GoalSnapshot:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "sport", parse_enum(Sport, self.sport, "sport"))
+        if self.sport is not Sport.RUNNING:
+            raise DomainError("event goals support running only; auxiliary sessions are separate")
         object.__setattr__(
             self, "goal_intent", parse_enum(GoalIntent, self.goal_intent, "goal_intent")
         )
