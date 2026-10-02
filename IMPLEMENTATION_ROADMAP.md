@@ -1,7 +1,7 @@
 # Training Planner Implementation Roadmap
 
 Created: 2026-10-02
-Status: T1, T2, T3, C1, C2, Y1, Y2 and Y3 locally verified; G1 scope choice recorded; Y0 discovery complete.
+Status: T1, T2, T3, T4, C1, C2, Y1, Y2 and Y3 locally verified; G1 scope choice recorded; Y0 discovery complete.
 
 ## Objective and source plans
 
@@ -55,6 +55,7 @@ estimates. Do not equate a goal token counter directly with billed total tokens.
 | T1 | Timestamped route has smoothed pace colors, matching unit-aware legend, start/finish markers, segment details, and usable fallbacks; paused/noisy/sparse/invalid tracks tested; long route and narrow layout verified |
 | T2 | Available metrics recolor existing segments; unavailable metrics explained; legends and units correct; partial sensor data tested |
 | T3 | Unit-aware exact GPS splits, explicit manual/source lap provenance, quality/partial labels, fastest eligibility, accessible selection/markers, unchanged T2 geometry, long-track and desktop/narrow evidence |
+| T4 | Available aligned metric charts, synchronized original-sample map/chart cursors, exact lap/range emphasis, unit-aware time/distance switching, keyboard controls, quality gaps, bounded long-track drawing and desktop/narrow evidence |
 | C1 | At most four default charts; quick/custom date ranges; sport-appropriate analysis; comparison summary; empty/partial weeks; missingness and coverage visible; unit/date tests and responsive verification pass |
 | C2 | Points open the correct activity; weekly bars show contributing activities; Explorer retains the catalog; state survives navigation as designed; interactions verified |
 | G1 | Actual usage recorded and next authorized goal scope chosen; do not infer remaining credits from planning estimates |
@@ -77,7 +78,7 @@ Choose these only after reviewing the initial results and actual usage.
 | Phase | Value | Model | Speed | Reasoning | Planning allowance | Session |
 | --- | --- | --- | --- | --- | ---: | --- |
 | Track 3 (locally verified 2026-10-02) | Laps/splits and route selection | GPT-6.1 Sol | Standard | Medium | 90k | Fresh chat |
-| Track 4 | Linked charts and map/chart cursors | GPT-6.1 Sol | Standard | High | 130k | Fresh chat; reuse shared chart work |
+| Track 4 (locally verified 2026-10-02) | Linked charts and map/chart cursors | GPT-6.1 Sol | Standard | High | 130k | Fresh chat; reuse shared chart work |
 | Charts 3 | Planned versus completed duration/load and matching | GPT-6.1 Sol | Standard | High | 170k | Fresh chat; use canonical matching |
 | Charts 4 | Qualified performance, cadence, power, and durability analytics | GPT-6.1 Sol | Standard | High | 200k | Fresh chat; split into individual metrics if useful |
 | Yearly 4 | Conflict/peak refinement, event tuning, optional rollback | GPT-6.1 Sol | Standard | High | 110k | Fresh chat; scope rollback separately |
@@ -115,6 +116,7 @@ Record available values, leaving unknown fields blank:
 | T1 | Locally verified | 2026-10-02 | Client settings unchanged | | | 10 final focused tests passed; desktop/narrow and 20k-point route verified | Uncommitted; handoff below |
 | T2 | Locally verified | 2026-10-02 | Client settings unchanged | | | 14 focused tests passed; metric switches, partial data, desktop/narrow verified | Uncommitted; handoff below |
 | T3 | Locally verified | 2026-10-02 | Client settings unchanged | | | 53 distinct track/shared/browser checks; 20k-point route; desktop/390px inspected | Uncommitted on 1fca677; handoff below |
+| T4 | Locally verified | 2026-10-02 | Client settings unchanged | | | 62 distinct Track/shared/browser checks; 20k-point route; desktop/390px inspected | Uncommitted on a4edfc7; handoff below |
 | C1 | Locally verified | 2026-10-02 | Client settings unchanged | | | 60 cross-feature tests passed; 49 final Charts/shared checks; desktop/narrow verified | Uncommitted; handoff below |
 | C2 | Locally verified | 2026-10-02 | Client settings unchanged | | | 76 Charts/shared checks passed; two activity checks passed with bundled Chromium; desktop/narrow interactions verified | Uncommitted on e79bad7; handoff below |
 | G1 | Complete; user selected Y0 only | 2026-10-02 | Client settings unchanged | Included allowance: 34% five-hour / 40% weekly at prior snapshot; user dashboard | Historical 82 / 82 at prior snapshot | Existing evidence reviewed; scope chosen 2026-10-02 | G1 review below; Y0 handoff below |
@@ -538,3 +540,43 @@ No live DB/schedule changes, commit, push, deployment or packaging rebuild. Live
 tiles and real imported-lap field trial remain unverified. Client settings were
 unchanged and phase token/credit attribution is unavailable. Stop at T3; Track 4
 linked charts needs separate authorization.
+
+## T4 handoff — 2026-10-02
+
+User authorized “do t4 with t3 handoff”. T4 / Track Phase 4 linked analytics is
+implemented and locally verified. Starting baseline was a4edfc7 (T3 track updates),
+with a clean tree; prior handoff uncommitted statements are historical.
+
+Activities Track now shows aligned available pace, HR, elevation and cadence panels,
+shared original-sample map/chart cursors, pin/clear and keyboard position inspection,
+exact lap/split shading and numeric/drag range selection. Elapsed-minute and GPS
+km/mi axes preserve the interval across switches. Readings, quality gaps and range
+summaries reuse T1–T3 semantics; source elapsed endpoints are never inferred from
+timer totals. Per-activity page-session state retains axis and selected bounds.
+
+Pure analytics/track_charts.py owns bounded extrema sampling, figures and exact
+range conversion. ui_nicegui/track_charts.py and track_charts.js own controls and
+browser-local cursor synchronization/disposal. track_intervals.py shares custom
+range summaries; track_splits.py retains lap timing bounds; track_visuals.py adds
+raw edge identities without changing base geometry. pages.py integrates them.
+pyproject.toml and both GUI packaging scripts include the client asset. README,
+source plan, two new test modules and reports/track_t4 evidence are updated.
+
+Final gate: **62 passed in 44.98s**, including five Track browser workflows and
+existing activity/data checks. A 20,000-point track keeps original cursor identities
+while drawing at most 2,400 values plus separators per metric. Desktop/390px
+screenshots and chart detail crops inspected; no page-width overflow. Whitespace
+check passed; both packaging scripts parsed with zero errors. Earlier Track
+screenshot bytes restored. Exact reproduction and limitations are in
+reports/track_t4/README.md and the source-plan T4 handoff.
+
+Live external tiles, real imported-activity field trial, dark theme, screen-reader
+software and packaged executable remain unverified. Cursor readings are original
+edge-end samples, without invented sensor interpolation. Drawing may omit very
+short disconnected runs while retaining gaps among displayed runs. Source totals
+may differ from calculated GPS measurements.
+
+Changes remain uncommitted on a4edfc7. No live database/schedule write, migration,
+push, deployment or packaging rebuild. Client settings unchanged; measured phase
+tokens and account credits unavailable. Stop at T4; other deferred Track/Charts/
+Yearly work requires separate authorization.

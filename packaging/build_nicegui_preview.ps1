@@ -49,6 +49,7 @@ $arguments = @(
     "--collect-all", "garmin_mcp",
     "--hidden-import", "webview.platforms.edgechromium",
     "--add-data", ((Join-Path $ProjectRoot "src\garmin_data_hub\db\schema.sql") + ";garmin_data_hub/db"),
+    "--add-data", ((Join-Path $ProjectRoot "src\garmin_data_hub\ui_nicegui\track_charts.js") + ";garmin_data_hub/ui_nicegui"),
     $Launcher
 )
 

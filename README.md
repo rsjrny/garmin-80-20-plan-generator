@@ -157,7 +157,7 @@ The primary desktop interface is implemented under `src/garmin_data_hub/ui_niceg
 
 - **Dashboard** - Garmin history, threshold, metrics-health, and upcoming-plan overview
 - **Garmin Sync** - non-blocking sync, cancellation, logs, and derived-metric repair
-- **Activities** - filters, splits, local GPS-track inspection, and complete JSON export
+- **Activities** - filters, splits, local GPS-track inspection with linked measurement charts and interval selection, and complete JSON export
 - **Charts** - volume, heart-rate, speed, distribution, and training-load trends
 - **Plan** - offline baseline/workbook generation, event settings, HR thresholds, and active calendar review
 - **Seasons** - event priorities, availability, yearly preview, protected regeneration, reviewed apply, revision history, and explicit plan linking

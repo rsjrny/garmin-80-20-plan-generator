@@ -21,6 +21,7 @@ from garmin_data_hub.analytics.chart_explorer import CATALOG, chart_state, contr
 from garmin_data_hub.analytics.chart_overview import QUICK_RANGES, comparison_range, period_range, prepare_overview, overview_figures
 from garmin_data_hub.analytics.track_visuals import NEUTRAL, prepare_overlays, process_track, route_features
 from garmin_data_hub.ui_nicegui.track_intervals import render_track_intervals
+from garmin_data_hub.ui_nicegui.track_charts import render_track_charts
 from garmin_data_hub import __version__
 from garmin_data_hub.analytics.sleep_recovery import analyze_sleep_recovery
 from garmin_data_hub.mcp_sidecar_client import describe_readonly_tools, call_readonly_tools
@@ -1581,7 +1582,8 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                                 finish_marker.run_method("bindTooltip", "Finish", {"permanent": True, "direction": "right"})
                                 recolor_route()
                                 await fit_route()
-                                await initialize_intervals()
+                                await interval_controls.initialize()
+                                await chart_controls.initialize()
 
                             ui.timer(0.05, initialize_route, once=True)
                             ui.button("Fit route", on_click=fit_route, icon="fit_screen")
@@ -1591,9 +1593,13 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                                 "GPS distance excludes jumps and gaps. Invalid GPS/time edges omitted. "
                                 "Map tiles require an internet connection."
                             ).classes("text-xs text-grey-7")
-                            initialize_intervals = render_track_intervals(
+                            chart_controls = render_track_charts(
+                                track, route_map, state, activity_key, activity.get("activity_type", "running"),
+                                on_range=lambda item, bounds: interval_controls.select_range(item, bounds),
+                            )
+                            interval_controls = render_track_intervals(
                                 track, detail.get("laps", []), route_map, state, activity_key,
-                                activity.get("activity_type", "running"),
+                                activity.get("activity_type", "running"), on_select=chart_controls.select_interval,
                             )
                     with ui.tab_panel(raw_tab):
                         data_grid([activity], height="24rem")

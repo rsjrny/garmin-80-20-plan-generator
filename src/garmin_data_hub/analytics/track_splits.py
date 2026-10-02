@@ -181,6 +181,7 @@ def stored_laps(track, rows):
                          cadence=sensor_value(row, "cadence_spm"), hr_coverage=None, cadence_coverage=None,
                          elevation_change_m=(number(row.get("elevation_gain")) - number(row.get("elevation_loss")))
                          if number(row.get("elevation_gain")) is not None and number(row.get("elevation_loss")) is not None else None,
+                         start=start if aligned else None, end=end if aligned else None, axis="time",
                          partial=False, fastest=False, trustworthy=summary["trustworthy"],
                          note=("Source lap totals; route aligned by elapsed timestamps" if summary["trustworthy"] else
                                "Source lap totals; route timing unavailable or incomplete") + ("; trigger unknown" if not trigger else "")))

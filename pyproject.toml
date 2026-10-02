@@ -39,7 +39,7 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-garmin_data_hub = ["db/schema.sql"]
+garmin_data_hub = ["db/schema.sql", "ui_nicegui/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

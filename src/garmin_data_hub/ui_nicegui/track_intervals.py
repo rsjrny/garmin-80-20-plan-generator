@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from html import escape
 import json
+from types import SimpleNamespace
 
 from nicegui import ui
 
@@ -19,10 +20,17 @@ def _duration(value):
     return f"{hours}:{minutes:02}:{seconds:02}" if hours else f"{minutes}:{seconds:02}"
 
 
-def render_track_intervals(track, lap_rows, route_map, state, activity_key, sport):
+def render_track_intervals(track, lap_rows, route_map, state, activity_key, sport, on_select=None):
     splits = distance_splits(track)
     laps = stored_laps(track, lap_rows)
     intervals = splits + laps
+    ranges = state.setdefault("track_ranges", {})
+    if activity_key in ranges:
+        from garmin_data_hub.analytics.track_charts import chart_model, range_interval
+        try:
+            intervals.append(range_interval(track, chart_model(track, sport), **ranges[activity_key]))
+        except (ValueError, TypeError):
+            ranges.pop(activity_key, None)
     by_id = {item["id"]: item for item in intervals}
     selections = state.setdefault("track_intervals", {})
     chosen = {"id": selections.get(activity_key, "none")}
@@ -75,6 +83,8 @@ def render_track_intervals(track, lap_rows, route_map, state, activity_key, spor
         selections[activity_key] = event.value
         selected_details.refresh()
         await emphasize(zoom=True)
+        if on_select:
+            on_select(by_id.get(chosen["id"]))
 
     @ui.refreshable
     def selected_details():
@@ -131,6 +141,22 @@ def render_track_intervals(track, lap_rows, route_map, state, activity_key, spor
     if marker_items:
         ui.label("Small blue circles mark full distance splits; larger purple circles mark stored lap starts. Select with the controls or tap a marker.").classes("text-xs text-grey-7")
 
+    def select_range(item, display_range):
+        by_id["range"] = item
+        ranges[activity_key] = display_range
+        options["range"] = item["label"]
+        selector.options = options
+        selector.update()
+        measurements.rows = [row(value) for value in by_id.values()]
+        measurements.update()
+        if chosen["id"] == "range":
+            selected_details.refresh()
+            ui.timer(.01, lambda: emphasize(zoom=True), once=True)
+            if on_select:
+                on_select(item)
+        else:
+            selector.set_value("range")
+
     async def initialize():
         await route_map.initialized()
         # Quasar puts component attributes on a wrapper; name the actual table.
@@ -139,5 +165,7 @@ def render_track_intervals(track, lap_rows, route_map, state, activity_key, spor
             marker.run_method("bindTooltip", escape(item["label"]), {"direction": "top"})
             marker.run_method(":on", "'click'", f"() => getElement({route_map.id}).$emit({json.dumps(event_name)}, {json.dumps(item['id'])})")
         await emphasize()
+        if on_select:
+            on_select(by_id.get(chosen["id"]))
 
-    return initialize
+    return SimpleNamespace(initialize=initialize, select_range=select_range)

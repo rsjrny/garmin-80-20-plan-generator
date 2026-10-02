@@ -1,6 +1,6 @@
 # Activity Track Visuals Plan
 
-Status: T1, T2 and T3 implemented and locally verified
+Status: T1, T2, T3 and T4 implemented and locally verified
 
 ## Objective
 
@@ -378,3 +378,22 @@ The first slice is complete when those questions are answered clearly for pace w
 - Last stored laps with no reliable elapsed endpoint retain source details but cannot highlight a route. Partial alignment is explicitly explained. Live tiles, real imported-lap field trial, dark theme and packaged executable remain unverified. GPS/source distance and timer/elapsed totals can differ; no fabricated alignment.
 - Source changes: new analytics/track_splits.py and ui_nicegui/track_intervals.py; track_visuals.py endpoint sensor retention; db/queries.py and ui_nicegui/data.py lap reads; Activities Track wiring; tests/test_track_splits.py and T3 browser workflow. Roadmap/source-plan and reports/track_t3 evidence updated. T1/T2 screenshots restored.
 - Work remains uncommitted on 1fca677. No live database/schedule write, push, deployment or packaging rebuild. Token/credit attribution unavailable; client settings unchanged. T3 gate complete. Track 4 linked analytics requires separate authorization.
+
+## T4 discovery and decisions — 2026-10-02
+
+- User authorized T4 using the T3 handoff. Clean current baseline: a4edfc7 (T3 track updates); earlier uncommitted handoff statements are historical. Scope is Phase 4 linked analytics only.
+- Reuse NiceGUI's installed Plotly and Leaflet components, validated track edges/overlays, and T3 interval summaries. No ingestion, migration or schedule writes.
+- One vertically aligned Plotly figure shows available pace, HR, elevation and cadence; elapsed time and validated GPS distance share unit-aware axes. Missing readings, pauses and topology/timing breaks remain gaps. Pace remains T1 smoothed pace.
+- Chart drawing is bounded with per-bucket extrema sampling; original edges remain available to map cursors. Cursor synchronization runs in the browser, avoiding per-hover server traffic. Hover/click and keyboard position controls share a textual measurements readout.
+- T3 split/lap selection shades the same exact interval on charts. Explicit numeric or chart-drag ranges reuse clipped T3 route geometry and quality-aware measurements; unknown source lap timing stays unaligned. Single-activity comparison beyond the selected interval is deferred to keep the display clear.
+- Preserve existing route layer IDs/colors, page-session selections, prior screenshot evidence and external tile fallbacks. Verify pure numerical/quality cases plus actual desktop/narrow browser interaction and a 20,000-point route.
+
+## T4 verification and handoff — 2026-10-02
+
+- Implemented aligned available-metric Plotly panels, elapsed-minute/GPS-distance switch, m:ss pace ticks and unit-aware sensor labels. Missing sensors, pauses and quality breaks remain gaps; zero-distance timed sensors use elapsed time only. Each metric draws at most 2,400 original sampled values plus separators, retaining bucket extrema without bridging disjoint runs. Original edges remain available for map cursors.
+- Browser-local hover/tap, a shared vertical cursor, map marker, pin/clear, keyboard position inspection and a textual readout synchronize the same original edge-end sample. Off-screen pinned positions are revealed without animation. Hover is not a live announcement; keyboard inspection announces once. Axis changes dispose controllers in sequence, fixing a discovered NiceGUI asynchronous ordering race.
+- T3 split/lap selection shades exact chart intervals; imported lap alignment uses explicit elapsed endpoints, not timer totals. Unaligned laps retain an explanation. Numeric bounds and actual horizontal chart drags share T3 clipped geometry/quality-aware summaries and can be replaced/cleared. Selection and axis persist per activity within the existing page session; custom ranges store bounds only. Selection fields reflect the active interval.
+- Final focused gate: **62 passed in 44.98s**, including five Track browser workflows, existing data/activity checks, and the 20,000-point route. Desktop/390px full-page screenshots and readable chart crops inspected; no page-width overflow. git diff --check passed. Two GUI packaging scripts parsed with zero errors; JavaScript is included in wheel and GUI packaging data.
+- New files: analytics/track_charts.py, ui_nicegui/track_charts.py and track_charts.js, tests/test_track_charts.py and test_track_charts_browser.py. Updated Track controls, raw route edge identities, stored-lap timing bounds, Activities integration, pyproject.toml, both GUI packaging scripts, README and roadmap. Evidence/reproduction/limitations: reports/track_t4/README.md. Prior T1/T2/T3 screenshots restored after regression runs.
+- Cursor readings snap to edge-end samples; no sensor interpolation or cross-activity comparison. Display sampling can omit short disconnected runs while preserving separation among displayed runs. Live tiles, real imported-activity field trial, dark theme, screen-reader software and packaged executable remain unverified. No dark-theme control found.
+- Work remains uncommitted on a4edfc7. No live database/schedule write, migration, push, deployment or packaging rebuild. Token/credit attribution unavailable; client settings unchanged. T4 gate complete; remaining deferred phases need separate authorization.

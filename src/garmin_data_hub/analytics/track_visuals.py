@@ -204,6 +204,7 @@ def route_features(track):
         else:
             groups.append([s])
     features = []
+    edge_indices = {id(s): i for i, s in enumerate(track["segments"])}
     for group in groups:
         first, last = group[0], group[-1]
         text = [f"Section: {last['status']}"]
@@ -220,5 +221,5 @@ def route_features(track):
         coords = [first["start"]]+[s["end"] for s in group]
         overlays = {key: dict(color=first["overlays"][key]["color"], missing=first["overlays"][key]["value"] is None) for key in METRIC_SPECS}
         features.append(dict(type="Feature", geometry=dict(type="LineString", coordinates=[[c[1],c[0]] for c in coords]),
-                             properties=dict(color=first["color"], detail="<br>".join(text), overlays=overlays)))
+                             properties=dict(edge_start=edge_indices[id(first)], edge_end=edge_indices[id(last)], color=first["color"], detail="<br>".join(text), overlays=overlays)))
     return dict(type="FeatureCollection", features=features)
