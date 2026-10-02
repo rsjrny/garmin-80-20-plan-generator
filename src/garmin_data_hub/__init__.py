@@ -1,5 +1,5 @@
 """Garmin Data Hub package metadata."""
 
-__version__ = "1.3.2"
+__version__ = "2.0.1"
 
 __all__ = ["__version__"]
