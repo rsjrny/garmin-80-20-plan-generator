@@ -15,6 +15,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+from garmin_data_hub.analytics.chart_overview import QUICK_RANGES, comparison_range, period_range, prepare_overview, overview_figures
+from garmin_data_hub.analytics.track_visuals import NEUTRAL, prepare_overlays, process_track, route_features
 from garmin_data_hub import __version__
 from garmin_data_hub.analytics.sleep_recovery import analyze_sleep_recovery
 from garmin_data_hub.mcp_sidecar_client import describe_readonly_tools, call_readonly_tools
@@ -1494,58 +1496,104 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                             ui.label("Downhill").classes("text-xl font-semibold mt-5")
                             data_grid(downhill_rows, height="16rem")
                     with ui.tab_panel(track_tab):
-                        points = pd.DataFrame(detail["trackpoints"])
-                        if not points.empty and {"lon_deg", "lat_deg"}.issubset(points.columns):
-                            points = points.dropna(subset=["lon_deg", "lat_deg"])
-                            if points.empty:
-                                ui.label("No valid GPS coordinates are stored for this activity.")
-                            else:
-                                # Bound the browser payload while retaining the
-                                # complete track in the downloadable JSON.
-                                step = max(1, len(points) // 5000)
-                                mapped = points.iloc[::step]
-                                if mapped.index[-1] != points.index[-1]:
-                                    mapped = pd.concat([mapped, points.iloc[[-1]]])
-                                coordinates = [
-                                    [float(row.lat_deg), float(row.lon_deg)]
-                                    for row in mapped.itertuples()
-                                ]
-                                latitudes = [point[0] for point in coordinates]
-                                longitudes = [point[1] for point in coordinates]
-                                center = (
-                                    (min(latitudes) + max(latitudes)) / 2,
-                                    (min(longitudes) + max(longitudes)) / 2,
-                                )
-                                route_map = ui.leaflet(center=center, zoom=13).classes(
-                                    "w-full h-[34rem]"
-                                )
-                                _use_track_map_tiles(route_map)
-                                route_map.generic_layer(
-                                    name="polyline",
-                                    args=[
-                                        coordinates,
-                                        {"color": "#2563eb", "weight": 4, "opacity": 0.9},
-                                    ],
-                                )
-                                route_map.marker(
-                                    latlng=tuple(coordinates[0]),
-                                    options={"title": "Start"},
-                                )
-                                route_map.marker(
-                                    latlng=tuple(coordinates[-1]),
-                                    options={"title": "Finish"},
-                                )
-
-                                async def fit_route() -> None:
-                                    await _fit_leaflet_route(route_map, coordinates)
-
-                                ui.timer(0.05, fit_route, once=True)
-                                ui.label(
-                                    f"Route drawn from {len(points):,} stored GPS points. "
-                                    "Map tiles require an internet connection."
-                                ).classes("text-xs text-grey-7")
+                        records = detail["trackpoints"]
+                        try:
+                            track = process_track(records, activity.get("activity_type", "running"), unit_system)
+                        except (ValueError, TypeError, ArithmeticError):
+                            track = process_track([{**p, "timestamp_utc": None} for p in records], unit_system=unit_system)
+                            ui.label("Pace processing unavailable; showing the GPS route.")
+                        coordinates = [c for path in track["paths"] for c in path]
+                        if not coordinates:
+                            ui.label("No valid GPS trackpoints are stored for this activity.")
                         else:
-                            ui.label("No GPS trackpoints are stored for this activity.")
+                            metrics = prepare_overlays(track, activity.get("activity_type", "running"))
+                            available = {key: config["label"] for key, config in metrics.items() if config["available"]}
+                            selections = state.setdefault("track_metrics", {})
+                            activity_key = state["selected_id"]
+                            selected = selections.get(activity_key, "pace")
+                            if selected not in available:
+                                selected = next(iter(available), "pace")
+                            selection = {"metric": selected}
+
+                            @ui.refreshable
+                            def metric_legend() -> None:
+                                config = metrics[selection["metric"]]
+                                if config["available"]:
+                                    heading = "Smoothed pace" if selection["metric"] == "pace" else config["label"]
+                                    ui.label(f"{heading} ({config['unit']}) · {config['direction']}").classes("font-semibold")
+                                    with ui.row().classes("w-full gap-3 flex-wrap"):
+                                        for color, label in zip(config["colors"], config["labels"]):
+                                            with ui.row().classes("items-center gap-1"):
+                                                ui.element("span").style(f"background:{color};width:20px;height:8px;border:1px solid #555")
+                                                ui.label(label).classes("text-xs")
+                                        with ui.row().classes("items-center gap-1"):
+                                            ui.element("span").style(f"background:{NEUTRAL};width:20px;height:8px")
+                                            ui.label("Missing / paused / gap" if selection["metric"] != "pace" else "Stopped / paused / missing time / gap").classes("text-xs")
+                                    ui.label(f"Activity-relative bands · {config['count']:,} of {config['total']:,} route edges have usable {config['label'].lower()} data.").classes("text-xs text-grey-7")
+                                else:
+                                    ui.label("Pace coloring unavailable: insufficient timestamped moving GPS data.")
+
+                            def change_metric(event: Any) -> None:
+                                if event.value not in available:
+                                    return
+                                selection["metric"] = event.value
+                                selections[activity_key] = event.value
+                                metric_legend.refresh()
+                                recolor_route()
+
+                            ui.select(available, value=selected if available else None, label="Route metric", on_change=change_metric).classes("w-full max-w-xs").set_enabled(bool(available))
+                            missing = [config["label"] for config in metrics.values() if not config["available"]]
+                            if missing:
+                                ui.label("Unavailable: " + ", ".join(missing) + ". No usable measurements on this route.").classes("text-xs text-grey-7")
+                            metric_legend()
+                            route_map = ui.leaflet(center=tuple(coordinates[len(coordinates)//2]), zoom=13, options={"preferCanvas": True}).classes("w-full h-[34rem]")
+                            _use_track_map_tiles(route_map)
+                            features = route_features(track)
+                            layer = None
+                            if features["features"]:
+                                layer = route_map.generic_layer(name="geoJSON", args=[features])
+                            else:
+                                for path in track["paths"]:
+                                    route_map.generic_layer(name="polyline", args=[path, {"color": NEUTRAL, "weight": 4}])
+                            start_marker = route_map.marker(latlng=tuple(coordinates[0]), options={"title": "Start"})
+                            finish_marker = route_map.marker(latlng=tuple(coordinates[-1]), options={"title": "Finish"})
+
+                            async def fit_route() -> None:
+                                await _fit_leaflet_route(route_map, coordinates)
+
+                            def recolor_route() -> None:
+                                if layer is None or not route_map.is_initialized:
+                                    return
+                                metric_json = json.dumps(selection["metric"])
+                                layer.run_method(":eachLayer", """layer => {
+                                    const overlay = layer.feature.properties.overlays[METRIC];
+                                    layer.setStyle({color:overlay.color,weight:layer.isPopupOpen() ? 9 : 5,opacity:0.95});
+                                    const detail = layer.feature.properties.detail + (overlay.missing ? '<br>Selected metric: unavailable for this section' : '');
+                                    if (layer.getTooltip()) layer.setTooltipContent(detail);
+                                    else layer.bindTooltip(detail, {sticky:true, direction:'top'});
+                                    if (layer.getPopup()) layer.setPopupContent(detail);
+                                    else {
+                                        layer.bindPopup(detail, {maxWidth:200});
+                                        layer.on('popupopen', () => layer.setStyle({weight:9}));
+                                        layer.on('popupclose', () => layer.setStyle({weight:5}));
+                                    }
+                                }""".replace("METRIC", metric_json))
+
+                            async def initialize_route() -> None:
+                                await route_map.initialized()
+                                start_marker.run_method("bindTooltip", "Start", {"permanent": True, "direction": "left"})
+                                finish_marker.run_method("bindTooltip", "Finish", {"permanent": True, "direction": "right"})
+                                recolor_route()
+                                await fit_route()
+
+                            ui.timer(0.05, initialize_route, once=True)
+                            ui.button("Fit route", on_click=fit_route, icon="fit_screen")
+                            ui.label(
+                                f"Route from {len(records):,} stored points; {len(features['features']):,} display sections. "
+                                "Hover or tap a section for its time range and median measurements. "
+                                "GPS distance excludes jumps and gaps. Invalid GPS/time edges omitted. "
+                                "Map tiles require an internet connection."
+                            ).classes("text-xs text-grey-7")
                     with ui.tab_panel(raw_tab):
                         data_grid([activity], height="24rem")
 
@@ -1572,58 +1620,130 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
     @ui.page("/charts")
     def charts_page() -> None:
         render_shell("Charts", db_path, sandboxed=sandboxed)
+        preferences = interface_settings(db_path)
+        unit_system = preferences["unit_system"]
+        velocity_display = preferences["activity_velocity_display"]
+        today = date.today()
+        initial_start, initial_end = period_range("12 weeks", today)
+        cache: dict[str, Any] = {"key": None, "raw": None, "updating": False}
         with ui.column().classes("gdh-page"):
-            page_heading("Training Charts", "Interactive volume, intensity, heart-rate, pace, and load views.")
-            preferences = interface_settings(db_path)
-            unit_system = preferences["unit_system"]
-            unit = distance_unit(unit_system)
-            velocity_display = preferences["activity_velocity_display"]
-            sports = activity_sports(db_path)
+            page_heading("Training Charts", "Training volume, load, intensity, and comparable performance.")
             with ui.card().classes("gdh-card w-full"):
-                with ui.row().classes("items-end gap-3 flex-wrap"):
-                    start = ui.input("Start date", value=(date.today() - timedelta(days=preferences["chart_lookback_days"])).isoformat()).props("outlined type=date").classes("w-48")
-                    selected_sports = ui.select(sports, value=[], multiple=True, label="Sports (blank means all)").props("outlined use-chips").classes("w-96")
-                    selected_charts = ui.select(
-                        [label for _, label in CHART_OPTIONS],
-                        value=[label for _, label in CHART_OPTIONS],
-                        multiple=True,
-                        label="Charts to show",
-                    ).props("outlined use-chips").classes("min-w-[22rem] flex-1")
-                    draw_button = ui.button("Update charts", icon="monitoring")
+                with ui.row().classes("w-full items-end gap-3 flex-wrap"):
+                    quick = ui.select(list(QUICK_RANGES), value="12 weeks", label="Date range").props("outlined").classes("w-full sm:w-48")
+                    start = ui.input("Start date", value=initial_start.isoformat()).props("outlined type=date").classes("w-full sm:w-48")
+                    end = ui.input("End date", value=initial_end.isoformat()).props("outlined type=date").classes("w-full sm:w-48")
+                    sport = ui.select(["All sports", *activity_sports(db_path)], value="All sports", label="Sport").props("outlined").classes("w-full sm:w-56")
+                with ui.row().classes("w-full items-end gap-3 flex-wrap"):
+                    load = ui.select({"tss": "TSS", "trimp": "TRIMP"}, value="tss", label="Load source").props("outlined").classes("w-full sm:w-48")
+                    volume = ui.select(["Time"], value="Time", label="Volume metric").props("outlined").classes("w-full sm:w-48")
+                    intensity = ui.select(["Hours", "Percent"], value="Hours", label="Intensity display").props("outlined").classes("w-full sm:w-48")
+                    ui.button("Refresh data", on_click=lambda: refresh_data(), icon="refresh")
 
             @ui.refreshable
-            def render_charts() -> None:
-                selected_chart_ids = _chart_ids_from_labels(selected_charts.value)
-                if not selected_chart_ids:
-                    ui.label("Select one or more charts to display.").classes("text-grey-7")
+            def render_overview() -> None:
+                try:
+                    first, last = date.fromisoformat(str(start.value)), date.fromisoformat(str(end.value))
+                    previous_start, _ = comparison_range(first,last)
+                    if last > today:
+                        raise ValueError("End date cannot be in the future.")
+                    key = (previous_start.isoformat(),last.isoformat(),sport.value)
+                    if cache["key"] != key:
+                        cache["raw"] = chart_dataframe(db_path, start_date=key[0], end_date=key[1], sports=None if sport.value == "All sports" else (str(sport.value),))
+                        cache["key"] = key
+                    prepared = prepare_overview(cache["raw"], first,last,str(sport.value),unit_system,str(load.value),today)
+                except (ValueError, OSError, sqlite3.Error) as exc:
+                    ui.label(str(exc)).classes("text-negative")
                     return
-                frame = chart_dataframe(
-                    db_path,
-                    start_date=str(start.value),
-                    sports=tuple(selected_sports.value or ()) or None,
-                )
-                if frame.empty:
-                    ui.label("No activities match the selected filters.").classes("text-grey-7")
-                    return
-                figures = _training_chart_figures(
-                    frame,
-                    selected_chart_ids,
-                    unit=unit,
-                    unit_system=unit_system,
-                    velocity_display=velocity_display,
-                )
-                if not figures:
-                    ui.label(
-                        "The selected charts need data that is not available for these filters."
-                    ).classes("text-grey-7")
-                    return
-                with ui.grid(columns=2).classes("w-full gap-4"):
-                    for figure in figures:
-                        with ui.card().classes("gdh-card w-full"):
-                            ui.plotly(figure).classes("w-full h-[24rem]")
+                current, previous = prepared["current"],prepared["previous"]
+                ui.label(f"{first} through {last} · Compared with {prepared['previous_start']} through {prepared['previous_end']} ({(last-first).days+1} days each).").classes("text-sm")
+                ui.label("Comparison reflects imported activities only; completeness of either calendar period is not guaranteed.").classes("text-xs text-grey-7")
+                with ui.element("div").classes("grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 w-full gap-3"):
+                    with ui.card().classes("gdh-card"):
+                        ui.label("Activities").classes("text-sm")
+                        ui.label(str(len(current))).classes("text-2xl font-semibold")
+                        ui.label(f"Previous period: {len(previous)}").classes("text-xs")
+                    items = [("duration", "Training time", "hours"), ("load", f"Training load ({prepared['load']})", prepared["load"])]
+                    if prepared["sport"] != "All sports" and prepared["family"] in {"velocity", "power"}:
+                        items += [("distance", "Distance", prepared["unit"]), ("elevation", "Elevation gain", prepared["elevation_unit"])]
+                    for field, title, unit in items:
+                        summary = prepared["summary"][field]
+                        with ui.card().classes("gdh-card"):
+                            ui.label(title).classes("text-sm")
+                            ui.label(f"{summary['value']:.1f} {unit}" if summary["value"] is not None else "Unavailable").classes("text-2xl font-semibold")
+                            ui.label(f"Coverage: {summary['count']} / {summary['total']} activities").classes("text-xs")
+                            ui.label(f"{summary['change']:+.1f}% versus previous period" if summary["change"] is not None else "Change unavailable: incomplete data or small/absent baseline.").classes("text-xs")
+                            ui.label(f"Previous coverage: {summary['previous_count']} / {summary['previous_total']}").classes("text-xs")
+                ui.label(f"Time uses moving duration where stored; {prepared['elapsed_fallback']} activities use elapsed duration instead. Previous period uses {prepared['previous_elapsed_fallback']} elapsed fallbacks. Load source: {prepared['load']}; TSS and TRIMP are never combined.").classes("text-sm")
+                if current.empty:
+                    ui.label("No activities match the selected filters. Empty weeks remain visible.").classes("text-grey-7")
+                lthr = cache["raw"].attrs.get("lthr_effective")
+                ui.label(f"Current athlete LTHR: {lthr} bpm; stored-zone provenance checks applied." if lthr else "Current athlete LTHR unavailable; legacy stored zone thresholds may be unknown. Stale metrics are excluded.").classes("text-xs text-grey-7")
+                cards = overview_figures(prepared,str(volume.value),str(intensity.value),velocity_display)
+                with ui.element("div").classes("grid grid-cols-1 xl:grid-cols-2 w-full gap-4"):
+                    for index, card in enumerate(cards):
+                        with ui.card().classes("gdh-card w-full min-w-0" + (" xl:col-span-2" if index == 0 else "")):
+                            ui.label(card["title"]).classes("text-lg font-semibold")
+                            ui.label(card["note"]).classes("text-xs text-grey-7")
+                            if card["figure"] is not None:
+                                ui.plotly(card["figure"]).classes("w-full h-[22rem]")
+                            else:
+                                ui.label("No comparable measurements available for these filters.").classes("text-sm")
+                table = prepared["weekly"].reset_index()
+                table["week"] = table.week.dt.strftime("%Y-%m-%d")
+                names = {"week": "Week starting", "week_label": "Week label", "activities": "Activities", "partial": "Partial week", "duration": "Training time (hours)", "distance": f"Distance ({prepared['unit']})", "elevation": f"Elevation ({prepared['elevation_unit']})", "load": prepared["load"], "load_rolling": f"4-week {prepared['load']} mean"}
+                for field in ("duration", "distance", "elevation", "load"):
+                    names[field + "_count"] = field.title() + " measured activities"
+                for zone in range(1, 6):
+                    names[f"zone_{zone}_s"] = f"Zone {zone} (seconds)"
+                    names[f"zone_{zone}_s_count"] = f"Zone {zone} measured activities"
+                table = table.rename(columns=names)
+                rows = json.loads(table.to_json(orient="records"))
+                with ui.expansion("Weekly data table", icon="table_chart").classes("w-full"):
+                    ui.label("Observed totals and valid activity counts; blank cells indicate unavailable data.").classes("text-xs")
+                    data_grid(rows, height="18rem")
+                    ui.button("Download weekly data CSV", on_click=lambda: ui.download(table.to_csv(index=False).encode("utf-8"), "training-overview.csv"))
 
-            draw_button.on("click", render_charts.refresh)
-            render_charts()
+            def update_overview() -> None:
+                if not cache["updating"]:
+                    render_overview.refresh()
+
+            def refresh_data() -> None:
+                cache["key"] = None
+                update_overview()
+
+            def change_range() -> None:
+                if cache["updating"]:
+                    return
+                if quick.value != "Custom":
+                    cache["updating"] = True
+                    first,last = period_range(str(quick.value),today)
+                    start.value,end.value = first.isoformat(),last.isoformat()
+                    cache["updating"] = False
+                update_overview()
+
+            def change_date() -> None:
+                if cache["updating"]:
+                    return
+                cache["updating"] = True
+                quick.value = "Custom"
+                cache["updating"] = False
+                update_overview()
+
+            def change_sport() -> None:
+                cache["updating"] = True
+                compatible = any(x in str(sport.value).lower() for x in ("run", "walk", "hik", "cycl", "bik"))
+                volume.set_options(["Time", "Distance"] if compatible else ["Time"], value="Time")
+                cache["updating"] = False
+                update_overview()
+
+            quick.on_value_change(change_range)
+            start.on_value_change(change_date)
+            end.on_value_change(change_date)
+            sport.on_value_change(change_sport)
+            for control in (load,volume,intensity):
+                control.on_value_change(update_overview)
+            render_overview()
 
     @ui.page("/plan")
     def plan_page() -> None:

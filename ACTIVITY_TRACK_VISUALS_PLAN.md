@@ -1,6 +1,6 @@
 # Activity Track Visuals Plan
 
-Status: Proposed / ready for implementation discovery
+Status: T1 and T2 implemented and locally verified
 
 ## Objective
 
@@ -327,3 +327,36 @@ The Track tab should let a user answer, at a glance:
 4. Can I trust the visualization despite ordinary GPS noise?
 
 The first slice is complete when those questions are answered clearly for pace without degrading activities that have incomplete track data.
+
+## T1 discovery — 2026-10-02
+
+- UI: `ui_nicegui/pages.py`, Activities Track tab, NiceGUI Leaflet. Existing Esri tile fallback and fit-bounds retained.
+- Data: `db/queries.py:get_activity_trackpoints` -> `ui_nicegui/data.py:activity_detail`. Query currently omits persisted `timestamp_utc`; add it without schema changes. Sensors: distance, speed, HR, altitude, cadence, power, temperature. No persisted pause-event model in this path.
+- Processing: new pure `analytics/track_visuals.py`, before map rendering. Centered 20-second time window, never smooth across quality breaks. GPS-derived distance, sport-specific jump limits, 60-second sampling-gap limit. No pace across missing/non-increasing timestamps or invalid coordinates.
+- Five sequential bands use 5th/95th percentiles and rounded unit-specific second boundaries, shared by classification and legend. Flat distributions use a minimum spread.
+- Rendering: one GeoJSON layer, grouped same-band sections; tooltips/popups report section ranges and representative measurements. Neutral gray denotes stops/gaps/missing timestamps; invalid GPS edges omitted. Numeric legend above map wraps on narrow screens.
+- Unit helpers: existing distance and pace preferences. Current shell has no dark-mode setting; light-theme visual verification required. No account usage/credit dashboard exposed to this task.
+
+## T1 verification and handoff — 2026-10-02
+
+- Implemented pure processing, timestamp query, five pace bands, shared numeric legend, grouped GeoJSON sections, start/finish labels, tooltip/click popup, selection emphasis, fit-route control, and empty/neutral fallbacks. No database migration.
+- NiceGUI drops layer method calls before initialization: configure styles and details only after `route_map.initialized()`.
+- Preferences use `Imperial` / `Metric`; processor handles case-insensitively. Elevation details retain metres, explicitly labeled; distance/pace follow preferences.
+- Focused tests: 10 passed on final run (processing, browser, parser wiring, grid event registration). Earlier combined run: 11 passed including activity-row browser navigation, with its Chrome locator overridden in memory to installed Playwright Chromium. Original test's system-Chrome lookup fails because the execution environment omits installation environment variables; no unrelated regression-test file changed.
+- Processing scenarios cover steady pace, progression, smoothing, pauses, stops, jumps, repeated timestamps, gaps, invalid coordinates, missing timestamps, sparse/empty tracks, sensors, unit conversion, and 20,000 points. Long steady route groups into 167 sections.
+- Browser verified actual Leaflet style/popup bindings, endpoint labels, long route, and 390px width. Screenshots: `reports/track_t1/desktop.png`, `reports/track_t1/narrow.png`; inspected desktop and narrow evidence. External tile requests deliberately blocked during tests; live tile loading and real imported-activity field trial remain unverified. No dark-theme toggle found in current shell.
+- Limitations: explicit pause flags are supported in processing but not persisted by current ingestion. Stops/gaps are inferred; GPS cumulative distance excludes jumps/gaps and may differ from Garmin totals. Details are medians for contiguous same-band sections (up to 120 edges), explicitly labeled in UI; raw activity JSON remains intact. Adversarial tracks changing bands on every edge can still produce many Leaflet sections; 20,000-point steady route verified, not an unlimited-track guarantee.
+- Changes remain uncommitted; this request did not explicitly authorize the example goal's commit step. No publishing or schedule changes. Usage and credit balance unavailable.
+- Next: T2 metric selector and sensor overlays, reusing processed geometry; preserve this phase's unit and quality semantics.
+
+## T2 decisions, verification, and handoff — 2026-10-02
+
+- Reusable `METRIC_SPECS` and `prepare_overlays` live in `analytics/track_visuals.py`. Pace retains T1 smoothing/bounds; HR and cadence use robust activity-relative five-band distributions. Elevation uses five low-to-high bands spanning the full activity, rather than a continuous gradient, so numeric ranges and selection semantics remain consistent across overlays. No per-point athlete-zone configuration is exposed in the activity-detail path; configured-zone integration is deferred.
+- Route sections partition once on the combined metric-band and missingness signature. Selecting a metric recolors the existing GeoJSON layers and updates popup/legend content without querying or reprocessing the activity or rebuilding geometry. This can create more sections than pace-only grouping; T1 long-route regression still passes.
+- UI has a labeled keyboard-accessible metric select. Missing metrics are excluded and named in an explanatory message; partial missing values are gray with section explanations and coverage counts. All-unavailable tracks retain a neutral route and disabled selector. Selection is retained per activity in the current Activities-page state and across tab changes; it is not saved across page reloads.
+- Sensor values are not interpolated. Nonfinite values, nonpositive HR/cadence, pause intervals, and sampling gaps are unavailable. Stationary readings and readings without timestamps can still show sensor overlays. Invalid GPS/time edges remain omitted. Tooltip omits unavailable sensor values.
+- Elevation follows metres/feet preferences, including negative elevations; HR uses bpm. Cycling cadence is labeled rpm, other activities spm. Stored cadence is preserved without inferred doubling; mixed-source running cadence normalization remains outside T2.
+- Final focused suite: 14 passed (nine processing cases, two browser cases, parser wiring, grid registration). Browser verifies all metric switches, unchanged section IDs, changed colors, gray missing sections, unavailable-cadence explanation, popup details, selection across tab changes, and 390px layout. Desktop/narrow screenshots inspected at `reports/track_t2/desktop.png` and `reports/track_t2/narrow.png`. Popup width reduced to fit narrow map frame. T1's 20,000-point route remains covered.
+- External tile requests were blocked in browser tests. Live tiles, real sensor-activity field trial, and account usage/credits remain unverified/unavailable. Current shell has no dark-mode control.
+- T2 changes: `analytics/track_visuals.py`, `ui_nicegui/pages.py`, `tests/test_track_visuals.py`, `tests/test_track_visuals_browser.py`, this plan, roadmap, and T2 screenshots. Prior T1 changes and pre-existing Charts plan preserved. Changes remain uncommitted.
+- Next roadmap milestone: C1 Charts discovery and overview. T2 does not authorize starting C1.

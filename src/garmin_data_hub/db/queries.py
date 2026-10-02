@@ -1649,6 +1649,7 @@ def get_activity_trackpoints(conn, activity_id: int) -> pd.DataFrame:
     try:
         query = """
             SELECT
+                timestamp_utc,
                 latitude       AS lat_deg,
                 longitude      AS lon_deg,
                 altitude_m,
@@ -1673,6 +1674,8 @@ def get_activities_dataframe(
     sports_list: tuple | None = None,
     lthr: int | None = None,
     use_temp_zone_metrics: bool = False,
+    end_date: str | None = None,
+    preserve_missing_metrics: bool = False,
 ) -> pd.DataFrame:
     """Return a DataFrame of activities with activity_metrics for plotting.
 
@@ -1720,6 +1723,14 @@ def get_activities_dataframe(
             """
             temp_join_sql = ""
 
+        if preserve_missing_metrics:
+            zone_select_sql = zone_select_sql.replace(", 0) AS zone_", ") AS zone_")
+            for zone in range(1, 6):
+                zone_select_sql = zone_select_sql.replace(
+                    f"CASE WHEN am.lthr_metrics_current THEN COALESCE(am.zone_{zone}_s, 0) ELSE 0 END",
+                    f"CASE WHEN am.lthr_metrics_current THEN am.zone_{zone}_s END",
+                )
+
         activity_day = activity_calendar_day_sql(conn, table_alias="a")
         temporal_metric_select_sql = current_temporal_metric_projection_sql(
             "am",
@@ -1735,6 +1746,9 @@ def get_activities_dataframe(
         )
         query = f"""
             SELECT
+                a.activity_id,
+                CASE WHEN am.activity_id IS NULL THEN 'missing'
+                     WHEN am.lthr_metrics_current THEN 'current' ELSE 'stale' END AS hr_zone_status,
                 a.start_time_gmt          AS start_time_utc,
                 {activity_day}            AS activity_date,
                 a.activity_type           AS sport,
@@ -1827,6 +1841,9 @@ def get_activities_dataframe(
             int(ftp_is_managed),
             start_ts_iso,
         ]
+        if end_date:
+            query += f" AND {activity_day} <= date(?)"
+            params.append(end_date)
         if sports_list:
             placeholders = ",".join("?" for _ in sports_list)
             query += f" AND a.activity_type IN ({placeholders})"

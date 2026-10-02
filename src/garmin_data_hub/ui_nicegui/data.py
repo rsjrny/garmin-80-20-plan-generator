@@ -381,17 +381,22 @@ def chart_dataframe(
     *,
     start_date: str,
     sports: tuple[str, ...] | None = None,
+    end_date: str | None = None,
 ) -> pd.DataFrame:
     conn = connect_sqlite(db_path)
     try:
         metrics = queries.get_athlete_metrics(conn)
-        return queries.get_activities_dataframe(
+        frame = queries.get_activities_dataframe(
             conn,
             start_ts_iso=f"{start_date}T00:00:00",
             sports_list=sports,
             lthr=metrics.get("lthr_effective"),
             use_temp_zone_metrics=False,
+            end_date=end_date,
+            preserve_missing_metrics=True,
         )
+        frame.attrs["lthr_effective"] = metrics.get("lthr_effective")
+        return frame
     finally:
         conn.close()
 
