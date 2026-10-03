@@ -418,6 +418,8 @@ not an individual executable. Public binary releases include AGPL-covered
 `garmin-givemydata` code; retain the bundled license, notices, and corresponding
 source files.
 
+Before evaluating a new upstream version, use the [isolated upgrade checker](docs/givemydata-upgrade-check.md). It backs up the database, compares candidate schemas, checks app compatibility on copies, and can optionally test a real Garmin sync.
+
 ## Project Requirements
 
 - Python `>=3.10`
