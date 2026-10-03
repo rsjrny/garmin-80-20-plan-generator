@@ -1,0 +1,33 @@
+.F                                                                       [100%]
+================================== FAILURES ===================================
+______ test_completion_duration_editor_enables_easy_taper_participation _______
+
+tmp_path = WindowsPath('C:/Users/russl/Documents/gitRepositories/Training_Planner/.tools/y4-browsers-visual/test_completion_duration_edito0')
+
+    def test_completion_duration_editor_enables_easy_taper_participation(tmp_path):
+        db = _test_database(tmp_path)
+        season = intent.create_season(db, intent.SeasonDraft("Easy taper participation", "2027-01-01", "2027-12-31", "America/New_York",
+            intent.SeasonInputs(starting_duration_seconds=10800, lthr=170)))
+        intent.save_event(db, season.season_id, intent.EventDraft("Primary", "2027-10-17", "MAR"), expected_version=1)
+        easy = intent.save_event(db, season.season_id, intent.EventDraft("Easy 5K", "2027-10-10", "5K", "C"), expected_version=2)
+        process = _start_server(db, port := _free_loopback_port())
+        errors = []
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page(viewport={"width": 1440, "height": 1000})
+                page.set_default_timeout(15000)
+                page.on("pageerror", lambda e: errors.append(str(e)))
+                page.goto(f"http://127.0.0.1:{port}/seasons?season_id={season.season_id}", wait_until="networkidle")
+                page.get_by_role("button", name=f"Edit event {easy.event_id}", exact=True).click()
+                dialog = page.get_by_role("dialog")
+                dialog.get_by_label("Planned completion minutes (optional)", exact=True).fill("10")
+                dialog.get_by_text("C events replace training;", exact=False).wait_for()
+>               capture("completion_editor_desktop.png")
+                ^^^^^^^
+E               NameError: name 'capture' is not defined
+
+tests\test_season_refinement_browser.py:115: NameError
+=========================== short test summary info ===========================
+FAILED tests/test_season_refinement_browser.py::test_completion_duration_editor_enables_easy_taper_participation
+1 failed, 1 passed in 15.60s

@@ -370,6 +370,7 @@ CREATE TABLE IF NOT EXISTS season_event (
   course_notes TEXT NOT NULL DEFAULT '',
   taper_days INTEGER CHECK (taper_days IS NULL OR taper_days BETWEEN 0 AND 28),
   recovery_days INTEGER CHECK (recovery_days IS NULL OR recovery_days BETWEEN 0 AND 42),
+  participation_seconds INTEGER CHECK (participation_seconds IS NULL OR (typeof(participation_seconds) = 'integer' AND participation_seconds BETWEEN 1 AND 604800 AND goal_intent = 'COMPLETION')),
   created_at_utc TEXT NOT NULL,
   updated_at_utc TEXT NOT NULL,
   CHECK (target_seconds IS NULL OR target_speed_mps IS NULL)

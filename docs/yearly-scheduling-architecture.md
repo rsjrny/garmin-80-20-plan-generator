@@ -1,7 +1,7 @@
 # Y0: Yearly scheduling architecture and migration discovery
 
 Date: 2026-10-02 (America/New_York)
-Status: Y0 discovery complete; Y1–Y3 locally verified. Historical discovery scope is retained below.
+Status: Y0 discovery complete; Y1–Y4 locally verified. Historical discovery scope is retained below.
 
 Scope: Repository discovery and isolated verification. User authorized Y0 only.
 No production schema, UI, generator, or live schedule changes.
@@ -524,3 +524,38 @@ Synthetic 366-day/three-event regeneration preview took 0.404–0.453s, atomic a
 1.275–1.463s, preserving 259 occurrences; these are local measurements. No live
 schedule apply, commit, push, deployment or packaged executable rebuild occurred.
 Client settings were unchanged; token/account-credit attribution is unavailable.
+
+
+## Y4 implemented decisions — 2026-10-02
+
+Generator/policy v2 refine deterministic priority: an A preparation phase suppresses
+a supporting taper on shared dates. Recovery always wins, events still reserve their
+training slot, standalone B taper remains effective, and distance recovery minimums
+remain unchanged. No physiological peak optimization or new readiness threshold is
+introduced. Effective-window and preparation-control assessments quantify calendar
+opportunity: controlled/shared/constrained/outside-season days. Shared and constrained
+categories overlap; these are not completed training or predicted readiness.
+
+Preview conflict guidance gives recovery/peak calendar clearance dates with remaining
+constraints and direct links to the versioned event editor. Effective windows update
+with edits. Saving changes only updates intent; stale previews reject and the user
+must review a fresh candidate before apply. Completed intent remains immutable.
+
+Schema v15 adds nullable completion participation duration with integer/range/goal
+CHECK constraints. Performance targets remain separate. Generated and carried events
+must satisfy identical A-taper participation rules: completion intent in the actual
+prescription, known duration within the easy budget, at most 5 km and easy native
+intensity. Cancelled but protected events cannot bypass these checks. Missing duration
+stays unknown. Revision/application documents retain their original hashes and rows.
+
+Older generator/policy revisions recommend full future evaluation; custom selections
+still validate the entire merged schedule. Preserved origins/parameters/completion and
+manual/lock state retain Y3 semantics. Hash-covered preparation assessments persist
+in application history. Rollback is separately scoped; active-pointer rollback is not
+part of Y4. Both methods, complete preserved timelines, v15 upgrade/replay and migration/
+repair failure boundaries are verified. A private installed v14→v15 backup retained
+all existing app fields/rows and active schedule; source untouched and backup removed.
+
+672 distinct non-browser/browser checks, desktop/390px visual inspection and
+full-season timings are recorded in [Y4 evidence](../reports/yearly_y4/README.md).
+Changes are local and uncommitted; no live schedule apply or packaging rebuild.

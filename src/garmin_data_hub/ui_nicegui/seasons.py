@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 from garmin_data_hub.services import season_plans as plans
 from garmin_data_hub.services import season_generation as generation
-from garmin_data_hub.services.season_schedule import GenerationSettings
+from garmin_data_hub.services.season_schedule import GenerationSettings, event_windows, event_resolution_notes
 from garmin_data_hub.services.season_regeneration import RegenerationRequest
 from garmin_data_hub.services import season_workouts
 from garmin_data_hub.services.baseline_plan_builder import BASELINE_DISTANCE_OPTIONS
@@ -132,11 +132,34 @@ def register_seasons_page(db_path: Path, *, sandboxed: bool) -> None:
                     goal = ui.select({"COMPLETION": "Completion", "PERFORMANCE": "Performance"}, value=draft.goal_intent, label="Event goal").classes("w-full")
                     finish = ui.input("Target finish time (HH:MM:SS)", value=original_time).classes("w-full")
                     pace = ui.input("Target pace (MM:SS per km)", value=original_pace).classes("w-full")
+                    participation = ui.number("Planned completion minutes (optional)", value=None if draft.participation_seconds is None else draft.participation_seconds / 60, min=1/60, max=10080).classes("w-full")
                     terrain = ui.input("Terrain", value=draft.terrain).classes("w-full")
                     taper = ui.number("Taper days (optional)", value=draft.taper_days, min=0, max=28, step=1).classes("w-full")
                     recovery = ui.number("Recovery days (optional)", value=draft.recovery_days, min=plans.RECOVERY_DAYS[draft.distance_code], max=42, step=1).classes("w-full")
                 notes = ui.textarea("Course notes", value=draft.course_notes).classes("w-full")
                 ui.label("Use one target: finish time or pace. Recovery cannot be shorter than the distance default.").classes("text-sm text-slate-600")
+                ui.label("Planned completion minutes are an estimate for easy participation, not a finish-time goal. Unknown duration stays unknown.").classes("text-sm text-slate-600 break-words")
+                @ui.refreshable
+                def effective_window():
+                    try:
+                        window_draft = plans.EventDraft(name.value.strip() or "Event", day.value, distance.value, priority.value,
+                            taper_days=_integer(taper.value, "Taper days", optional=True),
+                            recovery_days=_integer(recovery.value, "Recovery days", optional=True))
+                        event_value = plans.SeasonEvent(event.event_id if event else "draft", season.season_id, window_draft, plans.DISTANCES[distance.value])
+                        w = event_windows(season, (event_value,))[0]
+                        ui.label(f"Effective window: preparation {w.preparation_start} → {w.taper_start}; taper {w.taper_days} days; recovery through {w.recovery_end} ({w.recovery_days} days).").classes("text-sm break-words")
+                        if priority.value == "C":
+                            ui.label("C events replace training; separate preparation and taper are disabled, including taper overrides.").classes("text-sm break-words")
+                        elif priority.value == "B":
+                            ui.label("Supporting taper yields on dates controlled by an A build. Full distance recovery remains reserved.").classes("text-sm break-words")
+                    except (plans.SeasonError, KeyError, TypeError, ValueError) as exc:
+                        ui.label(str(exc)).classes("text-sm text-amber-900 break-words")
+                effective_window()
+                def update_window():
+                    recovery.props(f"min={plans.RECOVERY_DAYS[distance.value]}")
+                    effective_window.refresh()
+                for control in (day, distance, priority, taper, recovery):
+                    control.on_value_change(lambda _: update_window())
                 error = ui.label("").classes("text-red-800 whitespace-normal break-words")
 
                 def save() -> None:
@@ -148,7 +171,8 @@ def register_seasons_page(db_path: Path, *, sandboxed: bool) -> None:
                                                    kind.value, status.value, goal.value, _seconds(finish.value),
                                                    speed, terrain.value, notes.value,
                                                    _integer(taper.value, "Taper days", optional=True),
-                                                   _integer(recovery.value, "Recovery days", optional=True))
+                                                   _integer(recovery.value, "Recovery days", optional=True),
+                                                   None if participation.value in (None, "") else _integer(Decimal(str(participation.value)) * 60, "Planned participation seconds"))
                         plans.save_event(db_path, season.season_id, updated, expected_version=season.input_version,
                                          event_id=None if event is None else event.event_id)
                     except (plans.SeasonError, sqlite3.Error, OSError, ValueError) as exc:
@@ -274,6 +298,23 @@ def register_seasons_page(db_path: Path, *, sandboxed: bool) -> None:
                 with ui.expansion(f"Review {len(schedule.errors)} conflicts and {len(schedule.warnings)} warnings",value=True).classes("w-full"):
                     for issue in schedule.errors + schedule.warnings:
                         ui.label((f"{issue.date} · " if issue.date else "") + issue.message).classes("break-words text-red-800" if issue.severity=="error" else "break-words text-amber-900")
+                        for note in event_resolution_notes(issue, schedule.windows):
+                            ui.label(note).classes("text-sm break-words text-slate-700")
+                assessments = (schedule.candidate.constraints or {}).get("event_assessments", ())
+                if assessments:
+                    with ui.expansion("Event preparation and tuning", value=True).classes("w-full"):
+                        ui.label("Calendar opportunity is not a readiness prediction. Shared days can also be constrained; counts describe phase control, not completed training.").classes("text-sm break-words")
+                        for report in assessments:
+                            ui.label(f'{report["priority"]} · {report["name"]} · {report["event_date"]}').classes("font-semibold break-words")
+                            ui.label(f'Preparation starts {report["preparation_start"]}; taper starts {report["taper_start"]} ({report["taper_days"]} days); recovery ends {report["recovery_end"]} ({report["recovery_days"]} days).').classes("text-sm break-words")
+                            ui.label(f'{report["controlled_preparation_days"]} controlled preparation days · {report["shared_preparation_days"]} shared · {report["constrained_preparation_days"]} constrained · {report["preparation_days_outside_season"]} outside season').classes("text-sm break-words")
+                            event = next((e for e in preview.events if e.event_id == report["event_id"]), None)
+                            if event and event.draft.status != "completed" and preview.season.status != "archived":
+                                def tune(e=event):
+                                    dialog.close()
+                                    event_editor(preview.season, e)
+                                ui.button(f'Tune {event.draft.name}', on_click=tune).props(f'outline aria-label="Tune event {event.event_id}"')
+                        ui.label("Save event tuning, then generate a fresh preview. The active calendar changes only after reviewed apply.").classes("text-sm break-words")
                 phases = []
                 for c in schedule.controls:
                     key = (c.phase,c.event_id)
@@ -456,6 +497,8 @@ def register_seasons_page(db_path: Path, *, sandboxed: bool) -> None:
                             if draft.target_speed_mps is not None:
                                 p = round(Decimal(1000) / Decimal(draft.target_speed_mps))
                                 ui.label(f"Target pace: {p // 60:02}:{p % 60:02} /km")
+                            if draft.participation_seconds is not None:
+                                ui.label(f"Planned completion: {draft.participation_seconds / 60:g} minutes (estimated)").classes("text-sm break-words")
                             if draft.terrain or draft.course_notes:
                                 ui.label(" · ".join(filter(None, (draft.terrain, draft.course_notes)))).classes("text-sm whitespace-pre-wrap break-words")
                             if draft.taper_days is not None or draft.recovery_days is not None:
@@ -478,6 +521,10 @@ def register_seasons_page(db_path: Path, *, sandboxed: bool) -> None:
                             for decision in review.get("preserved",()):
                                 ui.label(f'{decision["date"]} · {decision["title"]} · {", ".join(decision["reasons"])}').classes("text-sm break-words")
                             ui.label("Replacement overrides: " + (", ".join(review.get("overrides",())) or "None")).classes("text-sm break-all")
+                        if review.get("event_assessments"):
+                            with ui.expansion("Recorded event preparation").classes("w-full"):
+                                for report in review["event_assessments"]:
+                                    ui.label(f'{report["name"]} · {report["controlled_preparation_days"]} controlled preparation days · taper {report["taper_start"]} · recovery through {report["recovery_end"]}').classes("text-sm break-words")
                         with ui.expansion("Acknowledged warnings").classes("w-full"):
                             for warning in review["warnings"]:
                                 ui.label(warning["message"]).classes("text-sm text-amber-900 break-words")

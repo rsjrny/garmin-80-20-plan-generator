@@ -5,7 +5,7 @@ import sqlite3
 
 logger = logging.getLogger(__name__)
 
-CURRENT_SCHEMA_VERSION = 14
+CURRENT_SCHEMA_VERSION = 15
 
 
 def _ensure_schema_migrations_table(conn: sqlite3.Connection) -> None:
@@ -684,6 +684,11 @@ def _rename_legacy_trackpoint_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migration_15_add_event_participation(conn: sqlite3.Connection) -> None:
+    _add_column_if_missing(conn, "season_event", "participation_seconds",
+        "INTEGER CHECK (participation_seconds IS NULL OR (typeof(participation_seconds) = 'integer' AND participation_seconds BETWEEN 1 AND 604800 AND goal_intent = 'COMPLETION'))")
+
+
 def apply_schema(conn: sqlite3.Connection, schema_path: Path | None = None) -> None:
     """Apply app schema and run one-time versioned migrations for older databases."""
     _ensure_schema_migrations_table(conn)
@@ -759,6 +764,8 @@ def apply_schema(conn: sqlite3.Connection, schema_path: Path | None = None) -> N
          lambda: _migration_13_add_season_applications(conn, schema_sql)),
         (14, "add season protection and immutable workout origins",
          lambda: _migration_14_add_season_regeneration(conn, schema_sql)),
+        (15, "add explicit completion event participation duration",
+         lambda: _migration_15_add_event_participation(conn)),
     ]
 
     current_version = _get_current_schema_version(conn)
@@ -810,6 +817,8 @@ def apply_schema(conn: sqlite3.Connection, schema_path: Path | None = None) -> N
 
         if recorded_version >= 14:
             _migration_14_add_season_regeneration(conn, schema_sql)
+        if recorded_version >= 15:
+            _migration_15_add_event_participation(conn)
 
     except Exception:
         conn.execute("ROLLBACK TO SAVEPOINT repair_additive_schema")

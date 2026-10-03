@@ -1,6 +1,6 @@
 # Yearly Multi-Event Scheduling Plan
 
-Status: Y0–Y3 locally verified (2026-10-02); deterministic yearly generation and protected regeneration are implemented.
+Status: Y0–Y4 locally verified (2026-10-02); yearly generation, protected regeneration and conflict/event refinement are implemented. Optional rollback remains separately scoped.
 
 ## Y0 architecture decision and handoff
 
@@ -119,6 +119,40 @@ record exact tests, transport-log handling, timings and limits.
 Changes remain uncommitted. Deferred Yearly 4 refinement, rollback, packaging and a
 live field trial require separate scope. Earlier Y0/Y1/Y2 handoffs retain their
 historical phase limitations.
+
+## Y4 implementation and handoff
+
+Y4 implements conflict/peak refinement and event tuning. Versioned A-build priority
+suppresses a supporting taper only on shared preparation dates; event day, distance
+recovery and A-taper protections remain reserved. Preview shows effective windows,
+controlled/shared/constrained/outside-season preparation counts and calendar clearance
+guidance. These describe calendar opportunity, not physiological readiness or a peak
+prediction. Tune event links open the versioned editor; saving intent requires a fresh
+reviewed preview before any calendar change.
+
+An optional planned completion duration supplies an explicit estimate for easy
+participation. It is separate from performance targets. Short completion events can
+fit an A taper only within its easy-session budget, at most 5 km, with an easy native
+prescription. Generated and protected event sessions receive identical checks,
+including protected cancelled events. Unknown duration remains unknown.
+
+Schema v15 adds nullable participation duration without rewriting prior immutable
+revisions or application audits. Generator/policy v2 recommend full future review for
+older schedules; Y3 protection, lineage, stale checks and atomic apply remain in force.
+Applied history retains reviewed event preparation assessments.
+
+**672 distinct checks** passed: 666 combined non-browser checks and six new/existing
+Seasons browser workflows. Final advisory coverage passed 27 focused checks.
+Desktop/390px dialogs, effective-window updates, scrolling and review/apply/history
+were inspected. A private installed v14→v15 backup upgraded/replayed with all prior
+app rows and active schedule unchanged; the source was untouched and backup removed.
+[Evidence and exact commands](reports/yearly_y4/README.md) include intermediate browser
+fixture failures, corrected reruns and local full-season timings.
+
+Changes remain local and uncommitted. No live schedule apply, push, deployment or
+packaging rebuild. Optional rollback remains separately scoped, as do physiological
+peak optimization, AI composition, automatic history coverage, mixed methods/sports
+and a live field trial. Earlier handoffs retain their historical phase limitations.
 
 ## Objective
 

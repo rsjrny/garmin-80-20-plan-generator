@@ -1,0 +1,123 @@
+F.                                                                       [100%]
+================================== FAILURES ===================================
+__________ test_conflict_tuning_effective_windows_and_reviewed_apply __________
+
+tmp_path = WindowsPath('C:/Users/russl/Documents/gitRepositories/Training_Planner/.tools/y4-browsers/test_conflict_tuning_effective0')
+
+    def test_conflict_tuning_effective_windows_and_reviewed_apply(tmp_path):
+        db = _test_database(tmp_path)
+        season = intent.create_season(db, intent.SeasonDraft("Y4 season", "2027-01-01", "2027-12-31", "America/New_York",
+            intent.SeasonInputs(starting_duration_seconds=10800, lthr=170)))
+        intent.save_event(db, season.season_id, intent.EventDraft("Primary", "2027-10-17", "MAR"), expected_version=1)
+        later = intent.save_event(db, season.season_id, intent.EventDraft("Second peak", "2027-10-24", "MAR"), expected_version=2)
+        original = get_active_plan_sha256(db)
+        process = _start_server(db, port := _free_loopback_port())
+        errors = []
+        OUTPUT.mkdir(parents=True, exist_ok=True)
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page(viewport={"width": 1440, "height": 1000})
+                page.on("pageerror", lambda e: errors.append(str(e)))
+                page.on("console", lambda e: errors.append(e.text) if e.type == "error" else None)
+                page.set_default_timeout(15000)
+                page.goto(f"http://127.0.0.1:{port}/seasons?season_id={season.season_id}", wait_until="networkidle")
+    
+                def generate():
+                    page.get_by_role("button", name="Preview yearly schedule", exact=True).click()
+                    dialog = page.get_by_role("dialog")
+                    dialog.get_by_label("I confirm this LTHR is a measured running threshold.", exact=True).click()
+                    dialog.get_by_role("button", name="Generate preview", exact=True).click()
+                    page.get_by_text("Season schedule preview", exact=True).wait_for()
+                    return page.get_by_role("dialog")
+    
+                dialog = generate()
+                expect(dialog.get_by_role("button", name="Apply reviewed season", exact=True)).to_be_disabled()
+                dialog.get_by_text("Changing priority does not shorten required recovery.", exact=True).wait_for()
+                page.screenshot(path=str(OUTPUT / "conflicts_desktop.png"))
+                page.set_viewport_size({"width": 390, "height": 844})
+                page.wait_for_timeout(250)
+                assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+                page.screenshot(path=str(OUTPUT / "conflicts_narrow.png"))
+                dialog.get_by_role("button", name=f"Tune event {later.event_id}", exact=True).click()
+                page.get_by_text("Edit event", exact=True).wait_for()
+                dialog = page.get_by_role("dialog")
+                dialog.get_by_label("Event date", exact=True).fill("2027-11-21")
+                dialog.get_by_text("Effective window:", exact=False).filter(has_text="2027-12-05").wait_for()
+                page.screenshot(path=str(OUTPUT / "tuning_narrow.png"))
+                dialog.get_by_role("button", name="Save event", exact=True).click()
+                page.get_by_text("Event saved.", exact=True).wait_for()
+                assert get_active_plan_sha256(db) == original
+                assert intent.list_events(db, season.season_id)[1].draft.event_date == "2027-11-21"
+                # Close the responsive shell drawer if it covers the page.
+                backdrop = page.locator(".q-drawer__backdrop")
+                if backdrop.is_visible():
+                    backdrop.click(position={"x": 350, "y": 120})
+                dialog = generate()
+                expect(dialog.get_by_role("button", name="Apply reviewed season", exact=True)).to_be_enabled()
+                dialog.get_by_text("Event preparation and tuning", exact=True).scroll_into_view_if_needed()
+                page.screenshot(path=str(OUTPUT / "preparation_narrow.png"))
+                dialog.get_by_label("I reviewed the schedule and acknowledge all warnings.", exact=True).scroll_into_view_if_needed()
+                page.screenshot(path=str(OUTPUT / "apply_narrow.png"))
+                dialog.get_by_label("I reviewed the schedule and acknowledge all warnings.", exact=True).click()
+                dialog.get_by_role("button", name="Apply reviewed season", exact=True).click()
+                page.get_by_text("Season schedule applied.", exact=True).wait_for()
+                applications = generation.list_applications(db, season.season_id)
+                assert len(applications) == 1
+>               page.get_by_text("Applied season revisions", exact=True).click()
+
+tests\test_season_refinement_browser.py:74: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+.venv\Lib\site-packages\playwright\sync_api\_generated.py:15631: in click
+    self._sync(
+.venv\Lib\site-packages\playwright\_impl\_locator.py:162: in click
+    return await self._frame._click(self._selector, strict=True, **params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv\Lib\site-packages\playwright\_impl\_frame.py:566: in _click
+    await self._channel.send("click", self._timeout, locals_to_params(locals()))
+.venv\Lib\site-packages\playwright\_impl\_connection.py:69: in send
+    return await self._connection.wrap_api_call(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <playwright._impl._connection.Connection object at 0x000001FDCBA5F8C0>
+cb = <function Channel.send.<locals>.<lambda> at 0x000001FDCBEBFE20>
+is_internal = False, title = None
+
+    async def wrap_api_call(
+        self, cb: Callable[[], Any], is_internal: bool = False, title: str = None
+    ) -> Any:
+        if self._api_zone.get():
+            return await cb()
+        task = asyncio.current_task(self._loop)
+        st: List[inspect.FrameInfo] = getattr(
+            task, "__pw_stack__", None
+        ) or inspect.stack(0)
+    
+        parsed_st = _extract_stack_trace_information_from_stack(st, is_internal, title)
+        self._api_zone.set(parsed_st)
+        try:
+            return await cb()
+        except Exception as error:
+>           raise rewrite_error(error, f"{parsed_st['apiName']}: {error}") from None
+E           playwright._impl._errors.TimeoutError: Locator.click: Timeout 15000ms exceeded.
+E           Call log:
+E             - waiting for get_by_text("Applied season revisions", exact=True)
+E               - locator resolved to <div class="q-item__label">Applied season revisions</div>
+E             - attempting click action
+E               2 � waiting for element to be visible, enabled and stable
+E                 - element is not visible
+E               - retrying click action
+E               - waiting 20ms
+E               2 � waiting for element to be visible, enabled and stable
+E                 - element is not visible
+E               - retrying click action
+E                 - waiting 100ms
+E               29 � waiting for element to be visible, enabled and stable
+E                  - element is not visible
+E                - retrying click action
+E                  - waiting 500ms
+
+.venv\Lib\site-packages\playwright\_impl\_connection.py:559: TimeoutError
+=========================== short test summary info ===========================
+FAILED tests/test_season_refinement_browser.py::test_conflict_tuning_effective_windows_and_reviewed_apply
+1 failed, 1 passed in 26.28s

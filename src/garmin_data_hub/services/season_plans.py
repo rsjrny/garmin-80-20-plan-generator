@@ -87,6 +87,7 @@ class EventDraft:
     course_notes: str = ""
     taper_days: int | None = None
     recovery_days: int | None = None
+    participation_seconds: int | None = None
 
 
 @dataclass(frozen=True)
@@ -193,6 +194,10 @@ def _validate_event(draft: EventDraft, season: Season) -> EventDraft:
         raise SeasonError("Choose a target time or speed, not both.")
     if draft.goal_intent == "COMPLETION" and (draft.target_seconds is not None or draft.target_speed_mps is not None):
         raise SeasonError("Select a performance goal to store a time or speed target.")
+    if draft.participation_seconds is not None:
+        _integer(draft.participation_seconds, "Planned participation seconds", 1, 604800)
+        if draft.goal_intent != "COMPLETION":
+            raise SeasonError("Participation duration is for completion goals; use a time or pace target for performance goals.")
     if draft.taper_days is not None:
         _integer(draft.taper_days, "Taper days", 0, 28)
     if draft.recovery_days is not None:

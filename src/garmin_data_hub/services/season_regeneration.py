@@ -65,9 +65,13 @@ def affected_range(season, events, parent, today, request, settings=None):
     bounds_changed = parent.goal_snapshot.get("start_date")!=season.start_date or parent.goal_snapshot.get("end_date")!=season.end_date
     previous_settings = canonical_value((parent.constraints or {}).get("settings", {}))
     history_changed = settings is not None and previous_settings.get("completed_weeks", [])!=canonical_value(settings.completed_weeks)
-    if inputs_changed or bounds_changed or history_changed or request.refresh_parameters or not old_inputs:
+    from garmin_data_hub.services.season_schedule import GENERATOR_VERSION, POLICY_VERSION
+    policy_changed = (parent.provenance or {}).get("generator") != GENERATOR_VERSION or (parent.provenance or {}).get("policy") != POLICY_VERSION
+    if inputs_changed or bounds_changed or history_changed or request.refresh_parameters or not old_inputs or policy_changed:
         low, high = cutover,end
         reasons.append("Athlete inputs, availability, bounds or prescribing parameters require full future evaluation.")
+        if policy_changed:
+            reasons.append("Generation policy changed; all eligible future dates require review under the current rules.")
     elif changed:
         touched = [w for w in windows if w.event.event_id in changed]
         if not touched:

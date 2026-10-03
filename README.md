@@ -144,6 +144,19 @@ Apply is atomic, audited and idempotent; stale previews require regeneration.
 Rest/auxiliary sessions are typed, and cached nutrition in the replacement range
 is invalidated. Applied history records ranges, changes, protection and overrides.
 
+Use **Event preparation and tuning** in the preview to inspect effective preparation,
+taper and recovery windows, plus controlled/shared/constrained preparation days.
+These are calendar opportunities, not a readiness prediction. Conflict guidance shows
+calendar clearance dates and links to event tuning; save changes and generate a fresh
+preview before apply. An A build takes precedence over a supporting taper, while event
+day and required recovery remain reserved. Short easy completion events during an A
+taper need an explicit **Planned completion minutes** estimate, at most 5 km, and a
+duration within the displayed easy-session budget. Performance goals remain separate.
+Generated and protected events receive the same taper check, including protected
+cancelled events. Applied history retains the preparation assessments reviewed.
+Older generation policies recommend a full future review; history and protected
+prescriptions keep their immutable origins. Rollback is separately scoped.
+
 You can explicitly link a reviewed existing structured plan whose methodology and
 entire workout history fit the season. Linking retains its workouts and matches.
 After linking, single-event saves and direct revision approvals cannot overwrite
@@ -160,7 +173,7 @@ The primary desktop interface is implemented under `src/garmin_data_hub/ui_niceg
 - **Activities** - filters, splits, local GPS-track inspection with linked measurement charts and interval selection, and complete JSON export
 - **Charts** - volume, heart-rate, speed, distribution, and training-load trends
 - **Plan** - offline baseline/workbook generation, event settings, HR thresholds, and active calendar review
-- **Seasons** - event priorities, availability, yearly preview, protected regeneration, reviewed apply, revision history, and explicit plan linking
+- **Seasons** - event priorities and tuning, preparation/conflict review, availability, yearly preview, protected regeneration, reviewed apply, revision history, and explicit plan linking
 - **Codex Coach** - account-authenticated generation, deterministic validation, exact diff, and explicit approval
 - **Compliance** - planned-versus-completed distance and duration
 - **Data Query** - guarded read-only SQL and advanced garmin_mcp calls

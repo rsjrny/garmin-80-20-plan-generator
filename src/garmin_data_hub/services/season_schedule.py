@@ -26,8 +26,8 @@ from garmin_data_hub.plan_methodology.revisions import PlanRevisionCandidate
 from garmin_data_hub.plan_methodology.segments import PlannedWorkout, WorkoutSegment
 from garmin_data_hub.services import season_plans as intent
 
-GENERATOR_VERSION = "season-generator.v1"
-POLICY_VERSION = "season-windows-load.v1"
+GENERATOR_VERSION = "season-generator.v2"
+POLICY_VERSION = "season-windows-load.v2"
 PREPARATION = {"5K": 42, "10K": 56, "10M": 56, "HM": 84, "20M": 112,
                "MAR": 112, "50K": 140, "50M": 140, "100K": 168, "100M": 168}
 TAPER = {"5K": 7, "10K": 7, "10M": 7, "HM": 10, "20M": 14,
@@ -187,6 +187,15 @@ def _timeline(season, windows):
                 elif later.preparation_start <= earlier.recovery_end:
                     issues.append(ScheduleIssue("SHARED_A_BUILD", "warning",
                         f"{a.draft.name} and {b.draft.name} share preparation. The earlier A event controls until its recovery ends.", b.draft.event_date, (a.event_id,b.event_id)))
+    for supporting in planned:
+        if supporting.event.draft.priority == "A" or not supporting.taper_days:
+            continue
+        primary = [w for w in planned if w.event.draft.priority == "A"
+                   and max(supporting.taper_start, w.preparation_start) < min(supporting.event_date, w.taper_start)]
+        if primary:
+            issues.append(ScheduleIssue("SUPPORTING_TAPER_SUPPRESSED", "warning",
+                f"{supporting.event.draft.name}: its supporting taper yields to A-event preparation on shared dates. Event day and full recovery remain reserved.",
+                supporting.taper_start.isoformat(), tuple([supporting.event.event_id] + [w.event.event_id for w in primary])))
     controls = []
     for d in _days(start, end):
         recovery = [w for w in windows if w.event_date < d <= w.recovery_end]
@@ -194,6 +203,8 @@ def _timeline(season, windows):
         preparation = [w for w in planned if w.preparation_start <= d < w.taper_start]
         races = [w for w in planned if d == w.event_date]
         active = recovery + tapers + preparation + races
+        if any(w.event.draft.priority == "A" for w in preparation):
+            tapers = [w for w in tapers if w.event.draft.priority == "A"]
         controlling = None
         phase, fraction = "MAINTENANCE", Decimal("0.8")
         if recovery:
@@ -220,6 +231,84 @@ def _timeline(season, windows):
         controls.append(DayControl(d,phase,controlling.event.event_id if controlling else None,fraction,
                                    tuple(sorted({w.event.event_id for w in active}))))
     return tuple(controls), issues
+
+
+def assess_event_preparation(windows, controls):
+    """Explain calendar opportunity, without predicting physiological readiness."""
+    reports = []
+    for window in windows:
+        event = window.event
+        if event.draft.status != "planned":
+            continue
+        relevant = [c for c in controls if window.preparation_start <= c.day < window.taper_start]
+        controlled = [c for c in relevant if c.event_id == event.event_id and c.phase in {"BASE", "BUILD", "EVENT_SPECIFIC"}]
+        shared = [c for c in relevant if len(c.influencing_event_ids) > 1]
+        constrained = [c for c in relevant if c not in controlled]
+        taper = [c for c in controls if window.taper_start <= c.day < window.event_date]
+        reports.append({"event_id": event.event_id, "name": event.draft.name,
+            "priority": event.draft.priority, "status": event.draft.status,
+            "preparation_start": window.preparation_start.isoformat(), "taper_start": window.taper_start.isoformat(),
+            "event_date": window.event_date.isoformat(), "recovery_end": window.recovery_end.isoformat(),
+            "preparation_days": window.preparation_days, "taper_days": window.taper_days, "recovery_days": window.recovery_days,
+            "preparation_days_in_season": len(relevant), "controlled_preparation_days": len(controlled),
+            "shared_preparation_days": len(shared), "constrained_preparation_days": len(constrained),
+            "preparation_days_outside_season": max(0, window.preparation_days-len(relevant)),
+            "constraining_event_ids": sorted({eid for c in constrained for eid in c.influencing_event_ids if eid != event.event_id}),
+            "controlled_taper_days": sum(c.phase == "TAPER" and c.event_id == event.event_id for c in taper)})
+    return reports
+
+
+def event_resolution_notes(issue, windows):
+    """Concrete review guidance; suggestions never modify intent or certify fitness."""
+    by_id = {w.event.event_id: w for w in windows}
+    involved = [by_id[eid] for eid in issue.event_ids if eid in by_id]
+    if issue.code == "EVENT_IN_RECOVERY" and len(involved) == 2:
+        first, later = involved
+        earliest = first.recovery_end + DAY
+        return (f"Move {later.event.draft.name} to {earliest} or later to clear this recovery window, or skip/cancel it. Other constraints still require a fresh preview.",
+                "Changing priority does not shorten required recovery.")
+    if issue.code == "A_PEAKS_OVERLAP" and len(involved) == 2:
+        first, later = involved
+        earliest = first.recovery_end + timedelta(days=later.taper_days+1)
+        return (f"For separate A peaks, {later.event.draft.name} would need {earliest} or later to put its taper after the earlier recovery. This only clears the calendar overlap.",
+                "You can review a supporting B/C priority, but event-in-recovery and workload limits still apply.")
+    if issue.code == "EVENT_EXCEEDS_A_TAPER":
+        return ("Move, skip or cancel the supporting event. Easy participation requires a completion goal, at most 5 km, a known planned participation duration within the displayed budget, and an easy native prescription.",)
+    if issue.code == "A_PREPARATION_CONSTRAINED":
+        return ("Recovery and other controlling event phases reduce this build. Review the event preparation counts, dates and priorities; recovery is never shortened to recover missed preparation.",)
+    if issue.code == "SHARED_A_BUILD":
+        return ("The earlier A event owns shared preparation until its recovery ends. Review each event's controlled preparation days; separate peaks or choose a supporting priority if the available build is unsuitable.",)
+    if issue.code == "SUPPORTING_TAPER_SUPPRESSED":
+        return ("Review the effective phases: an A build takes precedence over a B/C taper. Priority changes alter preparation and taper, while recovery remains distance based.",)
+    if issue.code == "EVENT_UNAVAILABLE":
+        return ("Edit season availability or move this event to an available weekday, then generate a fresh preview.",)
+    if issue.code in {"INSUFFICIENT_PREPARATION", "RECOVERY_OVERFLOW"}:
+        return ("Review the season bounds or event date. Missing preparation is not compressed and recovery is not shortened.",)
+    return ()
+
+
+def _taper_participation_issues(workout, windows, budget):
+    event_id = (workout.metadata or {}).get("event_id")
+    source = next((w for w in windows if w.event.event_id == event_id and w.event.draft.status == "planned"), None)
+    if source is not None and source.event.draft.priority == "A":
+        return []  # Separate A peaks are checked by the timeline overlap rules.
+    primary = [w for w in windows if w.event.event_id != event_id and w.event.draft.status == "planned"
+               and w.event.draft.priority == "A" and w.taper_start <= workout.scheduled_date < w.event_date]
+    if not primary:
+        return []
+    known = all(s.duration_seconds is not None for s in workout.segments)
+    duration = sum(s.duration_seconds or 0 for s in workout.segments)
+    distance = sum(s.distance_metres or 0 for s in workout.segments)
+    easy_targets = {"F80.ZONE_1", "F80.ZONE_2", "MAF.MAF_AEROBIC_RANGE", "MAF.SUB_MAF", "MAF.MAF_CEILING"}
+    easy = all(s.prescription and s.prescription.native_target.value in easy_targets for s in workout.segments)
+    if ((workout.metadata or {}).get("goal_intent") != "COMPLETION" or not 0 < distance <= 5000
+            or not known or not 0 < duration <= budget or not easy or workout.quality_flag):
+        return [ScheduleIssue("EVENT_EXCEEDS_A_TAPER", "error",
+            f"{workout.title} cannot fit the A taper easy-session budget ({budget//60} minutes). Move, skip or cancel it.",
+            workout.scheduled_date.isoformat(), tuple([event_id] + [w.event.event_id for w in primary]))]
+    return [ScheduleIssue("EASY_EVENT_IN_A_TAPER", "warning",
+        f"{workout.title} replaces an easy taper session and must stay at the prescribed easy intensity.",
+        workout.scheduled_date.isoformat(), (event_id,))]
 
 
 def _baseline(season, settings, today, issues):
@@ -344,6 +433,7 @@ def generate_season_schedule(season: intent.Season, events: tuple[intent.SeasonE
     for c in controls:
         groups[monday(c.day)].append(c)
     rows, weeks = [], []
+    day_budgets = {}
     envelope = baseline or 0
     last_normal = baseline or 0
     return_pending = False
@@ -395,6 +485,7 @@ def generate_season_schedule(season: intent.Season, events: tuple[intent.SeasonE
             for d in chosen-fixed_days:
                 if d in budgets:
                     budgets[d] = budgets[d]*remaining//free_budget
+        day_budgets.update(budgets)
         event_count = len(event_days)
         fixed_hard = sum(w.event_flag or w.quality_flag for d in fixed_days for w in fixed_by_day[d])
         hard_cap = get_intensity_cap(season.inputs.age) if method is MethodologyId.FITZGERALD_80_20_RUNNING_V1 else 1
@@ -428,7 +519,7 @@ def generate_season_schedule(season: intent.Season, events: tuple[intent.SeasonE
                 w = planned[d]
                 e = w.event
                 family,sport,title = "EVENT_DAY",Sport.RUNNING,e.draft.name
-                duration = e.draft.target_seconds
+                duration = e.draft.participation_seconds if e.draft.goal_intent == "COMPLETION" else e.draft.target_seconds
                 if e.draft.target_speed_mps is not None:
                     duration = max(1,int(Decimal(e.distance_metres)/Decimal(e.draft.target_speed_mps)))
                 segments = (WorkoutSegment(SegmentKind.EVENT,LoadMode.DISTANCE,duration,e.distance_metres,
@@ -436,18 +527,10 @@ def generate_season_schedule(season: intent.Season, events: tuple[intent.SeasonE
                     purpose="EVENT_PARTICIPATION",prescription=_rx(method,parameters,"ZONE_3" if e.draft.goal_intent=="PERFORMANCE" and method is MethodologyId.FITZGERALD_80_20_RUNNING_V1 else "ZONE_2")),)
                 meta.update(event_id=e.event_id,event_priority=e.draft.priority,goal_intent=e.draft.goal_intent,
                             target_seconds=e.draft.target_seconds,target_speed_mps=e.draft.target_speed_mps,
+                            participation_seconds=e.draft.participation_seconds,
                             event_type=e.draft.event_type,terrain=e.draft.terrain,course_notes=e.draft.course_notes)
-                others = [x for x in windows if x.event.event_id!=e.event_id]
-                a_taper = [x for x in others if x.event.draft.status=="planned" and x.event.draft.priority=="A" and x.taper_start<=d<x.event_date]
-                if e.draft.priority in {"B","C"} and a_taper:
-                    # Completion at easy native intensity is the only supported taper participation.
-                    if e.draft.goal_intent!="COMPLETION" or e.distance_metres>5000 or duration is None or duration>budgets[d]:
-                        issues.append(ScheduleIssue("EVENT_EXCEEDS_A_TAPER", "error",
-                            f"{title} cannot fit the A taper easy-session budget ({budgets[d]//60} minutes). Move, skip or cancel it.",d.isoformat(),tuple([e.event_id]+[x.event.event_id for x in a_taper])))
-                    else:
-                        issues.append(ScheduleIssue("EASY_EVENT_IN_A_TAPER", "warning",f"{title} replaces an easy taper session and must stay at the prescribed easy intensity.",d.isoformat(),(e.event_id,)))
                 issues.append(ScheduleIssue("EVENT_LOAD_ESTIMATED" if duration else "EVENT_DURATION_UNKNOWN", "warning",
-                    f"{title}: event distance is known; duration is {'a target estimate' if duration else 'unknown'}. TSS is unknown. Native HR targets do not guarantee the finish-time goal.",d.isoformat(),(e.event_id,)))
+                    f"{title}: event distance is known; duration is {'a user participation estimate' if e.draft.participation_seconds is not None else 'a target estimate' if duration else 'unknown'}. TSS is unknown. Native HR targets do not guarantee the finish-time goal.",d.isoformat(),(e.event_id,)))
                 description = "Event replaces the day's training session. Follow native HR targets; target time/pace is retained as intent."
             elif d in chosen and budgets[d]>=3 and c.load_fraction>0:
                 sport = Sport.RUNNING
@@ -488,6 +571,16 @@ def generate_season_schedule(season: intent.Season, events: tuple[intent.SeasonE
             last_normal = seconds
         if partial:
             issues.append(ScheduleIssue("PARTIAL_WEEK", "warning", "Partial local Monday-Sunday week; load is not compared as a full week.",week.isoformat()))
+    # Apply the same taper participation check to generated and carried events.
+    for workout in rows:
+        if workout.event_flag and (not fixed_workouts or workout.scheduled_date >= today):
+            issues.extend(_taper_participation_issues(workout, windows, day_budgets.get(workout.scheduled_date, 0)))
+    assessments = assess_event_preparation(windows, controls)
+    for report in assessments:
+        if report["priority"] == "A" and report["constrained_preparation_days"]:
+            issues.append(ScheduleIssue("A_PREPARATION_CONSTRAINED", "warning",
+                f'{report["name"]}: {report["constrained_preparation_days"]} preparation days are controlled by other event phases; {report["controlled_preparation_days"]} remain under this event. Review the available build rather than compressing it.',
+                report["event_date"], tuple([report["event_id"]] + report["constraining_event_ids"])))
     snapshot = {"schema_version":"season-goal.v1","sport":"RUNNING","season_id":season.season_id,
                 "name":season.name,"start_date":season.start_date,"end_date":season.end_date,
                 "timezone":season.timezone,"events":[asdict(e) for e in sorted(events,key=lambda e:(e.draft.event_date,e.event_id))],
@@ -498,7 +591,8 @@ def generate_season_schedule(season: intent.Season, events: tuple[intent.SeasonE
         provenance={"generator":GENERATOR_VERSION,"policy":POLICY_VERSION,"local_today":today.isoformat()},
         constraints={"schema_version":"season-constraints.v1","input_version":season.input_version,
                      "inputs":asdict(season.inputs),"settings":asdict(settings),"baseline_seconds":baseline,
-                     "week_loads":[asdict(w) for w in weeks]},
+                     "week_loads":[asdict(w) for w in weeks],
+                     "event_assessments":assessments},
         change_summary={"mode":"FULL_PREVIEW" if parent else "INITIAL_FULL",
                         "added_workout_ids":[w.workout_id for w in rows],"preserved_workout_ids":[]})
     issues.extend(validate_season_workload(season,events,candidate,weeks,baseline,

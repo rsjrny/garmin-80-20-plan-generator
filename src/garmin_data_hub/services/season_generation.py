@@ -271,6 +271,7 @@ def apply_season_preview(db_path: Path | str, preview: SeasonPreview, *, approve
             "previous_revision_sha256":preview.parent_sha256,"resulting_revision_sha256":candidate.content_hash,
             "diff":summary,"event_delta":summary.get("event_delta",{"added":[asdict(e) for e in events]}),
             "preserved":summary.get("preserved",[]),"overrides":summary.get("overrides",[]),"warnings":[asdict(i) for i in regenerated.warnings],
+            "event_assessments":canonical_value((candidate.constraints or {}).get("event_assessments", [])),
             "warnings_acknowledged":acknowledge_warnings,"rationale":"Complete immutable revision; only eligible reviewed occurrences in the selected range change. Original prescriptions and evidence are retained for carried workouts."}
         conn.execute("""INSERT INTO season_revision_application(application_id,preview_id,season_id,plan_id,
             resulting_revision_id,previous_revision_id,input_version,input_sha256,candidate_sha256,

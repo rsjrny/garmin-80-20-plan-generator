@@ -81,7 +81,7 @@ Choose these only after reviewing the initial results and actual usage.
 | Track 4 (locally verified 2026-10-02) | Linked charts and map/chart cursors | GPT-6.1 Sol | Standard | High | 130k | Fresh chat; reuse shared chart work |
 | Charts 3 | Planned versus completed duration/load and matching | GPT-6.1 Sol | Standard | High | 170k | Fresh chat; use canonical matching |
 | Charts 4 | Qualified performance, cadence, power, and durability analytics | GPT-6.1 Sol | Standard | High | 200k | Fresh chat; split into individual metrics if useful |
-| Yearly 4 | Conflict/peak refinement, event tuning, optional rollback | GPT-6.1 Sol | Standard | High | 110k | Fresh chat; scope rollback separately |
+| Yearly 4 (locally verified 2026-10-02) | Conflict/peak refinement and event tuning; optional rollback separately scoped | GPT-6.1 Sol | Standard | High | 110k | Fresh chat; scope rollback separately |
 
 Best value: T1 first, T2 through reuse of its foundation, then C1 and C2. In Charts 3,
 start with weekly duration/load comparison. In Yearly 2/3, start with deterministic
@@ -580,3 +580,56 @@ Changes remain uncommitted on a4edfc7. No live database/schedule write, migratio
 push, deployment or packaging rebuild. Client settings unchanged; measured phase
 tokens and account credits unavailable. Stop at T4; other deferred Track/Charts/
 Yearly work requires separate authorization.
+
+
+## Y4 handoff — 2026-10-02
+
+The user requested “do Y4 now”, authorizing deferred Yearly 4 refinement/event tuning.
+The roadmap scopes optional rollback separately; no pointer rollback was introduced.
+Y4 refinement is implemented and locally verified.
+
+Generator/policy v2 give an A build precedence over a supporting taper on shared
+dates, retain event-day capacity and full required recovery, and explain constrained
+preparation. Preview displays effective windows and controlled/shared/constrained/
+outside-season preparation days. These describe calendar opportunity, not readiness
+or physiological peak prediction. Conflict guidance provides calendar clearance dates
+and concrete constraints. Tune links open the versioned editor; effective window hints
+update with date/distance/priority/taper/recovery edits. Saving intent still needs a
+fresh reviewed preview before schedule apply.
+
+Nullable planned completion duration is independent of performance time/pace goals.
+At most 5 km of known easy completion participation can fit an A taper within the
+actual easy-session budget. Unknown duration remains unknown. Generated and preserved
+events receive identical checks, including protected cancelled events; an immutable
+performance prescription cannot become easy by changing saved intent. Schema v15 adds
+the completion-only integer/range CHECK without rewriting prior revision hashes or
+audits. Applied history records hashed event preparation assessments.
+
+Older policy revisions recommend full future evaluation. Y3 history/completion/match/
+manual protections, immutable origins, explicit future overrides and transactional
+stale/recomposition checks remain in force. Custom ranges retain complete merged
+validation. Existing single-event planning and explicitly adopted schedules remain
+covered by the shared suite.
+
+672 distinct checks passed: 666 combined non-browser checks plus six browser workflows
+(four existing Seasons workflows and two new Y4 workflows). A final advisory-focused
+run passed 27 checks; reruns are not added. Desktop/390px views, editor scrolling,
+completion duration, conflicts/tuning, apply and recorded history were inspected.
+Existing phase evidence was restored byte for byte after compatibility captures.
+A private read-only installed v14 backup upgraded/replayed v15 with all prior app rows,
+active schedule and foreign-key state unchanged; the source was never migrated and
+the full backup was removed. Detailed commands, outputs and the corrected browser
+fixture/capture-helper failures are in [Y4 evidence](reports/yearly_y4/README.md).
+
+A 366-day/three-event synthetic preview took 0.023–0.034s, initial apply 0.676–0.696s,
+regeneration preview 0.408–0.459s and regeneration apply 1.297–1.491s locally. Both
+methods preserved 259 occurrences. git diff --check passed. No live schedule apply,
+commit, push, deployment or packaged executable rebuild occurred. Client settings
+were unchanged; attributable token/account-credit usage is unavailable.
+
+Source: season_schedule.py, season_plans.py, season_regeneration.py,
+season_generation.py, ui_nicegui/seasons.py and v15 DDL/migration. New refinement and
+browser tests plus current-version fixture expectations; README, source plan and
+architecture describe Y4. Optional rollback, physiological peak optimization/prediction,
+AI composition, automatic covered-history collection, mixed methods/sports, manual
+creation UI, packaging and a live field trial remain separately scoped.
