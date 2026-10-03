@@ -13,7 +13,8 @@ design.
 
 The canonical writable flow is:
 
-1. NiceGUI's `SyncJob` starts the packaged sync CLI.
+1. NiceGUI's `SyncJob` starts the app sync CLI using the current Python
+   interpreter in source mode or the packaged helper in a frozen build.
 2. The CLI invokes pinned `garmin-givemydata` 0.1.12 with `--no-trackpoints`.
 3. Garmin Data Hub detects new or changed local activity archives and performs
    app-owned FIT/GPX/TCX parsing and targeted trackpoint replacement.
@@ -35,7 +36,10 @@ access. Read-only application features may open custom SQLite filenames.
 
 ## Database ownership and migrations
 
-The current application schema version is **8**.
+The current application schema version is **15**, defined by
+`CURRENT_SCHEMA_VERSION` in `src/garmin_data_hub/db/migrate.py`. Migrations are
+recorded in `schema_migrations`. See the [Developer guide](developer-guide.md)
+for setup, schema evolution, planning, testing, and release workflows.
 
 - `garmin-givemydata` owns Garmin source and summary-ingestion tables such as
   `activity` and `activity_splits`.
@@ -45,6 +49,14 @@ The current application schema version is **8**.
 - App migrations should remain additive where practical. Do not change an
   upstream-owned structure without a demonstrated need and compatibility
   evidence.
+
+App-owned and upstream-owned tables share the same `garmin.db` file. App
+foreign keys and direct queries depend on upstream activity IDs and columns,
+so separate ownership does not provide full schema isolation. The exact
+upstream version pin and runtime guard prevent unreviewed versions from running
+through supported sync; they do not protect a database migrated by another
+tool. Use the [upgrade checker](givemydata-upgrade-check.md) before changing
+the supported pin.
 
 The reconciliation ledger gives each eligible historical archive a durable
 outcome. A completed baseline lets routine sync avoid repeatedly parsing an

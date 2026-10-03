@@ -6,6 +6,8 @@ The project syncs Garmin data using `garmin-givemydata`, applies app-specific sc
 
 > Garmin Connect download support in this project is powered by the open-source [`garmin-givemydata`](https://github.com/nrvim/garmin-givemydata) project. Garmin is not affiliated with or endorsing this application.
 
+Developer documentation: [Developer guide](docs/developer-guide.md) covers setup, architecture, database contracts, testing, upstream upgrades, and releases.
+
 ## Current Architecture
 
 - **Sync source:** `garmin-givemydata`
