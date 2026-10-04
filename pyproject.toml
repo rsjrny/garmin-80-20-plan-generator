@@ -13,6 +13,7 @@ dependencies = [
   "fitparse>=1.2.0",
   "gpxpy>=1.6.2",
   "garmin-givemydata==0.1.12",
+  "mcp>=1.26,<2",
 ]
 
 [project.optional-dependencies]
@@ -45,4 +46,5 @@ garmin_data_hub = ["db/schema.sql", "ui_nicegui/*.js"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = ["browser: Chromium integration tests (require Playwright browser installation)"]
 

@@ -7,6 +7,12 @@ from pathlib import Path
 
 import pytest
 
+from nicegui import ui
+
+from ui_test_support import run_ui
+
+from garmin_data_hub.db.migrate import apply_schema
+from garmin_data_hub.paths import schema_sql_path
 from garmin_data_hub.analytics.sleep_recovery import analyze_sleep_recovery
 from garmin_data_hub.db.sqlite import connect_sqlite
 from garmin_data_hub.ui_nicegui import pages
@@ -176,18 +182,33 @@ def test_sleep_recovery_analysis_validates_date_window(
         analyze_sleep_recovery(db_path, start, end)
 
 
-def test_data_query_page_wires_sleep_recovery_deep_dive():
-    source = Path(pages.__file__).read_text(encoding="utf-8")
-    query_page = source.split('    @ui.page("/query")', maxsplit=1)[1].split(
-        '    @ui.page("/settings")', maxsplit=1
-    )[0]
+@pytest.mark.parametrize("with_records", [True, False], ids=["records", "empty"])
+def test_recovery_action_renders_analysis_or_missing_data(monkeypatch, tmp_path, with_records):
+    db_path = _health_database(tmp_path) if with_records else tmp_path / "empty.db"
+    conn = connect_sqlite(db_path)
+    apply_schema(conn, schema_sql_path())
+    conn.close()
+    monkeypatch.setattr(pages, "describe_readonly_tools", lambda _db: {})
 
-    assert 'ui.tab("Sleep & Recovery", icon="bedtime")' in query_page
-    assert "analyze_sleep_recovery" in query_page
-    assert '"Deep-dive observations"' in query_page
-    assert '"Sleep duration vs. need"' in query_page
-    assert '"Sleep-stage composition"' in query_page
-    assert '"Recovery signals"' in query_page
-    assert '"HRV and resting heart rate"' in query_page
-    assert '"Exploratory relationships"' in query_page
-    assert '"Daily detail"' in query_page
+    async def scenario(user):
+        await user.open("/query")
+        next(iter(user.find("Start date").elements)).value = "2026-08-01"
+        next(iter(user.find("End date").elements)).value = "2026-08-14"
+        user.find("Analyze recovery").click()
+        if with_records:
+            await user.should_see("Deep-dive observations", retries=100)
+            await user.should_see("Sleep duration vs. need")
+            await user.should_see("Daily detail")
+            grids = user.find(ui.aggrid).elements
+            assert any(len(grid.options.get("rowData", [])) == 14 for grid in grids)
+            figures = user.find(ui.plotly).elements
+            sleep = next(plot for plot in figures if any(
+                trace.name == "Recorded sleep" for trace in plot.figure.data
+            ))
+            trace = next(trace for trace in sleep.figure.data if trace.name == "Recorded sleep")
+            assert list(trace.y) == [6.0] * 7 + [7.0] * 7
+        else:
+            await user.should_see("No sleep or recovery records were found", retries=100)
+            await user.should_not_see(ui.plotly)
+
+    run_ui(db_path, scenario)

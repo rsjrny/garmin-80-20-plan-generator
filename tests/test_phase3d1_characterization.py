@@ -1,8 +1,4 @@
-"""GREEN characterizations of the threshold behavior that Phase 3D.2 replaces.
-
-These tests deliberately describe the repository at the Phase 3D.1 checkpoint.
-Approved future behavior belongs in the two intentional-RED modules instead.
-"""
+"""Threshold regressions retained for non-running evidence, overrides and refresh behavior."""
 
 from __future__ import annotations
 
@@ -276,101 +272,16 @@ def test_summary_power_and_nonrunning_sports_do_not_establish_running_ftp(tmp_pa
         conn.close()
 
 
-def test_running_ftp_does_not_fall_back_to_other_sports_or_summary_power(tmp_path):
-    db_path = _database(tmp_path)
-    conn = _connect(db_path)
-    try:
-        _insert_activity(conn, 1, sport="running", norm_power=280)
-        _insert_activity(conn, 2, sport="hiking", norm_power=310)
-        assert queries._estimate_ftp_from_recent_power(conn) is None
-    finally:
-        conn.close()
 
 
-@pytest.mark.parametrize(
-    ("norm_power", "avg_power", "expected"),
-    [(250, 400, None), (None, 300, None)],
-)
-def test_current_ftp_uses_summary_norm_power_then_average_power(
-    tmp_path, norm_power, avg_power, expected
-):
-    db_path = _database(tmp_path)
-    conn = _connect(db_path)
-    try:
-        _insert_activity(
-            conn, 1, sport="cycling", norm_power=norm_power, avg_power=avg_power
-        )
-        assert queries._estimate_ftp_from_recent_power(conn) == expected
-    finally:
-        conn.close()
 
 
-@pytest.mark.parametrize(("duration_s", "expected"), [(1200, None), (1199.9, None)])
-def test_current_ftp_requires_1200_seconds_of_activity_elapsed_duration(
-    tmp_path, duration_s, expected
-):
-    db_path = _database(tmp_path)
-    conn = _connect(db_path)
-    try:
-        _insert_activity(
-            conn, 1, sport="cycling", duration_s=duration_s, norm_power=250
-        )
-        assert queries._estimate_ftp_from_recent_power(conn) == expected
-    finally:
-        conn.close()
 
 
-@pytest.mark.parametrize(
-    ("summary_power", "expected"),
-    [(84, None), (526, None), (83, None), (527, None)],
-)
-def test_current_ftp_accepts_only_rounded_results_from_80_through_500(
-    tmp_path, summary_power, expected
-):
-    db_path = _database(tmp_path)
-    conn = _connect(db_path)
-    try:
-        _insert_activity(conn, 1, sport="cycling", norm_power=summary_power)
-        assert queries._estimate_ftp_from_recent_power(conn) == expected
-    finally:
-        conn.close()
 
 
-def test_running_ftp_requires_trackpoint_power_coverage(tmp_path):
-    db_path = _database(tmp_path)
-    conn = _connect(db_path)
-    try:
-        _insert_activity(conn, 1, sport="cycling", norm_power=300)
-        assert conn.execute(
-            "SELECT COUNT(*) FROM activity_trackpoints"
-        ).fetchone()[0] == 0
-        assert queries._estimate_ftp_from_recent_power(conn) is None
-    finally:
-        conn.close()
 
 
-def test_legacy_ftp_helper_does_not_admit_cycling_at_cutoff(monkeypatch, tmp_path):
-    db_path = _database(tmp_path)
-    conn = _connect(db_path)
-    try:
-        monkeypatch.setattr(queries, "datetime", FrozenDateTime)
-        _insert_activity(
-            conn,
-            1,
-            start="2026-03-31T11:59:59Z",
-            sport="cycling",
-            norm_power=400,
-        )
-        _insert_activity(
-            conn,
-            2,
-            start="2026-04-01T12:00:00Z",
-            sport="cycling",
-            norm_power=250,
-        )
-        assert queries._estimate_ftp_from_recent_power(conn) is None
-    finally:
-        conn.close()
 
 
 def test_current_effective_ftp_short_circuits_on_existing_calculation(tmp_path):

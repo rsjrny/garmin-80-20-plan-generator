@@ -1,3 +1,5 @@
+import pytest
+from browser_test_support import wait_for_layout
 from pathlib import Path
 from season_browser_logs import application_logs
 
@@ -9,14 +11,15 @@ from test_activity_grid_browser import _test_database, _start_server, _stop_serv
 from test_plan_revision_persistence import _fitzgerald_candidate, _approve
 
 
-def test_season_calendar_edit_link_and_stale_editor(tmp_path):
+@pytest.mark.browser
+def test_season_calendar_edit_link_and_stale_editor(tmp_path, browser_artifacts):
     db = _test_database(tmp_path)
     candidate = _fitzgerald_candidate()
     _approve(db, candidate)
     original_hash = get_active_plan_sha256(db)
     process = _start_server(db, port := _free_loopback_port())
     errors = []
-    output = Path(__file__).resolve().parents[1] / "reports/yearly_y3/compat_y1"
+    output = browser_artifacts
     output.mkdir(parents=True, exist_ok=True)
     try:
         with sync_playwright() as p:
@@ -85,7 +88,7 @@ def test_season_calendar_edit_link_and_stale_editor(tmp_path):
             page.get_by_role("button", name="Refresh seasons", exact=True).click()
             page.get_by_text("Spring Tune-up", exact=True).wait_for()
             other.evaluate("window.socket?.disconnect()")
-            other.wait_for_timeout(250)
+            wait_for_layout(other)
             other.close()
             assert list_events(db, season.season_id)[0].draft.name == "Spring Tune-up"
 
@@ -101,15 +104,16 @@ def test_season_calendar_edit_link_and_stale_editor(tmp_path):
             assert get_active_plan_sha256(db) == original_hash
             expect(page.locator(".q-notification")).to_have_count(0, timeout=15000)
             page.evaluate("window.scrollTo(0, 0)")
-            page.wait_for_timeout(250)
+            wait_for_layout(page)
             page.screenshot(path=str(output / "desktop.png"), full_page=True)
             page.set_viewport_size({"width": 390, "height": 844})
             page.evaluate("window.scrollTo(0, 0)")
-            page.wait_for_timeout(250)
+            wait_for_layout(page)
             assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
             page.screenshot(path=str(output / "narrow.png"), full_page=True)
             page.get_by_role("button", name="Add event", exact=True).click()
-            page.wait_for_timeout(250)
+            page.get_by_role("dialog").get_by_role("button", name="Save event", exact=True).wait_for()
+            wait_for_layout(page)
             assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
             page.screenshot(path=str(output / "event_editor_narrow.png"))
             save_button = page.get_by_role("dialog").get_by_role("button", name="Save event", exact=True)
@@ -130,7 +134,7 @@ def test_season_calendar_edit_link_and_stale_editor(tmp_path):
             page.get_by_role("link", name="Manage seasons and multiple events", exact=True).wait_for()
             assert get_active_plan_sha256(db) == original_hash
             page.evaluate("window.socket?.disconnect()")
-            page.wait_for_timeout(250)
+            wait_for_layout(page)
             browser.close()
     finally:
         server = _stop_server(process)

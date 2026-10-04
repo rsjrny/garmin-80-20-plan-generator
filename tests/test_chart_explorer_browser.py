@@ -1,12 +1,15 @@
+import pytest
+from browser_test_support import wait_for_layout
 from datetime import date, timedelta
 from pathlib import Path
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 from test_activity_calendar_days import _database, _insert_activity
 from test_activity_grid_browser import _start_server, _stop_server, _free_loopback_port
 from garmin_data_hub.db.sqlite import connect_sqlite
 
 
-def test_chart_drilldown_explorer_and_tab_state(tmp_path):
+@pytest.mark.browser
+def test_chart_drilldown_explorer_and_tab_state(tmp_path, browser_artifacts):
     db = _database(tmp_path)
     today = date.today()
     for aid, offset in [(101,1),(202,1),(303,10),(404,110)]:
@@ -33,7 +36,7 @@ def test_chart_drilldown_explorer_and_tab_state(tmp_path):
             def select(label,value):
                 page.get_by_label(label,exact=True).click()
                 page.get_by_role("option",name=value,exact=True).click()
-                page.wait_for_timeout(250)
+                expect(page.get_by_label(label,exact=True)).to_have_value(value)
             def charts_ready():
                 page.get_by_text("Weekly training volume",exact=True).wait_for()
                 page.locator('.js-plotly-plot').last.locator('.scatterlayer .trace').first.locator('.point').first.wait_for()
@@ -65,7 +68,7 @@ def test_chart_drilldown_explorer_and_tab_state(tmp_path):
             page.get_by_label("Start date",exact=True).press("Tab")
             page.get_by_label("End date",exact=True).fill((today-timedelta(days=1)).isoformat())
             page.get_by_label("End date",exact=True).press("Tab")
-            page.wait_for_timeout(300)
+            expect(page.get_by_label("Date range",exact=True)).to_have_value("Custom")
             page.get_by_text("Activity source table",exact=True).click()
             link = page.get_by_role("link",name="Open activity 101",exact=True)
             link.focus()
@@ -76,12 +79,11 @@ def test_chart_drilldown_explorer_and_tab_state(tmp_path):
             assert page.get_by_label("Date range",exact=True).input_value() == "Custom"
             assert page.get_by_label("End date",exact=True).input_value() == (today-timedelta(days=1)).isoformat()
             select("Chart section","Explorer")
-            assert page.locator('.js-plotly-plot').count() == 1
+            expect(page.locator('.js-plotly-plot')).to_have_count(1)
             page.get_by_label("Explorer charts",exact=True).click()
             page.get_by_role("option",name="Weekly training stress",exact=True).click()
             page.keyboard.press("Escape")
-            page.wait_for_timeout(300)
-            assert page.locator('.js-plotly-plot').count() == 2
+            expect(page.locator('.js-plotly-plot')).to_have_count(2)
             page.reload(wait_until="networkidle")
             page.get_by_text("Weekly training stress",exact=True).last.wait_for()
             assert page.get_by_label("Chart section",exact=True).input_value() == "Explorer"
@@ -103,11 +105,11 @@ def test_chart_drilldown_explorer_and_tab_state(tmp_path):
             page.get_by_role("link",name="Charts",exact=True).click()
             page.get_by_text("Weekly training stress",exact=True).last.wait_for()
             assert page.get_by_label("Chart section",exact=True).input_value() == "Explorer"
-            output = Path(__file__).resolve().parents[1]/"reports"/"charts_c2"
+            output = browser_artifacts
             output.mkdir(parents=True,exist_ok=True)
             page.screenshot(path=str(output/"desktop.png"),full_page=True)
             page.set_viewport_size({"width":390,"height":844})
-            page.wait_for_timeout(300)
+            wait_for_layout(page)
             page.screenshot(path=str(output/"narrow.png"),full_page=True)
             assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
             # Accessible weekly inspection includes absent metrics and empty weeks.
@@ -118,11 +120,11 @@ def test_chart_drilldown_explorer_and_tab_state(tmp_path):
             dialog = page.get_by_role("dialog")
             dialog.get_by_role("link",name="Open activity 303",exact=True).wait_for()
             assert dialog.get_by_role("link",name="Open activity 101",exact=True).count() == 0
-            page.wait_for_timeout(300)
+            wait_for_layout(page)
             page.screenshot(path=str(output/"contributors_narrow.png"),full_page=True)
             assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
             page.set_viewport_size({"width":1440,"height":1000})
-            page.wait_for_timeout(200)
+            wait_for_layout(page)
             page.screenshot(path=str(output/"contributors_desktop.png"),full_page=True)
             page.get_by_role("button",name="Close contributors",exact=True).click()
             first_day = today-timedelta(days=60)
@@ -132,7 +134,7 @@ def test_chart_drilldown_explorer_and_tab_state(tmp_path):
             page.get_by_text("No activities contributed in this selection.",exact=True).wait_for()
             page.get_by_role("button",name="Close contributors",exact=True).click()
             page.get_by_role("button",name="Reset zoom",exact=True).first.click()
-            page.wait_for_timeout(250)
+            wait_for_layout(page)
             page.evaluate("window.socket?.disconnect()")
             browser.close()
     finally:

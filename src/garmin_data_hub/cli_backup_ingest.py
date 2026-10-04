@@ -543,9 +543,9 @@ def _upstream_privacy_boundary(known_sensitive_values: tuple[str, ...]):
 def _build_garmin_worker_environment(data_dir: Path) -> dict[str, str]:
     """Construct the minimal practical environment for the Garmin worker."""
     environment = {
-        name: os.environ[name]
-        for name in _WORKER_ENVIRONMENT_ALLOWLIST
-        if name in os.environ
+        name: value
+        for name, value in os.environ.items()
+        if name.upper() in _WORKER_ENVIRONMENT_ALLOWLIST
     }
     environment["GARMIN_DATA_DIR"] = str(data_dir)
     environment["PYTHONUNBUFFERED"] = "1"

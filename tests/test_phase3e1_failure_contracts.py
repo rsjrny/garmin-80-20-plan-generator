@@ -619,3 +619,27 @@ def test_unexpected_upstream_result_is_a_truthful_failure(
     diagnostic = captured.out + captured.err
     assert "unsupported result" in diagnostic.lower()
     assert "object at" not in diagnostic.lower()
+
+
+def test_worker_environment_matches_allowlist_case_without_passing_other_secrets(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # A plain dict models POSIX's case-sensitive environment, even on Windows.
+    environment = {
+        "pAtH": "synthetic-path",
+        "SystemRoot": r"C:\Windows",
+        "temp": str(tmp_path),
+        "GARMIN_EMAIL": SYNTHETIC_USER,
+        "GARMIN_PASSWORD": SYNTHETIC_PASSWORD,
+        "AWS_SECRET_ACCESS_KEY": "must-stay-out",
+        "UNRELATED_PASSWORD": "must-stay-out",
+    }
+    monkeypatch.setattr(cli_backup_ingest.os, "environ", environment)
+    worker = cli_backup_ingest._build_garmin_worker_environment(tmp_path)
+    assert worker["pAtH"] == environment["pAtH"]
+    assert worker["SystemRoot"] == environment["SystemRoot"]
+    assert worker["temp"] == environment["temp"]
+    assert worker["GARMIN_EMAIL"] == SYNTHETIC_USER
+    assert worker["GARMIN_PASSWORD"] == SYNTHETIC_PASSWORD
+    assert "AWS_SECRET_ACCESS_KEY" not in worker
+    assert "UNRELATED_PASSWORD" not in worker

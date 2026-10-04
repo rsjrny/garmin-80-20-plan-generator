@@ -16,6 +16,17 @@
   readout.textContent = 'Hover or tap the route or a chart, or inspect a position with the keyboard controls.';
   let axis = config.axis, marker = null, pinned = null, current = null, bounds = null;
   let raf = null, requested = undefined, busy = false, redraw = false, disposed = false;
+  const displayed = () => plot.isConnected && plot.getClientRects().length > 0 &&
+    getComputedStyle(plot).display !== 'none' && plot.clientWidth > 0 && plot.clientHeight > 0;
+  const resize = () => {
+    if (disposed || !displayed()) return;
+    P.Plots.resize(plot).catch(error => {
+      // Plotly's deferred resize may run after a tab hides or removes this chart.
+      if (!disposed && displayed()) queueMicrotask(() => { throw error; });
+    });
+  };
+  const resizeObserver = new ResizeObserver(resize);
+  resizeObserver.observe(plot);
   const x = (row) => axis === 'time' ? (row[1] === null ? null : row[1] / 60) : row[0];
   const finite = v => v !== null && Number.isFinite(v);
   const pace = v => { const s = Math.round(v); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
@@ -110,7 +121,7 @@
     clear() {pinned=null; schedule(null);},
     select(value) {bounds=value;plot.dataset.trackBounds=JSON.stringify(value);draw();},
     dispose() {
-      disposed=true;if(raf!==null)cancelAnimationFrame(raf);
+      disposed=true;resizeObserver.disconnect();if(raf!==null)cancelAnimationFrame(raf);
       if(marker)map.removeLayer(marker);
       handlers.forEach(([layer,move,tap])=>{layer.off('mousemove',move);layer.off('click',tap);layer.off('mouseout',clearHover);});
       plot.removeListener('plotly_hover',hover);plot.removeListener('plotly_click',click);

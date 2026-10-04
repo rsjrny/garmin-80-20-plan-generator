@@ -44,3 +44,29 @@ def db_conn(tmp_path):
         yield conn
     finally:
         conn.close()
+
+
+@pytest.fixture()
+def ui_database(db_conn):
+    """An isolated app database for page-action tests."""
+    from pathlib import Path
+
+    db_conn.commit()
+    return Path(db_conn.execute("PRAGMA database_list").fetchone()[2])
+
+
+@pytest.fixture()
+def browser_artifacts(tmp_path, request):
+    """Keep screenshots out of tracked reports; CI can retain them explicitly."""
+    import hashlib
+    import os
+    from pathlib import Path
+
+    configured = os.environ.get("GARMIN_TEST_ARTIFACTS")
+    if configured:
+        suffix = hashlib.sha256(request.node.nodeid.encode()).hexdigest()[:10]
+        directory = Path(configured) / (request.node.name + "-" + suffix)
+    else:
+        directory = tmp_path / "browser-artifacts"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory

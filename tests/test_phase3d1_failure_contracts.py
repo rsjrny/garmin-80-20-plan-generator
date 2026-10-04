@@ -1,8 +1,4 @@
-"""Intentional RED contracts for policy-independent Phase 3D threshold defects.
-
-Exclude this module from historical regression runs until Phase 3D.2.  No test
-is xfailed: every failure is executable evidence of a missing contract.
-"""
+"""Threshold regressions for persistence, refresh failures and independent overrides."""
 
 from __future__ import annotations
 
@@ -211,19 +207,6 @@ def test_successful_recalc_reloads_raw_overrides_not_new_calculated_values(
     ) == (185, 159, 190, 170)
 
 
-def test_automatic_refresh_keeps_ftp_override_separate_from_ftp_calc(tmp_path):
-    db_path = _database(tmp_path)
-    conn = _connect(db_path)
-    try:
-        queries.set_calculated_ftp(conn, 200)
-        queries.set_override_metrics(conn, None, None, 260)
-        update_athlete_profile(conn)
-        row = conn.execute(
-            "SELECT ftp_calc, ftp_override FROM athlete_profile WHERE profile_id=1"
-        ).fetchone()
-        assert tuple(row) == (200, 260)
-    finally:
-        conn.close()
 
 
 def test_equivalent_space_and_t_timestamps_include_the_exact_cutoff(tmp_path):

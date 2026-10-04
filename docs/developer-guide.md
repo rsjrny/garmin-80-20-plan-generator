@@ -45,7 +45,7 @@ python -m venv .venv
 ~~~
 
 Use the environment's Python explicitly; activation is optional. The dev extra
-installs pytest and the pinned packaging toolchain. Core dependencies include
+installs pytest, Playwright and the pinned packaging toolchain. Core dependencies include
 NiceGUI, pywebview, pandas, NumPy, Plotly, openpyxl, FIT/GPX parsers, and the
 supported upstream package. See [pyproject.toml](../pyproject.toml).
 
@@ -160,6 +160,10 @@ also read upstream columns directly. Some helpers inspect available columns and
 fall back to NULL; that behavior is not universal, and it cannot detect changed
 units or meaning. Removing or renaming upstream fields can cause errors or empty
 UI results.
+
+The MCP SDK dependency is constrained to version 1.x because the pinned Garmin
+server imports the v1 FastMCP API. MCP 2.x requires a coordinated upstream and
+client migration; it is not compatible with the current integration.
 
 The exact dependency pin and runtime version guard prevent the supported app
 sync from adopting an unreviewed upstream version. They do not protect a database
@@ -338,6 +342,30 @@ maintenance helpers in scripts/ can be imported during collection.
 .\.venv\Scripts\python.exe -m playwright install chromium
 .\.venv\Scripts\python.exe -m pytest
 ~~~
+
+CI reports three jobs: non-browser tests on Linux, browser scenarios on Linux,
+and installer, credential, packaged-runtime and process-tree checks on Windows.
+Keep all three checks required in repository branch protection.
+
+For faster local feedback, run the non-browser checks first:
+
+~~~powershell
+.\.venv\Scripts\python.exe -m pytest -m "not browser"
+.\.venv\Scripts\python.exe -m pytest -m browser
+~~~
+
+The browser marker selects real Chromium scenarios; static browser event
+configuration checks still run with the non-browser suite. Screenshots go to
+per-test temporary directories. To retain them, set GARMIN_TEST_ARTIFACTS to a
+directory before running browser tests. CI uploads them when its browser job
+fails. Screenshots are diagnostics, not visual baseline assertions.
+
+PowerShell release tests execute an isolated build-script section with stand-ins
+for compilation, signing and removal. They verify final artifact checksums
+without building a real installer. They skip when PowerShell is absent; the
+Windows job provides the required execution environment.
+
+See [Test cleanup](test-cleanup.md) for cleanup decisions and validation.
 
 Select coverage according to the changed behavior:
 

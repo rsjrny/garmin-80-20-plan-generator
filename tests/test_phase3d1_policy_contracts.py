@@ -1,9 +1,4 @@
-"""Approved Phase 3D product-policy contracts (mostly intentional RED).
-
-The tests use temporary databases and real production seams.  The few contracts
-that need the future provenance/staleness service assert its smallest proposed
-API directly; they are intentionally not xfailed.
-"""
+"""Current threshold policy contracts for running evidence, provenance and rounding."""
 
 from __future__ import annotations
 
@@ -262,25 +257,22 @@ def test_running_ftp_requires_canonical_complete_1200_second_power_support(
         conn.close()
 
 
-def test_running_ftp_rounding_uses_integer_bankers_rounding_of_peak_times_095(
-    monkeypatch, tmp_path
-):
+@pytest.mark.parametrize(
+    "power,expected", [(83, 79), (84, 80), (211, 200), (526, 500), (527, 501)],
+    ids=["below-minimum", "minimum", "bankers-rounding", "maximum", "above-maximum"],
+)
+def test_running_ftp_rounding_does_not_reapply_obsolete_summary_bounds(monkeypatch, tmp_path, power, expected):
     db_path = _database(tmp_path)
-    conn = _connect(db_path)
-    try:
+    with _connect(db_path) as conn:
         monkeypatch.setattr(thresholds, "datetime", FrozenDateTime)
-        _insert_activity(conn, 1, sport="running", norm_power=211, avg_power=211)
-        peak = _insert_power_trackpoints(conn, 1, 211)
+        _insert_activity(conn, 1, sport="running", norm_power=power, avg_power=power)
+        assert _insert_power_trackpoints(conn, 1, power) == power
         _refresh_temporal(conn, [1])
         update_athlete_profile(conn)
         stored = conn.execute(
             "SELECT ftp_calc FROM athlete_profile WHERE profile_id=1"
         ).fetchone()[0]
-        assert peak == 211
-        assert round(peak * 0.95) == 200
-        assert stored == 200
-    finally:
-        conn.close()
+        assert stored == expected
 
 
 def test_zero_watts_remain_measured_but_do_not_create_a_bounded_ftp():
@@ -569,5 +561,22 @@ def test_manual_override_without_calculation_has_no_fake_calculated_provenance(
             assert key in metrics
             assert metrics[key] is None
             assert metrics[f"{metric}_override"] > 0
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("support_s,expected", [(1199.999, None), (1200, 190)])
+def test_legacy_ftp_adapter_requires_exact_complete_running_power_support(
+    monkeypatch, tmp_path, support_s, expected
+):
+    db_path = _database(tmp_path)
+    conn = _connect(db_path)
+    try:
+        monkeypatch.setattr(queries, "datetime", FrozenDateTime)
+        _insert_activity(conn, 1, sport="running", norm_power=400, avg_power=350)
+        peak = _insert_power_trackpoints(conn, 1, 200, support_s=support_s)
+        assert peak == (200 if support_s == 1200 else None)
+        _refresh_temporal(conn, [1])
+        assert queries._estimate_ftp_from_recent_power(conn) == expected
     finally:
         conn.close()

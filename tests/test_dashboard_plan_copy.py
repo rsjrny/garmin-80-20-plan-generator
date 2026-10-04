@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+import pytest
+
+from nicegui import ui
+
+from ui_test_support import run_ui, wait_until
 
 from garmin_data_hub.ui_nicegui import pages
 from garmin_data_hub.ui_nicegui.pages import _format_upcoming_plan_for_sharing
@@ -58,18 +62,32 @@ def test_shareable_upcoming_plan_handles_one_or_no_sessions():
     )
 
 
-def test_dashboard_wires_copy_button_to_visible_upcoming_rows():
-    source = Path(pages.__file__).read_text(encoding="utf-8")
-    dashboard = source.split('    @ui.page("/")', maxsplit=1)[1].split(
-        '    @ui.page("/activities")', maxsplit=1
-    )[0]
+@pytest.mark.parametrize("has_plan", [True, False], ids=["populated", "empty"])
+def test_dashboard_copy_uses_visible_rows_and_empty_plan_is_disabled(
+    monkeypatch, ui_database, has_plan
+):
+    upcoming = [{"date": "2026-09-01", "workout": "Easy run", "duration_min": 45,
+                 "distance_km": 8.04672, "tss": 32.5}] if has_plan else []
+    monkeypatch.setattr(pages, "dashboard_data", lambda *_args, **_kwargs: {
+        "stats": {}, "plan": {}, "athlete": {}, "diagnostics": {},
+        "upcoming": upcoming, "recent": [],
+    })
+    copied = []
+    monkeypatch.setattr(ui.clipboard, "write", copied.append)
 
-    assert '"Copy plan"' in dashboard
-    assert 'icon="content_copy"' in dashboard
-    assert "on_click=copy_upcoming_plan" in dashboard
-    assert "_format_upcoming_plan_for_sharing(" in dashboard
-    assert "display_upcoming," in dashboard
-    assert "ui.clipboard.write(shareable_upcoming)" in dashboard
-    assert "copy_plan_button.set_enabled(bool(display_upcoming))" in dashboard
-    assert "Copied {session_count} upcoming {session_label}" in dashboard
-    assert '"to the clipboard."' in dashboard
+    async def scenario(user):
+        await user.open("/")
+        button = next(iter(user.find("Copy plan").elements))
+        assert button.enabled is has_plan
+        if has_plan:
+            user.find("Copy plan").click()
+            await wait_until(lambda: bool(copied))
+            assert copied == [
+                "Upcoming training plan (1 session shown)\n"
+                "- Tue 2026-09-01 — Easy run · 45 min · 5 mi · TSS 32.5"
+            ]
+            assert user.notify.contains("Copied 1 upcoming session to the clipboard.")
+        else:
+            assert copied == []
+
+    run_ui(ui_database, scenario)

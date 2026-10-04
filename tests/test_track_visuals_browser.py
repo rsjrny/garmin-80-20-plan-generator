@@ -1,3 +1,7 @@
+import json
+
+import pytest
+from browser_test_support import wait_for_layout
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 from test_activity_grid_browser import (_test_database, _free_loopback_port, _start_server, _stop_server, _click_activity)
@@ -5,7 +9,8 @@ from test_track_visuals import points
 from garmin_data_hub.db.sqlite import connect_sqlite
 
 
-def test_pace_track_desktop_narrow_and_popup(tmp_path):
+@pytest.mark.browser
+def test_pace_track_desktop_narrow_and_popup(tmp_path, browser_artifacts):
     db = _test_database(tmp_path)
     conn = connect_sqlite(db)
     conn.executemany(
@@ -31,8 +36,8 @@ def test_pace_track_desktop_narrow_and_popup(tmp_path):
             page.wait_for_function("document.querySelector('.leaflet-container canvas') !== null")
             page.locator(".leaflet-tooltip", has_text="Start").wait_for()
             page.locator(".leaflet-tooltip", has_text="Finish").wait_for()
-            page.wait_for_timeout(500)
-            output = Path(__file__).resolve().parents[1] / "reports" / "track_t1"
+            wait_for_layout(page)
+            output = browser_artifacts
             output.mkdir(parents=True,exist_ok=True)
             page.screenshot(path=str(output/"desktop.png"),full_page=True)
             # NiceGUI's map instance owns a single GeoJSON group with interactive sections.
@@ -53,7 +58,7 @@ def test_pace_track_desktop_narrow_and_popup(tmp_path):
             assert "Smoothed pace" in page.locator('.leaflet-popup-content').inner_text()
             page.set_viewport_size({"width":390,"height":844})
             page.get_by_role("button",name="Fit route",exact=True).click()
-            page.wait_for_timeout(500)
+            wait_for_layout(page)
             page.screenshot(path=str(output/"narrow.png"),full_page=True)
             assert page.locator('.leaflet-container').evaluate("e => e.getBoundingClientRect().width") <= 390
             page.evaluate("window.socket?.disconnect()")
@@ -64,7 +69,8 @@ def test_pace_track_desktop_narrow_and_popup(tmp_path):
     assert "Traceback" not in server, server
 
 
-def test_metric_switch_reuses_sections_and_preserves_selection(tmp_path):
+@pytest.mark.browser
+def test_metric_switch_reuses_sections_and_preserves_selection(tmp_path, browser_artifacts):
     db = _test_database(tmp_path)
     conn = connect_sqlite(db)
     raw = points(120)
@@ -98,7 +104,7 @@ def test_metric_switch_reuses_sections_and_preserves_selection(tmp_path):
                 selector.click()
                 page.get_by_role("option",name=label,exact=True).click()
                 page.get_by_text(heading,exact=False).wait_for()
-                page.wait_for_timeout(150)
+                page.wait_for_function("("+snapshot+")().some((section, i) => section.color !== "+json.dumps(before)+"[i].color)")
                 after = page.evaluate(snapshot)
                 assert [s["id"] for s in after] == [s["id"] for s in before]
                 assert any(s["color"] != old["color"] for s,old in zip(after,before))
@@ -106,7 +112,7 @@ def test_metric_switch_reuses_sections_and_preserves_selection(tmp_path):
             page.get_by_role("tab",name="Overview",exact=True).click()
             page.get_by_role("tab",name="Track",exact=True).click()
             assert selector.input_value() == "Cadence"
-            page.wait_for_timeout(400)
+            wait_for_layout(page)
             # Missing selected readings explain the gray section in the popup.
             page.evaluate("""() => {
                 const map = getElement(Number(document.querySelector('.leaflet-container').id.slice(1))).map;
@@ -116,13 +122,13 @@ def test_metric_switch_reuses_sections_and_preserves_selection(tmp_path):
             }""")
             page.locator('.leaflet-popup-content').wait_for()
             assert "unavailable for this section" in page.locator('.leaflet-popup-content').inner_text()
-            page.wait_for_timeout(300)
-            output = Path(__file__).resolve().parents[1]/"reports"/"track_t2"
+            wait_for_layout(page)
+            output = browser_artifacts
             output.mkdir(parents=True,exist_ok=True)
             page.screenshot(path=str(output/"desktop.png"),full_page=True)
             page.set_viewport_size({"width":390,"height":844})
             page.get_by_role("button",name="Fit route",exact=True).click()
-            page.wait_for_timeout(300)
+            wait_for_layout(page)
             page.screenshot(path=str(output/"narrow.png"),full_page=True)
             assert page.locator('.leaflet-container').evaluate("e => e.getBoundingClientRect().width") <= 390
             page.evaluate("window.socket?.disconnect()")
@@ -133,7 +139,8 @@ def test_metric_switch_reuses_sections_and_preserves_selection(tmp_path):
     assert "Traceback" not in server, server
 
 
-def test_t3_split_lap_selection_markers_keyboard_and_narrow_layout(tmp_path):
+@pytest.mark.browser
+def test_t3_split_lap_selection_markers_keyboard_and_narrow_layout(tmp_path, browser_artifacts):
     import json
     db = _test_database(tmp_path)
     conn = connect_sqlite(db)
@@ -175,13 +182,13 @@ def test_t3_split_lap_selection_markers_keyboard_and_narrow_layout(tmp_path):
                 });
                 return {base,selection,markers};
             }"""
-            page.wait_for_timeout(300)
+            page.wait_for_function("("+snapshot+")().markers.length === 3")
             before = page.evaluate(snapshot)
             assert len(before["markers"]) == 3  # Two full miles + one aligned manual lap.
             selector.click()
             page.get_by_role("option", name="GPS split 1", exact=True).click()
             page.get_by_text("Fastest full split", exact=False).first.wait_for()
-            page.wait_for_timeout(300)
+            page.wait_for_function("("+snapshot+")().selection.length > 0")
             after = page.evaluate(snapshot)
             assert after["base"] == before["base"]
             assert {s["color"] for s in after["selection"]} == {"#ffffff", "#172e50"}
@@ -191,7 +198,7 @@ def test_t3_split_lap_selection_markers_keyboard_and_narrow_layout(tmp_path):
             page.keyboard.press("Enter")
             assert selector.input_value() == "GPS split 2"
             page.get_by_role("button", name="Clear interval", exact=True).click()
-            page.wait_for_timeout(200)
+            page.wait_for_function("!("+snapshot+")().selection.length")
             assert not page.evaluate(snapshot)["selection"]
             # Boundary marker uses the real NiceGUI event bridge to select the lap.
             page.evaluate("""() => {
@@ -206,22 +213,22 @@ def test_t3_split_lap_selection_markers_keyboard_and_narrow_layout(tmp_path):
             metric = page.get_by_label("Route metric", exact=True)
             metric.click()
             page.get_by_role("option", name="Heart rate", exact=True).click()
-            page.wait_for_timeout(200)
+            wait_for_layout(page)
             assert page.evaluate(snapshot)["selection"]
             selector.click()
             page.get_by_role("option", name="Stored lap 2", exact=True).click()
             page.get_by_text("Route highlighting unavailable for this lap.", exact=True).wait_for()
-            page.wait_for_timeout(200)
+            wait_for_layout(page)
             assert not page.evaluate(snapshot)["selection"]
             selector.click()
             page.get_by_role("option", name="Manual lap 1", exact=True).click()
-            output = Path(__file__).resolve().parents[1]/"reports"/"track_t3"
+            output = browser_artifacts
             output.mkdir(parents=True, exist_ok=True)
-            page.wait_for_timeout(200)
+            wait_for_layout(page)
             page.screenshot(path=str(output/"desktop.png"), full_page=True)
             page.set_viewport_size({"width":390,"height":844})
             page.get_by_role("button", name="Fit route", exact=True).click()
-            page.wait_for_timeout(300)
+            wait_for_layout(page)
             page.screenshot(path=str(output/"narrow.png"), full_page=True)
             assert page.locator('.leaflet-container').evaluate("e => e.getBoundingClientRect().width") <= 390
             assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")

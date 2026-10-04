@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+from nicegui import ui
+from ui_test_support import run_ui, wait_until
+
 from openpyxl import load_workbook
 
 from garmin_data_hub.db.migrate import apply_schema
@@ -11,8 +15,11 @@ from garmin_data_hub.exports.master_export import (
     generate_plan_data,
 )
 from garmin_data_hub.paths import schema_sql_path
-from garmin_data_hub.services.plan_persistence import save_generated_plan
-from garmin_data_hub.ui_nicegui import pages
+from garmin_data_hub.db import queries
+from garmin_data_hub.services.plan_persistence import (
+    save_generated_plan, get_active_plan_sha256, get_active_plan_snapshot,
+)
+from garmin_data_hub.ui_nicegui.data import save_planning_settings
 from garmin_data_hub.ui_nicegui.data import plan_rows
 
 
@@ -42,20 +49,52 @@ def _baseline_data():
     )
 
 
-def test_plan_page_offers_offline_workbook_and_codex_generation_paths():
-    source = Path(pages.__file__).read_text(encoding="utf-8")
-    plan_page = source.split('    @ui.page("/plan")', maxsplit=1)[1].split(
-        '    @ui.page("/compliance")', maxsplit=1
-    )[0]
+@pytest.mark.parametrize("include_workbook", [False, True], ids=["offline", "workbook"])
+def test_baseline_page_requires_confirmation_and_refreshes_saved_schedule(
+    monkeypatch, tmp_path, include_workbook
+):
+    db = _database(tmp_path)
+    _configure_baseline(db, tmp_path)
+    before = get_active_plan_sha256(db)
 
-    assert '"Generate offline baseline"' in plan_page
-    assert '"Generate baseline + workbook"' in plan_page
-    assert '"Open Codex Coach"' in plan_page
-    assert "@ui.refreshable" in plan_page
-    assert ".refresh()" in plan_page
-    assert 'state["confirmation_pending"]' in plan_page
-    assert "expected_active_plan_sha256=expected_plan_sha256" in plan_page
-    assert 'state["last_workbook"] = None' in plan_page
+    async def scenario(user):
+        await user.open("/plan")
+        label = "Generate baseline + workbook" if include_workbook else "Generate offline baseline"
+        user.find(label).click()
+        dialog = next(iter(user.find(ui.dialog).elements))
+        await wait_until(lambda: dialog.value)
+        assert not next(iter(user.find(label).elements)).enabled
+        assert get_active_plan_sha256(db) == before
+        user.find("Replace range and generate").click()
+        await wait_until(lambda: user.notify.contains("Check the replacement acknowledgement first."))
+        assert get_active_plan_sha256(db) == before
+        user.find("I understand that workouts in this date range will be replaced.").click()
+        user.find("Replace range and generate").click()
+        await user.should_see("Saved", retries=100)
+        rows = plan_rows(db)
+        assert rows and rows[-1]["intensity"] == "race"
+        assert any(len(grid.options.get("rowData", [])) == len(rows)
+                   for grid in user.find(ui.aggrid).elements)
+        download = next(element for element in user.client.elements.values()
+                        if isinstance(element, ui.button)
+                        and element._props.get("label") == "Download last workbook")
+        assert download.visible is include_workbook
+        assert next(iter(user.find(label).elements)).enabled
+        assert (tmp_path / "baseline.xlsx").is_file() is include_workbook
+        if include_workbook:
+            user.find("Generate offline baseline").click()
+            await wait_until(lambda: dialog.value)
+            user.find("I understand that workouts in this date range will be replaced.").click()
+            user.find("Replace range and generate").click()
+            await wait_until(lambda: not dialog.value and
+                             next(iter(user.find("Generate offline baseline").elements)).enabled)
+            assert not download.visible
+        destinations = []
+        monkeypatch.setattr(user.navigate, "to", destinations.append)
+        user.find("Open Codex Coach").click()
+        assert destinations == ["/coach"]
+
+    run_ui(db, scenario)
 
 
 def test_offline_baseline_persists_rows_consumed_by_plan_schedule(tmp_path):
@@ -110,3 +149,43 @@ def test_offline_workbook_contains_generated_calendar(tmp_path):
         assert calendar[f"B{calendar.max_row}"].value == "2026-09-06"
     finally:
         workbook.close()
+
+
+def _configure_baseline(db, output):
+    with connect_sqlite(db) as conn:
+        queries.set_override_metrics(conn, hrmax=190, lthr=165)
+    save_planning_settings(db, {
+        "athlete_name": "Offline Athlete", "age": 42, "distance": "10K",
+        "event_name": "Autumn 10K", "plan_start": "2026-08-24", "event_date": "2026-09-06",
+        "run_days_per_week": 4, "long_run_day": "Saturday", "training_method": "eighty_twenty",
+        "sodium_mg_per_hour": 700, "output_directory": str(output),
+        "output_filename": "baseline.xlsx",
+    })
+
+
+def test_baseline_page_rejects_a_plan_changed_during_confirmation(tmp_path):
+    db = _database(tmp_path)
+    _configure_baseline(db, tmp_path)
+
+    async def scenario(user):
+        await user.open("/plan")
+        user.find("Generate baseline + workbook").click()
+        dialog = next(iter(user.find(ui.dialog).elements))
+        await wait_until(lambda: dialog.value)
+        with connect_sqlite(db) as conn:
+            conn.execute("INSERT INTO planned_workout(scheduled_date,workout_name) VALUES (?,?)",
+                         ("2026-09-01", "Added from another page"))
+            conn.commit()
+        before = get_active_plan_snapshot(db)
+        user.find("I understand that workouts in this date range will be replaced.").click()
+        user.find("Replace range and generate").click()
+        await user.should_see("Baseline generation failed", retries=100)
+        assert get_active_plan_snapshot(db) == before
+        assert not (tmp_path / "baseline.xlsx").exists()
+        assert not list(tmp_path.glob(".garmin-data-hub-plan-*.xlsx"))
+        assert not next(element for element in user.client.elements.values()
+                        if isinstance(element, ui.button)
+                        and element._props.get("label") == "Download last workbook").visible
+        assert next(iter(user.find("Generate baseline + workbook").elements)).enabled
+
+    run_ui(db, scenario)

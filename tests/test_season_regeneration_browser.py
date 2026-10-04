@@ -1,3 +1,5 @@
+import pytest
+from browser_test_support import wait_for_layout
 from dataclasses import replace
 from pathlib import Path
 from season_browser_logs import application_logs
@@ -10,7 +12,8 @@ from garmin_data_hub.plan_methodology.revision_repository import load_revision
 from test_activity_grid_browser import _test_database, _start_server, _stop_server, _free_loopback_port
 
 
-def test_protection_manual_preview_affected_diff_stale_rejection_and_apply(tmp_path):
+@pytest.mark.browser
+def test_protection_manual_preview_affected_diff_stale_rejection_and_apply(tmp_path, browser_artifacts):
     db=_test_database(tmp_path)
     season=intent.create_season(db,intent.SeasonDraft("Safe regeneration","2027-01-01","2027-12-31","America/New_York",
         intent.SeasonInputs(starting_duration_seconds=10800,lthr=170)))
@@ -20,7 +23,7 @@ def test_protection_manual_preview_affected_diff_stale_rejection_and_apply(tmp_p
     season=intent.get_season(db,season.season_id)
     selected=next(w for w in initial.schedule.candidate.workouts if w.sport.value=="RUNNING" and not w.event_flag)
     process=_start_server(db,port:=_free_loopback_port())
-    output=Path(__file__).resolve().parents[1]/"reports/yearly_y3"
+    output = browser_artifacts
     output.mkdir(parents=True,exist_ok=True)
     errors=[]
     try:
@@ -49,7 +52,7 @@ def test_protection_manual_preview_affected_diff_stale_rejection_and_apply(tmp_p
             dialog=page.get_by_role("dialog")
             expect(dialog.get_by_role("button",name="Apply reviewed season",exact=True)).to_be_enabled()
             expect(page.locator(".q-notification")).to_have_count(0,timeout=15000)
-            page.wait_for_timeout(250)
+            wait_for_layout(page)
             page.screenshot(path=str(output/"manual_preview_desktop.png"))
             dialog.get_by_label("I reviewed the schedule and acknowledge all warnings.",exact=True).click()
             dialog.get_by_role("button",name="Apply reviewed season",exact=True).click()
@@ -57,22 +60,24 @@ def test_protection_manual_preview_affected_diff_stale_rejection_and_apply(tmp_p
             season=intent.get_season(db,season.season_id)
             e=intent.list_events(db,season.season_id)[0]
             intent.save_event(db,season.season_id,replace(e.draft,event_date="2027-06-06"),event_id=e.event_id,expected_version=season.input_version)
+            refreshed=intent.get_season(db,season.season_id)
             page.get_by_role("button",name="Refresh seasons",exact=True).click()
+            expect(page.get_by_text(f"Planning version {refreshed.input_version} · Linked revision {refreshed.current_revision_id}",exact=True)).to_be_visible()
             page.get_by_role("button",name="Preview yearly schedule",exact=True).click()
             dialog=page.get_by_role("dialog")
             page.get_by_text("Generate season preview",exact=True).wait_for()
             expect(page.locator(".q-notification")).to_have_count(0,timeout=15000)
-            page.wait_for_timeout(250)
+            wait_for_layout(page)
             page.screenshot(path=str(output/"regeneration_settings_desktop.png"))
             dialog.get_by_role("button",name="Generate preview",exact=True).click()
             page.get_by_text("Season schedule preview",exact=True).wait_for()
             dialog=page.get_by_role("dialog")
             dialog.get_by_text("Workout changes and preservation",exact=True).wait_for()
             expect(dialog.get_by_role("button",name="Apply reviewed season",exact=True)).to_be_enabled()
-            page.wait_for_timeout(250)
+            wait_for_layout(page)
             page.screenshot(path=str(output/"affected_preview_desktop.png"))
             page.set_viewport_size({"width":390,"height":844})
-            page.wait_for_timeout(250)
+            wait_for_layout(page)
             assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
             page.screenshot(path=str(output/"affected_preview_narrow.png"))
             # A changed operational lock is invisible to immutable plan hashes but must stale the preview.
@@ -109,23 +114,23 @@ def test_protection_manual_preview_affected_diff_stale_rejection_and_apply(tmp_p
             page.get_by_text("Applied season revisions",exact=True).click()
             page.get_by_text("Recorded preservation and overrides",exact=True).first.wait_for()
             page.get_by_text("Recorded preservation and overrides",exact=True).last.click()
-            page.wait_for_timeout(300)
+            wait_for_layout(page)
             page.get_by_text("My preserved easy run",exact=False).last.scroll_into_view_if_needed()
-            page.wait_for_timeout(250)
+            wait_for_layout(page)
             page.screenshot(path=str(output/"history_narrow.png"))
             page.evaluate("window.socket?.disconnect()")
-            page.wait_for_timeout(250)
+            wait_for_layout(page)
             page.set_viewport_size({"width":1440,"height":1000})
             page.goto(f"http://127.0.0.1:{port}/plan",wait_until="networkidle")
             page.get_by_text("My preserved easy run",exact=True).first.wait_for()
             page.locator(".ag-body-horizontal-scroll-viewport").first.evaluate("e => e.scrollLeft=e.scrollWidth")
             page.get_by_text("Manual · Preserved",exact=True).first.wait_for()
             page.get_by_text("Manual · Preserved",exact=True).first.scroll_into_view_if_needed()
-            page.wait_for_timeout(250)
+            wait_for_layout(page)
             page.screenshot(path=str(output/"calendar_protection_desktop.png"))
             assert errors==[]
             page.evaluate("window.socket?.disconnect()")
-            page.wait_for_timeout(250)
+            wait_for_layout(page)
             browser.close()
     finally:
         logs=_stop_server(process)

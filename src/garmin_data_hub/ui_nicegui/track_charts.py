@@ -54,6 +54,12 @@ def render_track_charts(track, route_map, state, activity_key, sport, on_range):
                 end.set_value(round(model["axes"][axis["value"]]["max"], 3))
             alignment.set_text("Selected interval has no reliable chart alignment." if item and bounds is None else "")
 
+    def figure_options(axis_name):
+        options = chart_figure(track, model, axis_name)
+        # The client controller resizes only displayed charts, including tab reveals.
+        options["config"] = {**options.get("config", {}), "responsive": False}
+        return options
+
     async def change_axis(event):
         if event.value not in model["axes"]:
             return
@@ -65,12 +71,12 @@ def render_track_charts(track, route_map, state, activity_key, sport, on_range):
         for field, value in ((position, 0), (start, 0), (end, maximum)):
             field.set_value(round(value, 3))
         bounds_label.set_text(f"Positions in {'elapsed minutes' if event.value == 'time' else track['unit']}; activity range 0–{maximum:.3f}.")
-        plot.update_figure(chart_figure(track, model, event.value))
+        plot.update_figure(figure_options(event.value))
         await initialize()
 
     with ui.row().classes("w-full items-center gap-2 flex-wrap"):
         ui.select({k: v["label"] for k, v in model["axes"].items()}, value=axis["value"], label="Chart x-axis", on_change=change_axis).classes("w-full max-w-xs")
-    plot = ui.plotly(chart_figure(track, model, axis["value"])).classes("w-full min-w-0")
+    plot = ui.plotly(figure_options(axis["value"])).classes("w-full min-w-0")
     readout = ui.label("Hover or tap the route or a chart, or inspect a position with the keyboard controls.").classes("text-sm w-full").props('role="status" aria-live="off"')
     # Hover is deliberately not a live announcement; keyboard inspection announces once.
     announcement = ui.label("").classes("sr-only").props('role="status" aria-live="polite"')

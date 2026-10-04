@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+from browser_test_support import wait_for_layout
+
 import ast
 import hashlib
 import os
@@ -179,8 +182,10 @@ def _click_activity(page, activity_id: int, interaction_errors: list[str]) -> bo
     return True
 
 
+@pytest.mark.browser
 def test_activity_row_clicks_cross_browser_boundary_without_runtime_errors(
     tmp_path: Path,
+    browser_artifacts,
 ) -> None:
     db_path = _test_database(tmp_path)
     original_db_hash = hashlib.sha256(db_path.read_bytes()).hexdigest()
@@ -229,9 +234,9 @@ def test_activity_row_clicks_cross_browser_boundary_without_runtime_errors(
                         _click_activity(page, activity_id, interaction_errors),
                     )
                 )
-            page.wait_for_timeout(250)
+            wait_for_layout(page)
             page.evaluate("window.socket?.disconnect()")
-            page.wait_for_timeout(250)
+            wait_for_layout(page)
             browser.close()
     finally:
         server_output = _stop_server(process)

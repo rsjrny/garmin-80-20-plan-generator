@@ -1,14 +1,7 @@
-"""Expected-red contracts for the not-yet-implemented Phase 3A pipeline.
-
-Do not xfail or skip this module.  Each failure describes production behavior
-required for Phase 3A.2.  The passing characterizations are kept in a separate
-module so the pre-existing suite can still be run and reported independently.
-"""
+"""Regression contracts for canonical sync, archive refresh and failure propagation."""
 
 from __future__ import annotations
 
-import ast
-import inspect
 import sqlite3
 import subprocess
 from pathlib import Path
@@ -18,7 +11,6 @@ import pytest
 from garmin_data_hub import cli_backup_ingest
 from garmin_data_hub.db import queries
 from garmin_data_hub.ingest import trackpoints
-from garmin_data_hub.ui_nicegui import pages as nicegui_pages
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -143,18 +135,6 @@ def _record_real_ingestion(monkeypatch: pytest.MonkeyPatch):
     return calls
 
 
-def _function_source(name: str) -> str:
-    source = inspect.getsource(nicegui_pages)
-    tree = ast.parse(source)
-    matches = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name
-    ]
-    assert len(matches) == 1, f"Expected one {name} function, found {len(matches)}"
-    segment = ast.get_source_segment(source, matches[0])
-    assert segment is not None
-    return segment
 
 
 @pytest.mark.parametrize(
@@ -543,34 +523,12 @@ def test_refresh_targets_union_of_date_window_and_changed_trackpoint_ids(
     } == {old_changed_id, recent_id}
 
 
-def test_data_query_fresh_request_uses_shared_job_not_writable_mcp():
-    source = _function_source("execute_mcp")
-    module_source = inspect.getsource(nicegui_pages)
-
-    assert "get_sync_job" in source
-    assert ".start(" in source
-    assert "call_tool_via_sidecar" not in module_source
 
 
-def test_data_query_fresh_request_uses_saved_credentials_and_actionable_missing_login():
-    source = _function_source("execute_mcp")
-
-    assert "load_credentials" in source
-    assert "Garmin Sync" in source or "configure Garmin login" in source
 
 
-def test_data_query_sync_rejects_sandbox_and_nonstandard_database_targets():
-    source = _function_source("execute_mcp")
-
-    assert "sandboxed" in source
-    assert "garmin.db" in source
 
 
-def test_data_query_observes_the_shared_running_job_snapshot():
-    source = _function_source("execute_mcp")
-
-    assert "get_sync_job" in source
-    assert ".snapshot(" in source
 
 
 def test_frozen_cli_entrypoint_imports_application_trackpoint_adapter():

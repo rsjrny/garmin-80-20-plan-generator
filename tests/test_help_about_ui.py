@@ -5,6 +5,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from nicegui import ui
+
+from ui_test_support import run_ui
+
 from garmin_data_hub import __version__
 from garmin_data_hub.ui_nicegui import pages
 from garmin_data_hub.ui_nicegui.layout import NAVIGATION
@@ -53,18 +57,23 @@ def test_help_about_content_links_to_known_pages_and_support_resources():
     }
 
 
-def test_help_about_page_wires_version_workflow_and_about_details():
-    source = Path(pages.__file__).read_text(encoding="utf-8")
-    help_page = source.split('    @ui.page("/guide")', maxsplit=1)[1]
+def test_help_about_renders_version_workflow_and_support_links(ui_database):
+    async def scenario(user):
+        await user.open("/guide")
+        await user.should_see(f"Version {__version__}")
+        await user.should_see("Local by design")
+        await user.should_see("Open-source & legal")
+        for _, title, _, label, route in HELP_WORKFLOW_SECTIONS:
+            await user.should_see(title)
+            link = next(element for element in user.find(label).elements
+                        if isinstance(element, ui.link) and element.text == label)
+            assert link._props["href"] == route
+        for label, target in ABOUT_LINKS:
+            link = next(iter(user.find(label).elements))
+            assert link._props["href"] == target
+            assert link._props["target"] == "_blank"
 
-    assert (
-        "for step, title, text, link_label, route in HELP_WORKFLOW_SECTIONS:"
-        in help_page
-    )
-    assert "for label, target in ABOUT_LINKS:" in help_page
-    assert 'ui.badge(f"Version {__version__}", color="blue")' in help_page
-    assert 'ui.label("Local by design")' in help_page
-    assert 'ui.label("Open-source & legal")' in help_page
+    run_ui(ui_database, scenario)
 
 
 def test_displayed_version_matches_project_and_release_build_metadata():

@@ -2,6 +2,7 @@ from pathlib import Path
 import json
 
 import pytest
+from browser_test_support import wait_for_layout
 from playwright.sync_api import sync_playwright
 
 from test_activity_grid_browser import _test_database, _free_loopback_port, _start_server, _stop_server, _click_activity
@@ -56,7 +57,8 @@ def _select(page, label, option):
     return field
 
 
-def test_t4_long_linked_hover_keyboard_ranges_and_responsive_layout(tmp_path):
+@pytest.mark.browser
+def test_t4_long_linked_hover_keyboard_ranges_and_responsive_layout(tmp_path, browser_artifacts):
     db = _database(tmp_path)
     server = _start_server(db, port := _free_loopback_port())
     errors = []
@@ -93,7 +95,6 @@ def test_t4_long_linked_hover_keyboard_ranges_and_responsive_layout(tmp_path):
             page.get_by_label("Cursor position",exact=True).fill("0.1")
             page.get_by_role("button",name="Inspect position",exact=True).focus()
             page.keyboard.press("Enter")
-            page.wait_for_timeout(500)
             page.get_by_text("Heart rate: unavailable",exact=False).first.wait_for()
             page.get_by_role("button",name="Clear cursor",exact=True).click()
             page.wait_for_function("document.querySelector('[data-track-linked=\"true\"]').dataset.trackCursor === ''")
@@ -153,7 +154,7 @@ def test_t4_long_linked_hover_keyboard_ranges_and_responsive_layout(tmp_path):
             assert page.get_by_label("Chart x-axis",exact=True).input_value() == "GPS distance (mi)"
             assert page.get_by_label("Split or lap",exact=True).input_value() == "Selected chart range"
             _select(page,"Route metric","Heart rate")
-            page.wait_for_timeout(200)
+            page.wait_for_function("("+SNAPSHOT+")().base.some((section, i) => section.color !== "+json.dumps(before["base"])+"[i].color)")
             recolored = page.evaluate(SNAPSHOT)
             assert [s["id"] for s in recolored["base"]] == [s["id"] for s in before["base"]]
             assert recolored["selected"] and recolored["bounds"]
@@ -165,18 +166,26 @@ def test_t4_long_linked_hover_keyboard_ranges_and_responsive_layout(tmp_path):
             page.wait_for_function("document.querySelector('[data-track-linked=\"true\"]').dataset.trackCursor !== ''")
             assert page.evaluate(SNAPSHOT)["cursors"]
             page.get_by_role("button",name="Clear cursor",exact=True).click()
-            output = Path(__file__).resolve().parents[1]/"reports"/"track_t4"
+            output = browser_artifacts
             output.mkdir(parents=True,exist_ok=True)
             page.get_by_role("button",name="Fit route",exact=True).click()
             page.evaluate("window.scrollTo(0,0)")
             page.screenshot(path=str(output/"desktop.png"),full_page=True)
             page.set_viewport_size({"width":390,"height":844})
             page.get_by_role("button",name="Fit route",exact=True).click()
-            page.wait_for_timeout(400)
+            wait_for_layout(page)
             assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
             page.evaluate("window.scrollTo(0,0)")
             page.screenshot(path=str(output/"narrow.png"),full_page=True)
             assert page.locator('[data-track-linked="true"]').evaluate("e=>e.getBoundingClientRect().width") <= 390
+            # Resize while hidden, then reveal: no deferred Plotly resize may reject.
+            page.get_by_role("tab",name="Overview",exact=True).click()
+            page.set_viewport_size({"width":1440,"height":1100})
+            page.get_by_role("tab",name="Track",exact=True).click()
+            page.wait_for_function("""() => {
+                const plot = document.querySelector('[data-track-linked="true"]');
+                return plot && plot._fullLayout.width <= plot.clientWidth + 1;
+            }""")
             # Rebuilding another activity disposes old controllers and range state is activity-isolated.
             page.get_by_role("tab",name="Overview",exact=True).click()
             assert _click_activity(page,101,errors)
@@ -198,7 +207,8 @@ def test_t4_long_linked_hover_keyboard_ranges_and_responsive_layout(tmp_path):
     assert "Traceback" not in log, log
 
 
-def test_t4_no_timestamps_sensor_fallback(tmp_path):
+@pytest.mark.browser
+def test_t4_no_timestamps_sensor_fallback(tmp_path, browser_artifacts):
     db = _database(tmp_path, n=401, missing_time=True)
     server = _start_server(db, port := _free_loopback_port())
     errors = []
