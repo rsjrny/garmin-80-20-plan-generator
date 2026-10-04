@@ -1,6 +1,6 @@
 # Charts Page Improvement Plan
 
-Status: C1 and C2 implemented and locally verified; G1 usage review is next
+Status: C1-C4 implemented and locally verified; C4 verified 2026-10-04.
 
 ## Objective
 
@@ -367,6 +367,16 @@ Suggested boundaries:
 - Chart preparation has deterministic tests independent of NiceGUI rendering.
 - Existing units and pace/speed preferences continue to work.
 
+## Phase 3 Acceptance Criteria
+
+- Read verified active canonical workouts and reuse confirmed match/origin identities.
+- Compare known duration/distance and the explicitly selected load source without inventing missing targets.
+- Show weekly variance, coverage and due-session completion with separate rest, candidate, explicit-completion and substitution evidence.
+- Keep unmatched activities in actual totals; distinguish scheduled dates from recorded activity dates.
+- Support Monday calendar weeks and first-scheduled-date plan weeks for one selected plan.
+- Preserve filters/section/plan/alignment through navigation; provide accessible week evidence, Plan/Activity links and CSV.
+- Test missingness, estimates, rest, unmatched/candidate activity, substitutions, partial/inactive weeks, year boundaries and preserved origins; verify desktop/narrow rendering.
+
 ## Test Scenarios
 
 - One sport with complete metrics
@@ -473,3 +483,141 @@ Changes remain uncommitted: `analytics/chart_overview.py`, `db/queries.py`, `ui_
 C2 remains uncommitted on baseline e79bad7; the working tree was clean at start. New files: analytics/chart_explorer.py, tests/test_chart_explorer.py, tests/test_chart_explorer_browser.py, and four reports/charts_c2/ screenshots. Updated: analytics/chart_overview.py, db/queries.py, ui_nicegui/pages.py, this plan, roadmap, and backlog (source paths are under src/garmin_data_hub/).
 
 G1 is next: review actual usage, remaining allowance/credits, and choose the next authorized scope. Real-history field trial and live usage/credit values remain unavailable. C3/C4 and yearly scheduling stay deferred. No commit, push, deployment, or live schedule changes.
+
+## C3 discovery, verification and handoff - 2026-10-04
+
+User authorized C3 with "lets work on c3". Starting tree was clean at `1c05874`.
+Historical C2 next-scope/uncommitted statements above are superseded by this handoff.
+
+### Implemented behavior and decisions
+
+- Charts adds **Plan comparison**, leaving Overview and the eleven-chart Explorer intact. It compares weekly planned duration/distance with all filtered actual activities, selected TSS/TRIMP where measured, and due-session completion evidence. Active-plan selection, calendar/plan week alignment and C2 filters persist in the running tab across refresh/navigation. Only this section reads plan data; presentation changes reuse cached facts. Refresh explicitly rereads plans/matches and activity metrics.
+- `services/chart_plan_data.py` opens a read-only SQLite snapshot, uses `active_planned_workout` membership/current plan pointers, verifies immutable revisions and origin lineage with the canonical repository, and reads workout leaves rather than mutable projected totals. Missing/duplicate/moved projection membership and corrupt content produce an explained unavailable state. Legacy/unmanaged rows are counted and excluded until explicitly converted in Plan. No migration or conversion occurs in Charts.
+- Duration/distance totals require every leaf to have that measure with an authoritative or estimated role. Estimates remain labeled; partially measured workouts have an unknown whole-workout total. Canonical plans currently prescribe neither TSS nor TRIMP, so planned load and load variance remain unavailable for training sessions even if a mutable projection contains a number. No pace-to-duration or HR-to-load target is invented. Actual measurements reuse C1 provenance and moving-time/elapsed-fallback rules.
+- Monday calendar weeks retain inactive weeks. Plan weeks begin on the selected plan's first scheduled date; dates before that anchor are labeled "Before plan". Multiple active plans are additive; plan-week alignment requires exactly one selected plan. Coverage is the union of active plan date extents, with no assumptions outside them. Date-boundary, current-day and incomplete-plan weeks are labeled partial; totals include only selected dates. Volume variance/percentages require complete measurement and plan coverage of selected days. Percentages also require a positive planned denominator.
+- Confirmed matches use existing `load_confirmed_match` and immutable origins, including carried workouts from Y3 regeneration. Candidate/rejected records never prove completion. Explicit season completion without a confirmed activity remains separate. Rest is excluded from session denominators; due means scheduled before today, so today's sessions are not prematurely counted as missed. Unconfirmed past rows say "No confirmed completion", not "skipped". Confirmed existing activities with unknown recorded dates retain identity evidence with an explicit unknown-date label; future-dated activities do not prove recorded completion.
+- A confirmed moved-date or different-sport activity is labeled a substitution. Same-sport prescription differences are not inferred from totals. Linked activities outside the date/sport filters still provide completion evidence and are labeled accordingly. Actual weekly totals always follow recorded activity dates; plan completion follows scheduled dates. Unmatched and unconfirmed candidate activities remain in actual volume. Confirmed links to another selected-out plan/date are distinguished from unmatched activities. Completion is evidence of occurrence, not native intensity compliance.
+- RUNNING plan targets apply to running/trail_running/indoor_running; subtype filters narrow actuals but cannot split a generic running prescription. Strength maps to strength/strength_training, mobility to mobility/yoga/pilates. This limitation is explained. Existing actual sport types are not silently merged in the activity query.
+- Server-owned week identities resolve chart clicks. A keyboard week selector, scheduled-workout evidence and activity matching tables expose rest, candidates, estimates, explicit completion, review reasons and substitutions. Activity detail/return links retain Charts state; Plan/Seasons links allow schedule review. Weekly variance/coverage has a labeled CSV export. Missing load charts retain an unavailable message. Categorical axes preserve ISO labels with partial-week asterisks.
+
+### Acceptance evidence and limitations
+
+174 distinct checks are verified: a 171-check Charts/data/calendar/matching/revision/
+regeneration regression suite plus the additional complete-estimate case and two new
+C3 browser workflows. The final focused suite passed all 24 checks in 22.01 seconds;
+reruns are not added to the distinct total. Browser checks cover rendered bar clicks,
+keyboard links, matching review followed by explicit refresh, TSS/TRIMP and time/
+distance switches, saved state, calendar/plan weeks, CSV, empty/legacy schedules and
+corruption explanations. Pure tests include imperial estimates, leap/year boundaries,
+overlapping plans, incomplete coverage, rest, substitutions and preserved origin matches.
+A multi-year 1,738-day synthetic history stays under the five-second preparation bound.
+Read-only inspection preserves the complete synthetic database dump.
+
+Desktop/390px charts, tables and evidence dialogs were inspected. Narrow tables scroll
+within their containers; page-width overflow assertions pass. Test fixtures close the
+existing mobile shell drawer after reload and wait for refresh controls to be replaced.
+Visual inspection caught and fixed Plotly date-axis inference dropping starred week
+labels. Detailed commands, results, screenshots and initial fixture failures are in
+[reports/charts_c3/README.md](reports/charts_c3/README.md). `git diff --check` passes.
+
+Current revisions reflect the active schedule rather than historical plan intentions.
+Import completeness, real-history field use, packaged executable behavior, dark theme
+and screen-reader software remain unverified. Planned load estimation, inferred
+substitutions, automatic match confirmation and intensity-adherence evaluation were
+not introduced. No live database/schedule changes, migration, commit, push, deployment
+or packaging rebuild. Client settings were unchanged; attributable tokens/credits
+are unavailable. Stop at C3; C4 advanced sport-specific analytics needs separate scope.
+
+Changed files: new `analytics/chart_plan_comparison.py`, `services/chart_plan_data.py`,
+`ui_nicegui/chart_plan_comparison.py` and two C3 test modules; updated
+`analytics/chart_explorer.py`, `ui_nicegui/pages.py`, README, this plan and roadmap.
+
+## C4 discovery, verification and handoff - 2026-10-04
+
+User authorized C4 with "continue with c4". Starting HEAD was `1c05874` with the
+completed C3 changes still uncommitted. This handoff supersedes earlier deferred-C4
+statements. All C3 implementation and evidence remain intact.
+
+Charts now has a **Performance** section with ten selectable views; the defaults
+are pace at HR band, cadence and qualified durability. HR and pace bounds, minimum
+steady duration, terrain and chart selection persist in the current tab. Pace bounds
+are stored as m/s and shown as min/km or min/mi without repeatedly rounding stored
+values. Invalid live bounds show an explanation while preserving last valid state.
+Presentation changes reuse evidence; Refresh data rereads tracks, original confirmed
+workout matches, canonical revisions and threshold provenance in a read-only snapshot.
+No refresh, matching or schedule-writing engine is invoked by the new reader.
+
+Comparable-effort trends use one exact running subtype, at least the selected duration
+(default 20 minutes), >=90% paired temporal coverage, speed CV <=10%, and the selected
+ascent-density group. Confirmed quality/event and non-running prescriptions are
+excluded. Unknown workout identity is explicitly Unclassified; signal screening does
+not establish an easy-session label or exclude every unconfirmed interval pattern.
+Groups split by terrain and original confirmed workout family. Low ascent is <=20
+m/km; unknown ascent stays separate. No grade-adjusted pace is inferred.
+
+Pace-at-HR and HR-at-pace require ten observed in-band minutes, weighted by exact
+supported duration. Running efficiency is paired mean speed / mean HR (m/s per bpm).
+Samples use the shared engine's timestamp ordering, sequence-based duplicate resolution,
+30-second gap cap and no invented final support. The reader streams one activity at a
+time and retains weighted signal bins and summaries rather than full-history tracks.
+
+Durability additionally requires >=40 minutes, usable current estimated/override
+LTHR, mean HR <=90% LTHR and >=90% paired support in each half. Both the canonical
+metric span and complete observed window are screened; unknown elapsed edges impose
+a conservative midpoint-support penalty. Current persisted **speed/HR** decoupling
+and HR drift retain signed values; mixed power/speed aerobic decoupling is not used.
+These are stated product screening filters, not validated coaching cutoffs or readiness
+predictions. Heat, terrain, device conventions and sensor quality remain relevant.
+
+Cadence uses valid imported reported values without doubling or per-leg conversion.
+Weekly longest running activity uses largest recorded distance, requiring measured
+duration too; deterministic ties use duration/date/ID. It plots both distance and
+moving-preferred duration with elapsed fallback sources in the CSV. Running, trail_running and
+indoor_running are distinct selections. Partial periods follow the selected date range.
+
+Discovery confirmed that the existing FTP contract is **running FTP**, not cycling FTP.
+Advanced power therefore requires an explicit override or current verified running
+calculation and >=95% temporal power coverage. Cycling/unrelated sports explain why
+that threshold cannot qualify them. Average and normalized power retain their named
+imported scalars; variability is NP / average power, and efficiency is NP / average
+HR (W per bpm), with >=90% paired power/HR support. These ratios stay separate from
+running speed/HR efficiency. Measured zero power is retained; zero average power
+leaves variability unavailable. Power trends preserve terrain/workout groups.
+
+Power zones require all seven nonnegative measurements, current metric version,
+current FTP snapshot and total zone support within 95-102% of elapsed/window time.
+Known zero is preserved; missing/partial/stale zones remain unavailable. Nullable
+power-zone projection is opt-in for Charts, preserving legacy zero defaults elsewhere.
+Same-day bars use activity-ID categories and ordered zone colors. The peak curve uses
+current persisted exact-duration means (5/30/60/300/1200s) and requires a contiguous
+observed power run at least that long. Unsupported durations remain gaps. Period-best
+values can span workout/terrain groups; source ID and contributor count are explicit.
+
+Point clicks resolve server-owned IDs; dashed median lines have no activity target.
+The measurement/qualification table includes all selected activities and keyboard
+links. CSV includes units, filter bounds, period, threshold source/age and exclusion
+reasons. Peak-power source table/CSV separately records best values and contributing
+counts. Reset zoom restores selected date bounds and reversed pace direction. Wrapping
+HTML legends and ISO date bounds fix phone clipping and same-day subsecond labels;
+the live NiceGUI serializer is tested. Plot-width assertions await actual resizing.
+
+**322 distinct checks verified** across Charts/data/calendar/matching/revision/
+regeneration/temporal/threshold suites and targeted rechecks. The initial broad run
+had 315 passed and two failures: the subsequently fixed pandas date-bound serialization
+and a Windows socket-close traceback after the completed Explorer workflow. Explorer
+passed its recheck. Final focused/shared-log gate: 34 passed in 21.89s. The recurring
+Windows close event uses the existing narrowly tested stdlib-only classifier;
+raw logs are retained and application/browser errors still fail. Four desktop/390px captures
+are recorded in [reports/charts_c4/README.md](reports/charts_c4/README.md). Tests include
+unsupported elapsed edges, original context after regeneration, threshold provenance,
+same-day identities, unit preferences, exports, missing/stale measurements and a
+4,000-activity preparation bound. Real imported-history performance, packaged executable,
+dark theme and screen-reader software remain unverified.
+
+New files: `analytics/chart_performance.py`, `services/chart_performance_data.py`,
+`ui_nicegui/chart_performance.py`, two C4 test modules and `reports/charts_c4`.
+Updated chart query/state/page integration, README, this plan and roadmap. Changes
+remain uncommitted; no live database/schedule change, migration, deployment or package
+rebuild. Client settings unchanged; attributable account usage/credits unavailable.
+All planned Charts phases are locally verified. Additional threshold types, prediction,
+coaching interpretation and release/field validation remain separate work.

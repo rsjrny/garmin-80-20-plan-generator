@@ -24,6 +24,7 @@ CATALOG = (
 
 def chart_state(saved, sports, today):
     """Validate old/stale session values and recompute relative dates on arrival."""
+    from .chart_performance import performance_state
     saved = saved if isinstance(saved, dict) else {}
     quick = saved.get("quick", "12 weeks")
     if quick not in QUICK_RANGES:
@@ -48,7 +49,10 @@ def chart_state(saved, sports, today):
                 load=saved.get("load") if saved.get("load") in ("tss", "trimp") else "tss",
                 volume="Distance" if distance_ok and saved.get("volume") == "Distance" else "Time",
                 intensity="Percent" if saved.get("intensity") == "Percent" else "Hours",
-                section="Explorer" if saved.get("section") == "Explorer" else "Overview",
+                section=saved.get("section") if saved.get("section") in ("Overview", "Explorer", "Plan comparison", "Performance") else "Overview",
+                performance=performance_state(saved.get("performance")),
+                plan=saved.get("plan") if isinstance(saved.get("plan"),str) else "All active plans",
+                alignment="Plan weeks" if saved.get("alignment") == "Plan weeks" else "Calendar weeks",
                 charts=[key for key, _ in CATALOG if key in selected])
 
 

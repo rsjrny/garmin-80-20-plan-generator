@@ -1,0 +1,162 @@
+...............................F.                                        [100%]
+================================== FAILURES ===================================
+_______ test_performance_drilldown_bands_exports_refresh_and_responsive _______
+
+tmp_path = WindowsPath('C:/Users/russl/Documents/gitRepositories/Training_Planner/.tmp_c4_capture_gate/test_performance_drilldown_ban0')
+browser_artifacts = WindowsPath('reports/charts_c4/test_performance_drilldown_bands_exports_refresh_and_responsive-fb8733ce6d')
+
+    @pytest.mark.browser
+    def test_performance_drilldown_bands_exports_refresh_and_responsive(tmp_path,browser_artifacts):
+        db = performance_database(tmp_path)
+        process = _start_server(db,port := _free_loopback_port())
+        errors = []
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page(viewport=dict(width=1440,height=1000))
+                page.on('pageerror',lambda error:errors.append(str(error)))
+                page.on('console',lambda message:errors.append(message.text) if message.type=='error' else None)
+                def close_drawer():
+                    backdrop = page.locator('.q-drawer__backdrop')
+                    if page.viewport_size['width']==390 and backdrop.is_visible():
+                        backdrop.click(position=dict(x=350,y=120))
+                def select(label,value):
+                    close_drawer()
+                    page.get_by_label(label,exact=True).locator('xpath=ancestor::label[1]').click()
+                    page.get_by_role('option',name=value,exact=True).click()
+                    expect(page.get_by_label(label,exact=True)).to_have_value(value)
+                def ready():
+                    expect(page.locator('.js-plotly-plot')).to_have_count(3)
+                    page.locator('.js-plotly-plot').first.locator('.scatterlayer .trace').first.locator('.point').nth(1).wait_for()
+                def chart_layout():
+                    wait_for_layout(page)
+                    page.wait_for_function("""() => [...document.querySelectorAll('.js-plotly-plot')].every(plot =>
+                        !plot.clientWidth || (plot._fullLayout && Math.abs(plot._fullLayout.width-plot.clientWidth) <= 1))""")
+                page.goto(f'http://127.0.0.1:{port}/charts',wait_until='networkidle')
+                select('Date range','4 weeks')
+                select('Sport','running')
+                select('Chart section','Performance')
+                ready()
+                page.wait_for_function("document.querySelector('.js-plotly-plot')?.data?.[0]?.meta?.targets?.length === 2")
+                assert page.locator('.js-plotly-plot').first.evaluate("plot => plot._fullLayout.yaxis.range[0] > plot._fullLayout.yaxis.range[1]")
+                page.locator('.js-plotly-plot').first.locator('.scatterlayer .trace').first.locator('.point').nth(1).click(force=True)
+                page.get_by_text('Activity 202',exact=True).wait_for()
+                assert 'activity_id=202' in page.url
+                page.get_by_role('link',name='Return to Charts',exact=True).click()
+                ready()
+                expect(page.get_by_label('Sport',exact=True)).to_have_value('running')
+                page.get_by_label('HR band low (bpm)',exact=True).fill('134')
+                page.get_by_label('HR band low (bpm)',exact=True).press('Tab')
+                page.wait_for_function("document.querySelector('.js-plotly-plot')?.data?.[0]?.meta?.targets?.length === 1")
+                page.get_by_label('HR band low (bpm)',exact=True).fill('150')
+                page.get_by_label('HR band low (bpm)',exact=True).press('Tab')
+                page.get_by_text('Performance unavailable: HR band requires',exact=False).wait_for()
+                page.get_by_label('HR band low (bpm)',exact=True).fill('125')
+                page.get_by_label('HR band low (bpm)',exact=True).press('Tab')
+                ready()
+                page.get_by_label('Fast pace (min/km)',exact=True).fill('4:99')
+                page.get_by_label('Fast pace (min/km)',exact=True).press('Tab')
+                page.get_by_text('Performance unavailable: Enter pace as minutes:seconds',exact=False).wait_for()
+                page.get_by_label('Fast pace (min/km)',exact=True).fill('5:00')
+                page.get_by_label('Fast pace (min/km)',exact=True).press('Tab')
+                ready()
+                page.get_by_role('button',name='Reset zoom',exact=True).first.click()
+                page.wait_for_function("document.querySelector('.js-plotly-plot')?._fullLayout?.yaxis?.range?.[0] > document.querySelector('.js-plotly-plot')?._fullLayout?.yaxis?.range?.[1]")
+                page.get_by_text('Performance measurements and qualification table',exact=True).click()
+                page.get_by_text('Speed variation exceeds 10%',exact=True).first.wait_for()
+                page.get_by_text('No usable track samples',exact=True).first.wait_for()
+                with page.expect_download() as download:
+                    page.get_by_role('button',name='Download performance data CSV',exact=True).click()
+                assert download.value.suggested_filename=='performance-data.csv'
+                downloaded = tmp_path/'performance.csv'
+                download.value.save_as(downloaded)
+                with downloaded.open(newline='',encoding='utf-8') as f:
+                    exported = list(csv.DictReader(f))
+                assert len(exported)==4
+                assert all(r['HR band low (bpm)']=='125.0' and r['Fast pace bound (min/km)']=='5:00' for r in exported)
+                excluded = next(r for r in exported if r['Activity ID']=='404')
+                assert excluded['Pace at HR band (min/km)']==''
+                link = page.get_by_role('link',name='Open activity 101',exact=True)
+                link.focus(); link.press('Enter')
+                page.get_by_text('Activity 101',exact=True).wait_for()
+                page.get_by_role('link',name='Return to Charts',exact=True).click()
+                ready()
+                browser_artifacts.mkdir(parents=True,exist_ok=True)
+                page.evaluate('window.scrollTo(0,0)')
+                chart_layout()
+                page.screenshot(path=str(browser_artifacts/'desktop.png'),full_page=True)
+                page.set_viewport_size(dict(width=390,height=844))
+                page.reload(wait_until='networkidle')
+                close_drawer(); ready()
+                expect(page.get_by_label('HR band low (bpm)',exact=True)).to_have_value('125')
+                page.get_by_text('Performance measurements and qualification table',exact=True).click()
+                page.get_by_role('link',name='Open activity 202',exact=True).wait_for()
+                assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+                page.get_by_text('Performance measurements and qualification table',exact=True).click()
+                page.evaluate('window.scrollTo(0,0)')
+                chart_layout()
+                page.screenshot(path=str(browser_artifacts/'narrow.png'),full_page=True)
+                # Presentation changes retain cached evidence until explicit refresh.
+                conn = sqlite3.connect(db)
+                conn.execute('UPDATE athlete_profile SET ftp_override=NULL,ftp_calc=NULL')
+                conn.commit(); conn.close()
+                page.get_by_label('Performance charts',exact=True).locator('xpath=ancestor::label[1]').click()
+                for index,label in enumerate(('Average and normalized power','Power zones','Peak-power curve')):
+                    page.get_by_role('option',name=label,exact=True).click()
+                    expect(page.locator('.js-plotly-plot')).to_have_count(4+index)
+                page.keyboard.press('Escape')
+                expect(page.locator('.js-plotly-plot')).to_have_count(6)
+                page.get_by_text('Peak-power source table',exact=True).click()
+                page.get_by_text('Duration (seconds)',exact=True).wait_for()
+                with page.expect_download() as curve_download:
+                    page.get_by_role('button',name='Download peak-power curve CSV',exact=True).click()
+                assert curve_download.value.suggested_filename == 'peak-power-curve.csv'
+                page.get_by_text('Peak-power source table',exact=True).click()
+                expect(page.get_by_role('button',name='Download peak-power curve CSV',exact=True)).not_to_be_visible()
+                page.evaluate('window.scrollTo(0,0)')
+                chart_layout()
+                page.screenshot(path=str(browser_artifacts/'power_narrow.png'),full_page=True)
+                page.set_viewport_size(dict(width=1440,height=1000))
+                chart_layout()
+                page.screenshot(path=str(browser_artifacts/'power_desktop.png'),full_page=True)
+                page.get_by_role('button',name='Refresh data',exact=True).click()
+                expect(page.locator('.js-plotly-plot')).to_have_count(3)
+                page.get_by_text('Performance measurements and qualification table',exact=True).click()
+                page.get_by_text('Running FTP provenance unavailable or stale',exact=True).first.wait_for()
+                select('Sport','cycling')
+                expect(page.locator('.js-plotly-plot')).to_have_count(0)
+                page.get_by_text('Performance measurements and qualification table',exact=True).click()
+                page.get_by_text('Running FTP cannot qualify other sports',exact=True).first.wait_for()
+                page.evaluate('window.socket?.disconnect()')
+                browser.close()
+        finally:
+            server = _stop_server(process)
+        assert not errors,errors
+>       assert 'Traceback' not in server,server
+E       AssertionError: NiceGUI ready to go on http://127.0.0.1:53786
+E         Exception in callback _ProactorBasePipeTransport._call_connection_lost()
+E         handle: <Handle _ProactorBasePipeTransport._call_connection_lost()>
+E         Traceback (most recent call last):
+E           File "C:\Users\russl\AppData\Local\Programs\Python\Python313\Lib\asyncio\events.py", line 89, in _run
+E             self._context.run(self._callback, *self._args)
+E             ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           File "C:\Users\russl\AppData\Local\Programs\Python\Python313\Lib\asyncio\proactor_events.py", line 165, in _call_connection_lost
+E             self._sock.shutdown(socket.SHUT_RDWR)
+E             ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+E         ConnectionResetError: [WinError 10054] An existing connection was forcibly closed by the remote host
+E         
+E       assert 'Traceback' not in 'NiceGUI rea...emote host\n'
+E         
+E         'Traceback' is contained here:
+E           n_lost()>
+E           Traceback (most recent call last):
+E         ? +++++++++
+E             File "C:\Users\russl\AppData\Local\Programs\Python\Python313\Lib\asyncio\events.py", line 89, in _run
+E               self._context.run(self._callback, *self._args)...
+E         
+E         ...Full output truncated (5 lines hidden), use '-vv' to show
+
+tests\test_chart_performance_browser.py:168: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_chart_performance_browser.py::test_performance_drilldown_bands_exports_refresh_and_responsive
+1 failed, 32 passed in 22.05s

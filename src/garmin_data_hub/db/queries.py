@@ -1772,6 +1772,7 @@ def get_activities_dataframe(
             "am",
             (
                 "aerobic_decoupling_pct",
+                "pace_decoupling_pct",
                 "hr_drift_pct",
                 "peak_power_5s_w",
                 "peak_power_30s_w",
@@ -1780,12 +1781,26 @@ def get_activities_dataframe(
                 "peak_power_1200s_w",
             ),
         )
+        power_zone_select_sql = ",\n".join(
+            f"CASE WHEN am.ftp_metrics_current THEN COALESCE(am.power_zone_{zone}_s, 0) ELSE 0 END AS power_zone_{zone}_s"
+            for zone in range(1, 8)
+        )
+        if preserve_missing_metrics:
+            power_zone_select_sql = ",\n".join(
+                f"CASE WHEN am.ftp_metrics_current AND am.refresh_provenance_version = {ACTIVITY_METRICS_PROVENANCE_VERSION} AND am.threshold_ftp_w > 0 THEN am.power_zone_{zone}_s END AS power_zone_{zone}_s"
+                for zone in range(1, 8)
+            )
         query = f"""
             SELECT
                 a.activity_id,
                 {activity_name_sql} AS activity_name,
                 CASE WHEN am.activity_id IS NULL THEN 'missing'
                      WHEN am.lthr_metrics_current THEN 'current' ELSE 'stale' END AS hr_zone_status,
+                CASE WHEN am.activity_id IS NULL THEN 'missing'
+                     WHEN am.ftp_metrics_current AND am.refresh_provenance_version = {ACTIVITY_METRICS_PROVENANCE_VERSION} AND am.threshold_ftp_w > 0 THEN 'current'
+                     WHEN am.refresh_provenance_version IS NULL THEN 'unknown' ELSE 'stale' END AS power_zone_status,
+                am.refresh_provenance_version AS metric_provenance_version,
+                am.threshold_ftp_w AS power_ftp_w,
                 a.start_time_gmt          AS start_time_utc,
                 {activity_day}            AS activity_date,
                 a.activity_type           AS sport,
@@ -1809,13 +1824,7 @@ def get_activities_dataframe(
                 {temporal_metric_select_sql},
                 am.efficiency_factor,
                 am.variability_index,
-                CASE WHEN am.ftp_metrics_current THEN COALESCE(am.power_zone_1_s, 0) ELSE 0 END AS power_zone_1_s,
-                CASE WHEN am.ftp_metrics_current THEN COALESCE(am.power_zone_2_s, 0) ELSE 0 END AS power_zone_2_s,
-                CASE WHEN am.ftp_metrics_current THEN COALESCE(am.power_zone_3_s, 0) ELSE 0 END AS power_zone_3_s,
-                CASE WHEN am.ftp_metrics_current THEN COALESCE(am.power_zone_4_s, 0) ELSE 0 END AS power_zone_4_s,
-                CASE WHEN am.ftp_metrics_current THEN COALESCE(am.power_zone_5_s, 0) ELSE 0 END AS power_zone_5_s,
-                CASE WHEN am.ftp_metrics_current THEN COALESCE(am.power_zone_6_s, 0) ELSE 0 END AS power_zone_6_s,
-                CASE WHEN am.ftp_metrics_current THEN COALESCE(am.power_zone_7_s, 0) ELSE 0 END AS power_zone_7_s,
+                {power_zone_select_sql},
                 {zone_select_sql}
             FROM activity a
             LEFT JOIN (

@@ -1,7 +1,7 @@
 # Training Planner Implementation Roadmap
 
 Created: 2026-10-02
-Status: T1, T2, T3, T4, C1, C2, Y1, Y2 and Y3 locally verified; G1 scope choice recorded; Y0 discovery complete.
+Status: T1-T4, C1-C4 and Y1-Y4 locally verified; G1 scope choice recorded; Y0 discovery complete. C4 verified 2026-10-04. All listed implementation phases are locally verified; release/field validation remains separate.
 
 ## Objective and source plans
 
@@ -58,6 +58,8 @@ estimates. Do not equate a goal token counter directly with billed total tokens.
 | T4 | Available aligned metric charts, synchronized original-sample map/chart cursors, exact lap/range emphasis, unit-aware time/distance switching, keyboard controls, quality gaps, bounded long-track drawing and desktop/narrow evidence |
 | C1 | At most four default charts; quick/custom date ranges; sport-appropriate analysis; comparison summary; empty/partial weeks; missingness and coverage visible; unit/date tests and responsive verification pass |
 | C2 | Points open the correct activity; weekly bars show contributing activities; Explorer retains the catalog; state survives navigation as designed; interactions verified |
+| C3 | Verified canonical weekly targets and original confirmed matches; honest duration/distance/load missingness and estimates; variance and due-session completion; rest/substitution/unmatched/partial-week tests; calendar/plan weeks, accessible drill-down/CSV and desktop/narrow evidence |
+| C4 | Comparable-effort running bands, efficiency, cadence/longest progression and qualified signed durability; original workout/terrain/subtype groups; provenance/coverage-gated power/VI/zones/observed peaks; missing/stale/gapped cases, IDs, accessible exports, responsive evidence |
 | G1 | Actual usage recorded and next authorized goal scope chosen; do not infer remaining credits from planning estimates |
 | Y0 | Exact generation/persistence entry points documented; canonical revision compatibility, event orchestration, protected-workout semantics, migration strategy, and conflict examples resolved |
 | Y1 | Seasons/events persist and can be managed; priorities/date validation tested; existing single-event plans remain usable; migrations tested on representative database snapshots |
@@ -79,8 +81,8 @@ Choose these only after reviewing the initial results and actual usage.
 | --- | --- | --- | --- | --- | ---: | --- |
 | Track 3 (locally verified 2026-10-02) | Laps/splits and route selection | GPT-6.1 Sol | Standard | Medium | 90k | Fresh chat |
 | Track 4 (locally verified 2026-10-02) | Linked charts and map/chart cursors | GPT-6.1 Sol | Standard | High | 130k | Fresh chat; reuse shared chart work |
-| Charts 3 | Planned versus completed duration/load and matching | GPT-6.1 Sol | Standard | High | 170k | Fresh chat; use canonical matching |
-| Charts 4 | Qualified performance, cadence, power, and durability analytics | GPT-6.1 Sol | Standard | High | 200k | Fresh chat; split into individual metrics if useful |
+| Charts 3 (locally verified 2026-10-04) | Planned versus completed duration/load and matching | GPT-6.1 Sol | Standard | High | 170k | Fresh chat; use canonical matching |
+| Charts 4 (locally verified 2026-10-04) | Qualified performance, cadence, power, and durability analytics | GPT-6.1 Sol | Standard | High | 200k | Fresh chat; split into individual metrics if useful |
 | Yearly 4 (locally verified 2026-10-02) | Conflict/peak refinement and event tuning; optional rollback separately scoped | GPT-6.1 Sol | Standard | High | 110k | Fresh chat; scope rollback separately |
 
 Best value: T1 first, T2 through reuse of its foundation, then C1 and C2. In Charts 3,
@@ -119,6 +121,8 @@ Record available values, leaving unknown fields blank:
 | T4 | Locally verified | 2026-10-02 | Client settings unchanged | | | 62 distinct Track/shared/browser checks; 20k-point route; desktop/390px inspected | Uncommitted on a4edfc7; handoff below |
 | C1 | Locally verified | 2026-10-02 | Client settings unchanged | | | 60 cross-feature tests passed; 49 final Charts/shared checks; desktop/narrow verified | Uncommitted; handoff below |
 | C2 | Locally verified | 2026-10-02 | Client settings unchanged | | | 76 Charts/shared checks passed; two activity checks passed with bundled Chromium; desktop/narrow interactions verified | Uncommitted on e79bad7; handoff below |
+| C3 | Locally verified | 2026-10-04 | Client settings unchanged | | | 174 distinct Charts/data/matching/revision/regeneration checks; 24 final focused checks; desktop/390px inspected | Uncommitted on 1c05874; reports/charts_c3 and handoff below |
+| C4 | Locally verified | 2026-10-04 | Client settings unchanged | | | 322 distinct checks across broad run/final focused/shared-log gate and Explorer recheck; desktop/390px inspected | Uncommitted on 1c05874 with C3 preserved; reports/charts_c4 and handoff below |
 | G1 | Complete; user selected Y0 only | 2026-10-02 | Client settings unchanged | Included allowance: 34% five-hour / 40% weekly at prior snapshot; user dashboard | Historical 82 / 82 at prior snapshot | Existing evidence reviewed; scope chosen 2026-10-02 | G1 review below; Y0 handoff below |
 | Y0 | Discovery complete | 2026-10-02 | Client settings unchanged | | | 264 existing tests and 5 synthetic discovery probes passed; no UI, visual checks not applicable | Uncommitted on e79bad7; docs/yearly-scheduling-architecture.md and handoff below |
 | Y1 | Locally verified | 2026-10-02 | Client settings unchanged | | | 408 scheduling/shared/browser tests passed; desktop/390px UI inspected; representative and real v11 snapshot upgrades preserved schedules | Uncommitted on e79bad7; handoff below |
@@ -633,3 +637,84 @@ browser tests plus current-version fixture expectations; README, source plan and
 architecture describe Y4. Optional rollback, physiological peak optimization/prediction,
 AI composition, automatic covered-history collection, mixed methods/sports, manual
 creation UI, packaging and a live field trial remain separately scoped.
+
+## C3 handoff - 2026-10-04
+
+User requested "lets work on c3". C3 is implemented and locally verified on starting
+baseline `1c05874`. Charts has a separate Plan comparison section with verified active
+canonical duration/distance totals, measured actual TSS/TRIMP, variance/coverage and
+due-session completion. Original confirmed matches survive Y3 carried origins; rest,
+candidates, explicit completion and date/sport substitutions stay distinct. Missing
+match evidence is never labeled a proven skipped workout. Plan load targets are absent
+in the canonical contract and remain unavailable rather than estimated from projections.
+
+Calendar weeks use Mondays; plan weeks anchor to one selected plan's first scheduled
+date. Partial range/current/plan coverage, inactive periods, missing values and estimated
+measures remain visible. Chart clicks and keyboard week controls show schedule/activity
+evidence, Activity/Plan links and CSV. C2 tab-state semantics now include plan/alignment;
+explicit refresh rereads the data. The plan reader opens a read-only snapshot and
+rejects corrupt revisions or mismatched active schedule membership/dates.
+
+174 distinct checks are verified: 171 broad Charts/data/calendar/matching/revision/
+regeneration checks, one additional estimated-distance case, and two C3 browser
+workflows. Final focused gate: 24 passed in 22.01s. Desktop/390px charts, tables and
+dialogs inspected; page-width assertions and `git diff --check` pass. Tests cover
+rest, substitutions, unmatched/candidate activities, missing targets/measurements,
+explicit completion, preserved origins, leap/year boundaries and multi-year preparation.
+Evidence and reproduction: [reports/charts_c3/README.md](reports/charts_c3/README.md).
+Source-plan handoff records exact semantics and remaining limitations.
+
+New analytics/service/UI helper modules and two test modules; updated Charts state/
+page integration, README, source plan and roadmap. Changes remain uncommitted. No
+live database/schedule write, migration, commit, push, deployment or package rebuild.
+Real-history usage, packaging, dark theme and screen-reader software remain unverified.
+Client settings unchanged; token/account-credit attribution unavailable. Stop at C3.
+Remaining Charts C4 and other separately scoped work require a new task.
+
+## C4 handoff - 2026-10-04
+
+User authorized "continue with c4". C4 is implemented and locally verified on
+`1c05874`, preserving the uncommitted C3 work. This supersedes earlier deferred-C4
+statements. All listed Track, Charts and Yearly implementation phases now have local
+verification; this is not a packaged release or real-history field validation.
+
+Charts > Performance provides ten selectable views: configurable pace-at-HR and
+HR-at-pace, speed/HR efficiency, cadence, longest running distance/duration by week,
+qualified durability, average/normalized power, power variability/efficiency, zones
+and observed peak curve. Three charts are selected initially. State persists by tab;
+invalid bounds are explained, units preserve canonical speed bands, and explicit
+Refresh data rereads evidence without recomputing metrics or writing a schedule.
+
+One running subtype, original confirmed workout family and ascent group control
+comparability. Quality/event/non-running prescriptions and insufficient support or
+variable speed are excluded from steady views. Unknown type is labeled. Durability
+adds >=40 minutes, current/override LTHR, an aerobic HR screen and conservative
+coverage checks on both halves, including unsupported elapsed edges. Signed current
+speed/HR decoupling and HR drift are retained. These are screening filters, not a
+validated coaching diagnosis. Cadence conventions stay reported; no grade adjustment.
+
+The app's FTP is running-specific. Advanced power needs a verified current running
+calculation or explicit override and >=95% temporal power coverage; it cannot qualify
+cycling. Named raw average/NP scalars, NP/average variability and NP/HR efficiency are
+distinct. Zones need all seven known values/current threshold+metric snapshots and
+sufficient duration. Peak means need current provenance and contiguous support for
+their exact durations; curve source IDs/contributor counts and accessible exports
+are included. Original canonical match context is read-only and survives regeneration.
+
+322 distinct checks are verified: broad run 315 passed with two failures subsequently
+resolved/rechecked, final focused C4/shared-log coverage including five additional checks, and
+Explorer's successful Windows teardown recheck. The report records exact commands,
+counts, limitations and initial failures. Four final desktop/390px screenshots were
+inspected after full plot-width resizing; dates, wrapping legends, ordered zones,
+source tables, CSV, activity clicks and unavailable states are covered.
+Final focused/shared-log gate: 34 passed in 21.89s. C4 reuses the existing strict
+classifier for the recurring stdlib-only Windows transport-close event, retaining
+raw logs; application/browser errors still fail.
+Evidence: [reports/charts_c4/README.md](reports/charts_c4/README.md).
+
+New analytics/service/UI modules, two test modules and evidence; chart query/state/page
+integration and docs updated. C3 remains intact. No live database/schedule writes,
+migration, commit, push, deployment or package rebuild. Changes remain uncommitted.
+Client settings unchanged; attributable account usage/credits unavailable. Real-history
+field use, packaging, dark theme, screen-reader software and optional rollback remain
+unverified/separately scoped. The source-plan C4 handoff records exact screening rules.

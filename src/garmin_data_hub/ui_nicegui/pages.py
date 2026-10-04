@@ -19,6 +19,12 @@ from plotly.subplots import make_subplots
 
 from garmin_data_hub.analytics.chart_explorer import CATALOG, chart_state, contributors, explorer_figures, resolve_click, source_rows, tag_overview
 from garmin_data_hub.analytics.chart_overview import QUICK_RANGES, comparison_range, period_range, prepare_overview, overview_figures
+from garmin_data_hub.analytics.chart_plan_comparison import prepare_plan_comparison
+from garmin_data_hub.services.chart_plan_data import active_chart_plan_data
+from garmin_data_hub.ui_nicegui.chart_plan_comparison import render_plan_comparison
+from garmin_data_hub.analytics.chart_performance import prepare_performance, RUNNING_SPORTS
+from garmin_data_hub.services.chart_performance_data import advanced_chart_evidence
+from garmin_data_hub.ui_nicegui.chart_performance import PerformanceControls, render_performance
 from garmin_data_hub.analytics.track_visuals import NEUTRAL, prepare_overlays, process_track, route_features
 from garmin_data_hub.ui_nicegui.track_intervals import render_track_intervals
 from garmin_data_hub.ui_nicegui.track_charts import render_track_charts
@@ -1638,7 +1644,8 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
         sports = activity_sports(db_path)
         saved = chart_state(session.get(state_key), sports, today)
         initial_start, initial_end = date.fromisoformat(saved["start"]), date.fromisoformat(saved["end"])
-        cache: dict[str, Any] = {"key": None, "raw": None, "updating": False}
+        cache: dict[str, Any] = {"key": None, "raw": None, "updating": False, "plan": None,
+                                 "performance_key": None, "performance": None}
         with ui.column().classes("gdh-page"):
             page_heading("Training Charts", "Training volume, load, intensity, and comparable performance.")
             with ui.card().classes("gdh-card w-full"):
@@ -1654,9 +1661,18 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                     ui.button("Refresh data", on_click=lambda: refresh_data(), icon="refresh")
 
             with ui.row().classes("w-full items-end gap-3 flex-wrap"):
-                section = ui.select(["Overview", "Explorer"], value=saved["section"], label="Chart section").props("outlined").classes("w-full sm:w-48")
+                section = ui.select(["Overview", "Explorer", "Plan comparison", "Performance"], value=saved["section"], label="Chart section").props("outlined").classes("w-full sm:w-48")
                 catalog = ui.select(dict(CATALOG), value=saved["charts"], multiple=True, label="Explorer charts").props("outlined use-chips").classes("w-full sm:max-w-xl")
                 catalog.set_visibility(section.value == "Explorer")
+                initial_plans = list(dict.fromkeys(["All active plans",saved["plan"]]))
+                plan_choice = ui.select(initial_plans,value=saved["plan"],label="Compare plan").props("outlined").classes("w-full sm:w-72")
+                alignment = ui.select(["Calendar weeks", "Plan weeks"],value=saved["alignment"],label="Week alignment").props("outlined").classes("w-full sm:w-48")
+                plan_choice.set_visibility(section.value == "Plan comparison")
+                alignment.set_visibility(section.value == "Plan comparison")
+            performance_controls = PerformanceControls(saved["performance"],unit_system,lambda: update_overview())
+            performance_controls.container.set_visibility(section.value == "Performance")
+            load.set_visibility(section.value != "Performance")
+            volume.set_visibility(section.value != "Performance")
             ui.label("Chart filters and section are remembered in this tab while the app is running. Quick ranges follow today; custom dates stay fixed.").classes("text-xs text-grey-7")
             with ui.dialog() as source_dialog, ui.card().classes("w-full max-w-4xl min-w-0"):
                 source_title = ui.label().classes("text-lg font-semibold")
@@ -1718,6 +1734,35 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
                     ui.label(str(exc)).classes("text-negative")
                     return
                 current, previous = prepared["current"],prepared["previous"]
+                if section.value == "Performance":
+                    try:
+                        options = performance_controls.options()
+                        ids = tuple(current.activity_id.astype(int)) if sport.value in RUNNING_SPORTS else ()
+                        evidence_key = (key,ids)
+                        if cache["performance_key"] != evidence_key:
+                            cache["performance"] = advanced_chart_evidence(db_path,ids)
+                            cache["performance_key"] = evidence_key
+                        data = prepare_performance(prepared,cache["performance"],options)
+                        render_performance(data,velocity_display,str(intensity.value))
+                    except (ValueError, OSError, sqlite3.Error, RuntimeError) as exc:
+                        ui.label(f"Performance unavailable: {exc}").classes("text-negative")
+                    return
+                if section.value == "Plan comparison":
+                    try:
+                        if cache["plan"] is None:
+                            cache["plan"] = active_chart_plan_data(db_path)
+                            options = ["All active plans", *[p["id"] for p in cache["plan"]["plans"]]]
+                            selected = saved["plan"] if saved["plan"] in options else "All active plans"
+                            cache["updating"] = True
+                            try:
+                                plan_choice.set_options(options,value=selected)
+                            finally:
+                                cache["updating"] = False
+                        data = prepare_plan_comparison(cache["plan"],prepared,str(plan_choice.value),str(alignment.value),today)
+                        render_plan_comparison(data,str(volume.value))
+                    except (ValueError, OSError, sqlite3.Error, RuntimeError) as exc:
+                        ui.label(f"Plan comparison unavailable: {exc}").classes("text-negative")
+                    return
                 ui.label(f"{first} through {last} · Compared with {prepared['previous_start']} through {prepared['previous_end']} ({(last-first).days+1} days each).").classes("text-sm")
                 ui.label("Comparison reflects imported activities only; completeness of either calendar period is not guaranteed.").classes("text-xs text-grey-7")
                 with ui.element("div").classes("grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 w-full gap-3"):
@@ -1780,14 +1825,27 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
 
             def update_overview() -> None:
                 if not cache["updating"]:
+                    try:
+                        saved["performance"] = performance_controls.options()
+                    except ValueError:
+                        pass  # Preserve the last valid settings; the renderer explains invalid inputs.
                     session[state_key] = dict(quick=quick.value, start=start.value, end=end.value, sport=sport.value,
                                               load=load.value, volume=volume.value, intensity=intensity.value,
-                                              section=section.value, charts=list(catalog.value or []))
+                                              section=section.value, charts=list(catalog.value or []),plan=plan_choice.value,alignment=alignment.value,
+                                              performance=saved["performance"])
+                    saved["plan"] = plan_choice.value
                     catalog.set_visibility(section.value == "Explorer")
+                    plan_choice.set_visibility(section.value == "Plan comparison")
+                    alignment.set_visibility(section.value == "Plan comparison")
+                    performance_controls.container.set_visibility(section.value == "Performance")
+                    load.set_visibility(section.value != "Performance")
+                    volume.set_visibility(section.value != "Performance")
                     render_overview.refresh()
 
             def refresh_data() -> None:
                 cache["key"] = None
+                cache["plan"] = None
+                cache["performance_key"] = None
                 update_overview()
 
             def change_range() -> None:
@@ -1819,7 +1877,7 @@ def register_core_pages(db_path: Path, *, sandboxed: bool) -> None:
             start.on_value_change(change_date)
             end.on_value_change(change_date)
             sport.on_value_change(change_sport)
-            for control in (load,volume,intensity,section,catalog):
+            for control in (load,volume,intensity,section,catalog,plan_choice,alignment):
                 control.on_value_change(update_overview)
             render_overview()
 

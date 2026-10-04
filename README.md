@@ -173,7 +173,7 @@ The primary desktop interface is implemented under `src/garmin_data_hub/ui_niceg
 - **Dashboard** - Garmin history, threshold, metrics-health, and upcoming-plan overview
 - **Garmin Sync** - non-blocking sync, cancellation, logs, and derived-metric repair
 - **Activities** - filters, splits, local GPS-track inspection with linked measurement charts and interval selection, and complete JSON export
-- **Charts** - volume, heart-rate, speed, distribution, and training-load trends
+- **Charts** - volume, load, active-plan comparison, and qualified running performance, durability and power views
 - **Plan** - offline baseline/workbook generation, event settings, HR thresholds, and active calendar review
 - **Seasons** - event priorities and tuning, preparation/conflict review, availability, yearly preview, protected regeneration, reviewed apply, revision history, and explicit plan linking
 - **Codex Coach** - account-authenticated generation, deterministic validation, exact diff, and explicit approval
@@ -181,6 +181,23 @@ The primary desktop interface is implemented under `src/garmin_data_hub/ui_niceg
 - **Data Query** - guarded read-only SQL and advanced garmin_mcp calls
 - **Settings** - persistent distance units and activity, chart, dashboard, and sync defaults
 - **Help & About** - the end-to-end workflow, support links, version, privacy, and licensing information
+
+Charts **Plan comparison** shows weekly planned duration/distance, actual selected
+TSS/TRIMP, measurement coverage and due-workout completion. Choose calendar weeks
+or one plan's weeks, inspect schedule/activity evidence, and export the weekly table.
+Rest and today's sessions are excluded from due-session completion; candidates are
+unconfirmed and unmatched activities still contribute to actual totals. Missing
+planned load stays unavailable. **Refresh data** rereads plans and reviewed matches.
+See [C3 evidence](reports/charts_c3/README.md) for verification and limitations.
+
+Charts **Performance** adds configurable pace-at-HR and HR-at-pace bands, running
+efficiency, reported cadence, weekly longest-run distance/duration, qualified
+decoupling/drift, and power charts. Select one running subtype; terrain and confirmed
+original workout families stay separate. Each chart states its screening rules;
+the measurement table and CSV include excluded activities and their reasons.
+Power requires usable **running FTP** provenance and sufficient track coverage.
+Cycling power cannot use that threshold. **Refresh data** rereads evidence without
+recomputing metrics or changing plans. See [C4 evidence](reports/charts_c4/README.md).
 
 ## Data Query Page (Advanced)
 
