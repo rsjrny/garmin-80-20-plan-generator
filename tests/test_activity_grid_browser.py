@@ -148,7 +148,7 @@ def _stop_server(process: subprocess.Popen[str]) -> str:
         return process.communicate(timeout=10)[0]
 
 
-def _chrome_executable() -> Path:
+def _chrome_executable() -> Path | None:
     candidates = (
         Path(os.environ.get("PROGRAMFILES", ""))
         / "Google/Chrome/Application/chrome.exe",
@@ -160,9 +160,8 @@ def _chrome_executable() -> Path:
     for candidate in candidates:
         if candidate.is_file():
             return candidate
-    raise AssertionError(
-        "The existing local Google Chrome installation was not found"
-    )
+    # Use Playwright-managed Chromium when a local Windows Chrome is absent.
+    return None
 
 
 def _click_activity(page, activity_id: int, interaction_errors: list[str]) -> bool:

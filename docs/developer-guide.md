@@ -329,9 +329,13 @@ alternate synchronization or planning-write mechanism.
 
 ## Testing and change workflow
 
-Install the dev extra, then run the suite from the repository root:
+Install the dev extra and Chromium, then run the suite from the repository root.
+Linux CI uses --with-deps to install Chromium system dependencies too.
+The pytest configuration adds the repository root to the import path so
+maintenance helpers in scripts/ can be imported during collection.
 
 ~~~powershell
+.\.venv\Scripts\python.exe -m playwright install chromium
 .\.venv\Scripts\python.exe -m pytest
 ~~~
 

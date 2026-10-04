@@ -358,9 +358,10 @@ database when changing Garmin accounts so activity data is not mixed.
 
 ## Tests
 
-Run the project test suite with:
+Install Chromium for the browser tests, then run the project test suite:
 
 ```powershell
+python -m playwright install chromium
 python -m pytest
 ```
 
